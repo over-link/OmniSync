@@ -170,6 +170,19 @@ async function _pushLatestCommentToAcc(userId, project, reviztoIssue, accIssueId
     );
     if (rows[0]?.last_pushed_comment_uuid === latest.uuid) return; // already pushed
 
+    // Same ping-pong protection as the ACC->Revizto direction: a comment
+    // WE pushed ACC->Revizto becomes this issue's new "latest text
+    // comment," which would otherwise look like a genuine new Revizto
+    // comment and get pushed right back to ACC. Mark it seen without
+    // re-pushing.
+    if ((latest.text || '').includes('- synced from ACC')) {
+      await pool.query(
+        'UPDATE sync_map SET last_pushed_comment_uuid = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
+        [project.id, String(reviztoIssue.id), latest.uuid]
+      );
+      return;
+    }
+
     await accService.addComment(userId, project, accIssueId, `${latest.text || ''} - synced from Revizto`);
     await pool.query(
       'UPDATE sync_map SET last_pushed_comment_uuid = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
@@ -464,12 +477,26 @@ async function pollAccCommentsForProject(userId, project, reporterEmail) {
       // comment to re-push every poll cycle forever.
       if (!latestId || String(latestId) === String(row.last_pulled_acc_comment_id)) continue; // nothing new
 
+      const commentText = latest.body || latest.text || '';
+      // Prevents an infinite ping-pong: a comment WE pushed Revizto->ACC
+      // becomes ACC's new "latest comment," which would otherwise look
+      // like a genuine new ACC comment on the next poll and get pushed
+      // right back into Revizto with another tag stacked on. Mark it
+      // seen (so we stop re-checking it) without re-pushing it.
+      if (commentText.includes('- synced from Revizto')) {
+        await pool.query(
+          'UPDATE sync_map SET last_pulled_acc_comment_id = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
+          [project.id, row.revizto_issue_id, latestId]
+        );
+        continue;
+      }
+
       await reviztoService.addComment(
         userId,
         project.revizto_region,
         project.revizto_project_uuid,
         row.revizto_issue_id,
-        `${latest.body || latest.text || ''} - synced from ACC`,
+        `${commentText} - synced from ACC`,
         reporterEmail
       );
       await pool.query(
