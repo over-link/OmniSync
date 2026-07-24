@@ -340,7 +340,7 @@ async function attachImageToIssue(userId, project, issueId, imageUrl, displayNam
   try {
     return await _attachToIssue(userId, project, issueId, fileName, objectKey, storageUrn, fileBuffer.length, fileType);
   } catch (err) {
-    throw new Error(`[step 4: attach to issue] ${err.response?.data?.developerMessage || err.message}`);
+    throw new Error(`[step 4: attach to issue] ${JSON.stringify(err.response?.data) || err.message}`);
   }
 }
 
