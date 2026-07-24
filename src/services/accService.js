@@ -296,7 +296,7 @@ async function _attachToIssue(userId, project, issueId, displayName, objectKey, 
       },
     ],
   };
-  const url = `${APS_BASE}/issues/v1/projects/${_containerId(project)}/attachments`;
+  const url = `${APS_BASE}/construction/issues/v1/projects/${_containerId(project)}/attachments`;
   console.log('[DEBUG attach] URL:', url);
   console.log('[DEBUG attach] body:', JSON.stringify(body, null, 2));
   const { data } = await axios.post(url, body, {
