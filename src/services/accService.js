@@ -200,6 +200,126 @@ async function getHubProjects(userId, hubId) {
   return (data.data || []).map((p) => ({ id: p.id, name: p.attributes?.name }));
 }
 
+// ─── Issue attachments (image upload pipeline) ───────────────────────
+// Confirmed from Autodesk's own official tutorial (get-started.aps.
+// autodesk.com/tutorials/acc-issues/more) — a 4-step flow spanning the
+// Data Management API (folders/storage/upload) and a DIFFERENT base path
+// for the Issues API specifically for attachments (`issues/v1`, NOT
+// `construction/issues/v1` like every other Issues endpoint we use).
+// This mismatch is the likely cause of a 409 error a developer hit
+// publicly when they guessed the wrong (construction/issues/v1) prefix.
+
+/**
+ * Step 1: get the project's root folder (Data Management API), needed
+ * as the parent for creating a new storage location.
+ */
+async function _getProjectRootFolderId(userId, project) {
+  const token = await getValidAccToken(userId);
+  const { data } = await axios.get(
+    `${APS_BASE}/project/v1/hubs/${project.acc_hub_id}/projects/${project.acc_project_id}/topFolders`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  const folders = data?.data || [];
+  return folders[0]?.id || null;
+}
+
+/**
+ * Step 2: create a storage location for the file (Data Management API).
+ * Returns { bucketKey, objectKey, storageUrn }, parsed from the
+ * response's URN (format: urn:adsk.objects:os.object:{bucketKey}/{objectKey}).
+ */
+async function _createStorage(userId, project, folderId, fileName) {
+  const token = await getValidAccToken(userId);
+  const body = {
+    jsonapi: { version: '1.0' },
+    data: {
+      type: 'objects',
+      attributes: { name: fileName },
+      relationships: { target: { data: { type: 'folders', id: folderId } } },
+    },
+  };
+  const { data } = await axios.post(`${APS_BASE}/data/v1/projects/${project.acc_project_id}/storage`, body, {
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/vnd.api+json' },
+  });
+  const storageUrn = data?.data?.id; // urn:adsk.objects:os.object:{bucketKey}/{objectKey}
+  const match = storageUrn?.match(/^urn:adsk\.objects:os\.object:([^/]+)\/(.+)$/);
+  if (!match) throw new Error(`Unexpected storage URN format: ${storageUrn}`);
+  return { bucketKey: match[1], objectKey: match[2], storageUrn };
+}
+
+/**
+ * Step 3: upload the actual file bytes via a signed S3 URL, then
+ * finalize. Autodesk's signed-upload flow is single-part for smaller
+ * files (which image previews are) — GET a signed URL, PUT the bytes,
+ * POST to complete.
+ */
+async function _uploadFileBytes(userId, bucketKey, objectKey, fileBuffer) {
+  const token = await getValidAccToken(userId);
+  const { data: signed } = await axios.get(
+    `${APS_BASE}/oss/v2/buckets/${bucketKey}/objects/${objectKey}/signeds3upload`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  const uploadUrl = signed?.urls?.[0];
+  if (!uploadUrl) throw new Error('No signed upload URL returned');
+
+  await axios.put(uploadUrl, fileBuffer, { headers: { 'Content-Type': 'application/octet-stream' } });
+
+  await axios.post(
+    `${APS_BASE}/oss/v2/buckets/${bucketKey}/objects/${objectKey}/signeds3upload`,
+    { uploadKey: signed.uploadKey },
+    { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+  );
+}
+
+/**
+ * Step 4: attach the uploaded file to an issue. NOTE the base path:
+ * `issues/v1`, not `construction/issues/v1` like every other Issues API
+ * call in this file — confirmed from the official tutorial.
+ */
+async function _attachToIssue(userId, project, issueId, displayName, objectKey, storageUrn, fileSize, fileType) {
+  const token = await getValidAccToken(userId);
+  const attachmentId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
+  const body = {
+    domainEntityId: issueId,
+    attachments: [
+      {
+        attachmentId,
+        displayName,
+        fileName: objectKey,
+        attachmentType: 'issue-attachment',
+        storageUrn,
+        fileSize,
+        fileType,
+      },
+    ],
+  };
+  const { data } = await axios.post(`${APS_BASE}/issues/v1/projects/${project.acc_project_id}/attachments`, body, {
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+  });
+  return data;
+}
+
+/**
+ * Full pipeline: downloads an image from a URL (e.g. Revizto's preview
+ * image) and attaches it to an ACC issue. Orchestrates all 4 steps above.
+ */
+async function attachImageToIssue(userId, project, issueId, imageUrl, displayName) {
+  const imageResponse = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+  const fileBuffer = Buffer.from(imageResponse.data);
+  const fileType = (imageResponse.headers['content-type'] || 'image/jpeg').split('/').pop();
+  const fileName = displayName.includes('.') ? displayName : `${displayName}.${fileType}`;
+
+  const folderId = await _getProjectRootFolderId(userId, project);
+  if (!folderId) throw new Error('Could not determine project root folder for attachment upload');
+
+  const { bucketKey, objectKey, storageUrn } = await _createStorage(userId, project, folderId, fileName);
+  await _uploadFileBytes(userId, bucketKey, objectKey, fileBuffer);
+  return _attachToIssue(userId, project, issueId, fileName, objectKey, storageUrn, fileBuffer.length, fileType);
+}
+
 module.exports = {
   getIssues,
   getIssue,
@@ -216,4 +336,5 @@ module.exports = {
   deleteWebhook,
   getHubs,
   getHubProjects,
+  attachImageToIssue,
 };

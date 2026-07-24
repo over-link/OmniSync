@@ -136,6 +136,7 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
   }
 
   await _pushLatestCommentToAcc(userId, project, reviztoIssue, accIssueId);
+  await _pushMarkupImageToAcc(userId, project, reviztoIssue, accIssueId);
 
   return existingAccId ? { action: 'updated', accIssue: { id: accIssueId } } : { action: 'created', accIssue: { id: accIssueId } };
 }
@@ -150,6 +151,40 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
  * confirmed from real GET response data — check if pushed comments show
  * up blank/garbled.
  */
+/**
+ * Uploads the Revizto issue's largest preview image (a rendered snapshot
+ * of the markup, not editable vector data — no cross-platform editable
+ * markup is feasible between two different systems) as an attachment on
+ * the linked ACC issue. Only uploads once per issue (tracked via
+ * sync_map.markup_uploaded), not on every re-sync.
+ *
+ * UNCONFIRMED / HIGHER RISK than most of this app: the attachment upload
+ * pipeline (accService.attachImageToIssue) is built from an official
+ * Autodesk tutorial but has not been tested end-to-end. Wrapped in
+ * try/catch so a failure here doesn't take down the rest of the push —
+ * check server logs for the real error if this doesn't work on first try.
+ */
+async function _pushMarkupImageToAcc(userId, project, reviztoIssue, accIssueId) {
+  try {
+    const { rows } = await pool.query('SELECT markup_uploaded FROM sync_map WHERE project_id = $1 AND revizto_issue_id = $2', [
+      project.id,
+      String(reviztoIssue.id),
+    ]);
+    if (rows[0]?.markup_uploaded) return; // already uploaded
+
+    const previewUrl = reviztoIssue.preview?.large;
+    if (!previewUrl) return; // issue has no markup preview
+
+    await accService.attachImageToIssue(userId, project, accIssueId, previewUrl, `Revizto Issue ${reviztoIssue.id} Markup`);
+    await pool.query('UPDATE sync_map SET markup_uploaded = true WHERE project_id = $1 AND revizto_issue_id = $2', [
+      project.id,
+      String(reviztoIssue.id),
+    ]);
+  } catch (err) {
+    console.warn(`[sync] Could not upload markup image for issue ${reviztoIssue.id} (skipping):`, err.response?.data || err.message);
+  }
+}
+
 async function _pushLatestCommentToAcc(userId, project, reviztoIssue, accIssueId) {
   if (!project.revizto_project_id) {
     console.warn(`[sync] Project "${project.name}" has no numeric revizto_project_id set — skipping comment sync. Set it on the Setup page.`);

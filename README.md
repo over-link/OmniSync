@@ -191,6 +191,37 @@ a status name within that set. Falls back to a project-wide name match
 if the type/workflow lookup doesn't resolve (e.g. issue has no type set),
 rather than refusing outright.
 
+## Markup image upload (Revizto → ACC, higher risk than most)
+
+Uploads the Revizto issue's largest preview image (`preview.large` —
+confirmed real field, a rendered snapshot of the markup) as a file
+attachment on the linked ACC issue. **Not** editable vector markup —
+that's not feasible between two different platforms with different
+coordinate systems/viewers; this is a picture, viewable in ACC, showing
+exactly what was marked up in Revizto. Uploads once per issue (tracked
+via `sync_map.markup_uploaded`), not on every re-sync.
+
+There's no "pinned/hero image at the top of an issue" concept found in
+ACC's API — the closest achievable approximation is being the first
+attachment uploaded, not a distinct pinned-preview feature.
+
+**Genuinely higher risk than the rest of this app**: the 4-step upload
+pipeline (`accService.attachImageToIssue`) is built from Autodesk's own
+official tutorial (get-started.aps.autodesk.com/tutorials/acc-issues/more)
+— a real, first-party source, not a guess — but has **not been tested
+end-to-end**. Worth knowing: a developer publicly hit a 409 error
+attempting this using the *wrong* base path (`construction/issues/v1`
+instead of the documented `issues/v1` — a completely different prefix
+than every other Issues endpoint in this app uses); our implementation
+uses the documented correct path, but that alone doesn't guarantee every
+other step (folder lookup, storage creation body schema, signed-upload
+finalize step) works exactly as expected on first try. Wrapped in
+try/catch so a failure here doesn't take down the rest of an issue's
+sync — check server logs for the real error if it doesn't work.
+
+**Migration needed**: `sync_map.markup_uploaded` (idempotent
+`ALTER TABLE`). Run `npm run migrate`.
+
 ## Comment sync (latest comment only, both directions)
 
 Symmetric with... actually not fully symmetric anymore, see below:

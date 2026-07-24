@@ -141,6 +141,11 @@ ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_pushed_comment_uuid TEXT;
 -- comment-specific).
 ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_pulled_acc_comment_id TEXT;
 
+-- Tracks whether the Revizto markup preview image has already been
+-- attached to the linked ACC issue, so it doesn't re-upload the same
+-- image every 2-minute cycle.
+ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS markup_uploaded BOOLEAN NOT NULL DEFAULT false;
+
 -- Admin-configured status mapping, per project. Falls back to the
 -- hardcoded default mapping in reviztoService.mapStatusToAcc when no
 -- row exists for a given Revizto status (so existing projects don't
