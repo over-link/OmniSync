@@ -312,12 +312,33 @@ async function attachImageToIssue(userId, project, issueId, imageUrl, displayNam
   const fileType = (imageResponse.headers['content-type'] || 'image/jpeg').split('/').pop();
   const fileName = displayName.includes('.') ? displayName : `${displayName}.${fileType}`;
 
-  const folderId = await _getProjectRootFolderId(userId, project);
-  if (!folderId) throw new Error('Could not determine project root folder for attachment upload');
+  let folderId;
+  try {
+    folderId = await _getProjectRootFolderId(userId, project);
+  } catch (err) {
+    throw new Error(`[step 1: get root folder] ${err.response?.data?.developerMessage || err.message}`);
+  }
+  if (!folderId) throw new Error('[step 1: get root folder] No folders returned for this project');
 
-  const { bucketKey, objectKey, storageUrn } = await _createStorage(userId, project, folderId, fileName);
-  await _uploadFileBytes(userId, bucketKey, objectKey, fileBuffer);
-  return _attachToIssue(userId, project, issueId, fileName, objectKey, storageUrn, fileBuffer.length, fileType);
+  let storageResult;
+  try {
+    storageResult = await _createStorage(userId, project, folderId, fileName);
+  } catch (err) {
+    throw new Error(`[step 2: create storage] ${err.response?.data?.developerMessage || err.message}`);
+  }
+  const { bucketKey, objectKey, storageUrn } = storageResult;
+
+  try {
+    await _uploadFileBytes(userId, bucketKey, objectKey, fileBuffer);
+  } catch (err) {
+    throw new Error(`[step 3: upload bytes] ${err.response?.data?.developerMessage || err.message}`);
+  }
+
+  try {
+    return await _attachToIssue(userId, project, issueId, fileName, objectKey, storageUrn, fileBuffer.length, fileType);
+  } catch (err) {
+    throw new Error(`[step 4: attach to issue] ${err.response?.data?.developerMessage || err.message}`);
+  }
 }
 
 module.exports = {

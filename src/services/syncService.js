@@ -181,7 +181,7 @@ async function _pushMarkupImageToAcc(userId, project, reviztoIssue, accIssueId) 
       String(reviztoIssue.id),
     ]);
   } catch (err) {
-    console.warn(`[sync] Could not upload markup image for issue ${reviztoIssue.id} (skipping):`, err.response?.data || err.message);
+    console.warn(`[sync] Could not upload markup image for issue ${reviztoIssue.id} (skipping):`, err.message);
   }
 }
 
