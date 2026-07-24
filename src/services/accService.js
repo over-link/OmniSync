@@ -296,7 +296,7 @@ async function _attachToIssue(userId, project, issueId, displayName, objectKey, 
       },
     ],
   };
-  const { data } = await axios.post(`${APS_BASE}/issues/v1/projects/${project.acc_project_id}/attachments`, body, {
+  const { data } = await axios.post(`${APS_BASE}/issues/v1/projects/${_containerId(project)}/attachments`, body, {
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
   });
   return data;
