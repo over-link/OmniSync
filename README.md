@@ -191,36 +191,47 @@ a status name within that set. Falls back to a project-wide name match
 if the type/workflow lookup doesn't resolve (e.g. issue has no type set),
 rather than refusing outright.
 
-## Markup image upload (Revizto → ACC, higher risk than most)
+## Markup image upload (Revizto → ACC) — confirmed working
 
-Uploads the Revizto issue's largest preview image (`preview.large` —
-confirmed real field, a rendered snapshot of the markup) as a file
-attachment on the linked ACC issue. **Not** editable vector markup —
-that's not feasible between two different platforms with different
-coordinate systems/viewers; this is a picture, viewable in ACC, showing
-exactly what was marked up in Revizto. Uploads once per issue (tracked
-via `sync_map.markup_uploaded`), not on every re-sync.
+Uploads the actual **markup image with drawings** as a file attachment on
+the linked ACC issue — not the issue's own top-level `preview` field
+(which is confirmed from real docs to be just the base viewpoint, no
+annotations). The real drawings-included image lives on Revizto's
+**"Markup update" comment type** specifically — confirmed from real docs,
+its `preview` field is explicitly described as including "all drawings
+that were added to it," unlike the issue-level `preview`. Falls back to
+the issue-level preview only if no markup comment exists yet, so
+something still gets attached rather than nothing.
+
+Tracked by the markup comment's own UUID (`sync_map.last_markup_comment_uuid`),
+not a one-time boolean — markup can be redrawn/updated over time, each
+update creates a new "markup" comment, and this re-checks for a newer one
+each sync cycle so the ACC attachment stays current rather than freezing
+at whatever was drawn first.
 
 There's no "pinned/hero image at the top of an issue" concept found in
 ACC's API — the closest achievable approximation is being the first
 attachment uploaded, not a distinct pinned-preview feature.
 
-**Genuinely higher risk than the rest of this app**: the 4-step upload
-pipeline (`accService.attachImageToIssue`) is built from Autodesk's own
-official tutorial (get-started.aps.autodesk.com/tutorials/acc-issues/more)
-— a real, first-party source, not a guess — but has **not been tested
-end-to-end**. Worth knowing: a developer publicly hit a 409 error
-attempting this using the *wrong* base path (`construction/issues/v1`
-instead of the documented `issues/v1` — a completely different prefix
-than every other Issues endpoint in this app uses); our implementation
-uses the documented correct path, but that alone doesn't guarantee every
-other step (folder lookup, storage creation body schema, signed-upload
-finalize step) works exactly as expected on first try. Wrapped in
-try/catch so a failure here doesn't take down the rest of an issue's
-sync — check server logs for the real error if it doesn't work.
+**Two real bugs found and fixed during testing, both worth knowing about
+if this ever needs revisiting:**
+1. The official Autodesk tutorial this was built from documents the
+   endpoint under `issues/v1/projects/{id}/attachments` — but that path
+   consistently returned "resource does not exist" (a 404-style error
+   suggesting the whole route wasn't available on this account, possibly
+   because the tutorial is filed under "Forma Issues (beta)" — a
+   different/beta product surface). The actual working path for this
+   project is `construction/issues/v1/projects/{id}/attachments` —
+   consistent with every other Issues API call in this file.
+2. The request body must **not** include `fileSize` or `fileType` —
+   Autodesk's own docs example for the *GET* response includes them, but
+   the *creation* payload schema rejects them outright
+   (`"body.attachments[0].fileSize" is not allowed"`). Confirmed by
+   testing, not guessed.
 
-**Migration needed**: `sync_map.markup_uploaded` (idempotent
-`ALTER TABLE`). Run `npm run migrate`.
+**Migration needed**: `sync_map.markup_uploaded`,
+`sync_map.last_markup_comment_uuid` (idempotent `ALTER TABLE`). Run
+`npm run migrate`.
 
 ## Comment sync (latest comment only, both directions)
 

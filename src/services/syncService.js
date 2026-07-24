@@ -166,19 +166,43 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
  */
 async function _pushMarkupImageToAcc(userId, project, reviztoIssue, accIssueId) {
   try {
-    const { rows } = await pool.query('SELECT markup_uploaded FROM sync_map WHERE project_id = $1 AND revizto_issue_id = $2', [
-      project.id,
-      String(reviztoIssue.id),
-    ]);
-    if (rows[0]?.markup_uploaded) return; // already uploaded
+    const { rows } = await pool.query(
+      'SELECT last_markup_comment_uuid FROM sync_map WHERE project_id = $1 AND revizto_issue_id = $2',
+      [project.id, String(reviztoIssue.id)]
+    );
 
-    const previewUrl = reviztoIssue.preview?.large;
-    if (!previewUrl) return; // issue has no markup preview
+    if (!project.revizto_project_id) return; // needed for the comments endpoint, same as text comment sync
+
+    // The markup COMMENT's preview includes actual drawings — confirmed
+    // from real docs ("includes all drawings that were added to it").
+    // The issue's own top-level `preview` field does NOT include
+    // drawings (just the base viewpoint) — only used here as a fallback
+    // for issues that have no markup comment yet, so we still attach
+    // something rather than nothing.
+    const markupComment = await reviztoService.getLatestMarkupComment(
+      userId,
+      project.revizto_region,
+      reviztoIssue.uuid,
+      project.revizto_project_id
+    );
+
+    let previewUrl, trackingId;
+    if (markupComment) {
+      if (markupComment.uuid === rows[0]?.last_markup_comment_uuid) return; // already uploaded this exact markup version
+      previewUrl = markupComment.preview?.original;
+      trackingId = markupComment.uuid;
+    } else {
+      if (rows[0]?.last_markup_comment_uuid) return; // already uploaded the fallback once; don't re-upload every cycle
+      previewUrl = reviztoIssue.preview?.large;
+      trackingId = 'fallback-issue-preview';
+    }
+    if (!previewUrl) return;
 
     await accService.attachImageToIssue(userId, project, accIssueId, previewUrl, `Revizto Issue ${reviztoIssue.id} Markup`);
-    await pool.query('UPDATE sync_map SET markup_uploaded = true WHERE project_id = $1 AND revizto_issue_id = $2', [
+    await pool.query('UPDATE sync_map SET last_markup_comment_uuid = $3 WHERE project_id = $1 AND revizto_issue_id = $2', [
       project.id,
       String(reviztoIssue.id),
+      trackingId,
     ]);
   } catch (err) {
     console.warn(`[sync] Could not upload markup image for issue ${reviztoIssue.id} (skipping):`, err.message);

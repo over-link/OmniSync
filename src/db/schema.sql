@@ -146,6 +146,12 @@ ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_pulled_acc_comment_id TEXT;
 -- image every 2-minute cycle.
 ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS markup_uploaded BOOLEAN NOT NULL DEFAULT false;
 
+-- Tracks WHICH markup comment we last uploaded (by UUID), not just
+-- whether we ever uploaded one — markup can be redrawn/updated over
+-- time, and each update is its own new "markup" comment, so this needs
+-- the same "latest wins, re-check each cycle" treatment as text comments.
+ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_markup_comment_uuid TEXT;
+
 -- Admin-configured status mapping, per project. Falls back to the
 -- hardcoded default mapping in reviztoService.mapStatusToAcc when no
 -- row exists for a given Revizto status (so existing projects don't

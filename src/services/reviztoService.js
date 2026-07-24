@@ -290,6 +290,22 @@ async function getIssueComments(userId, region, issueUuid, projectId, date = '20
  * comments at all). Non-text comments are skipped rather than pushed as
  * garbled text to ACC.
  */
+/**
+ * Returns the single most recent MARKUP UPDATE comment on an issue, or
+ * null if there isn't one. Confirmed from real docs: this comment type's
+ * `preview` field is a DIFFERENT image than the issue's own top-level
+ * `preview` — this one "includes all drawings that were added to it,"
+ * while the issue-level preview is just the base viewpoint with no
+ * annotations. This is the one we actually want for markup sync.
+ */
+async function getLatestMarkupComment(userId, region, issueUuid, projectId) {
+  const comments = await getIssueComments(userId, region, issueUuid, projectId);
+  for (let i = comments.length - 1; i >= 0; i--) {
+    if (comments[i].type === 'markup') return comments[i];
+  }
+  return null;
+}
+
 async function getLatestTextComment(userId, region, issueUuid, projectId) {
   const comments = await getIssueComments(userId, region, issueUuid, projectId);
   for (let i = comments.length - 1; i >= 0; i--) {
@@ -585,6 +601,7 @@ module.exports = {
   buildStampOptions,
   getIssueComments,
   getLatestTextComment,
+  getLatestMarkupComment,
   toAccIssue,
   mapStatusFromAcc,
   mapStatusToAcc,
