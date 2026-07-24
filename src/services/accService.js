@@ -276,7 +276,7 @@ async function _uploadFileBytes(userId, bucketKey, objectKey, fileBuffer) {
  * `issues/v1`, not `construction/issues/v1` like every other Issues API
  * call in this file — confirmed from the official tutorial.
  */
-async function _attachToIssue(userId, project, issueId, displayName, objectKey, storageUrn, fileSize, fileType) {
+async function _attachToIssue(userId, project, issueId, displayName, objectKey, storageUrn) {
   const token = await getValidAccToken(userId);
   const attachmentId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;
@@ -291,8 +291,6 @@ async function _attachToIssue(userId, project, issueId, displayName, objectKey, 
         fileName: objectKey,
         attachmentType: 'issue-attachment',
         storageUrn,
-        fileSize,
-        fileType,
       },
     ],
   };
@@ -338,7 +336,7 @@ async function attachImageToIssue(userId, project, issueId, imageUrl, displayNam
   }
 
   try {
-    return await _attachToIssue(userId, project, issueId, fileName, objectKey, storageUrn, fileBuffer.length, fileType);
+    return await _attachToIssue(userId, project, issueId, fileName, objectKey, storageUrn);
   } catch (err) {
     throw new Error(`[step 4: attach to issue] ${JSON.stringify(err.response?.data) || err.message}`);
   }
