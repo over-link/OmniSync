@@ -135,8 +135,28 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
     accIssueId = created.id;
   }
 
-  await _pushLatestCommentToAcc(userId, project, reviztoIssue, accIssueId);
-  await _pushMarkupImageToAcc(userId, project, reviztoIssue, accIssueId);
+  // Fetch comments ONCE and share between comment-push and markup-push —
+  // was calling this twice per issue per cycle before, which contributed
+  // to a real 429 rate-limit error hit during testing.
+  let sharedComments = null;
+  if (!project.revizto_project_id) {
+    console.warn(`[sync] Project "${project.name}" has no numeric revizto_project_id set — skipping comment/markup sync. Set it on the Setup page.`);
+  } else {
+    try {
+      sharedComments = await reviztoService.getIssueComments(
+        userId,
+        project.revizto_region,
+        reviztoIssue.uuid,
+        project.revizto_project_id
+      );
+    } catch (err) {
+      console.warn(`[sync] Could not fetch comments for issue ${reviztoIssue.id} (skipping comment/markup sync):`, err.message);
+    }
+  }
+  if (sharedComments) {
+    await _pushLatestCommentToAcc(userId, project, reviztoIssue, accIssueId, sharedComments);
+    await _pushMarkupImageToAcc(userId, project, reviztoIssue, accIssueId, sharedComments);
+  }
 
   return existingAccId ? { action: 'updated', accIssue: { id: accIssueId } } : { action: 'created', accIssue: { id: accIssueId } };
 }
@@ -164,14 +184,12 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
  * try/catch so a failure here doesn't take down the rest of the push —
  * check server logs for the real error if this doesn't work on first try.
  */
-async function _pushMarkupImageToAcc(userId, project, reviztoIssue, accIssueId) {
+async function _pushMarkupImageToAcc(userId, project, reviztoIssue, accIssueId, comments) {
   try {
     const { rows } = await pool.query(
       'SELECT last_markup_comment_uuid FROM sync_map WHERE project_id = $1 AND revizto_issue_id = $2',
       [project.id, String(reviztoIssue.id)]
     );
-
-    if (!project.revizto_project_id) return; // needed for the comments endpoint, same as text comment sync
 
     // The markup COMMENT's preview includes actual drawings — confirmed
     // from real docs ("includes all drawings that were added to it").
@@ -179,12 +197,7 @@ async function _pushMarkupImageToAcc(userId, project, reviztoIssue, accIssueId) 
     // drawings (just the base viewpoint) — only used here as a fallback
     // for issues that have no markup comment yet, so we still attach
     // something rather than nothing.
-    const markupComment = await reviztoService.getLatestMarkupComment(
-      userId,
-      project.revizto_region,
-      reviztoIssue.uuid,
-      project.revizto_project_id
-    );
+    const markupComment = reviztoService.findLatestMarkupComment(comments);
 
     let previewUrl, trackingId;
     if (markupComment) {
@@ -209,18 +222,9 @@ async function _pushMarkupImageToAcc(userId, project, reviztoIssue, accIssueId) 
   }
 }
 
-async function _pushLatestCommentToAcc(userId, project, reviztoIssue, accIssueId) {
-  if (!project.revizto_project_id) {
-    console.warn(`[sync] Project "${project.name}" has no numeric revizto_project_id set — skipping comment sync. Set it on the Setup page.`);
-    return;
-  }
+async function _pushLatestCommentToAcc(userId, project, reviztoIssue, accIssueId, comments) {
   try {
-    const latest = await reviztoService.getLatestTextComment(
-      userId,
-      project.revizto_region,
-      reviztoIssue.uuid,
-      project.revizto_project_id
-    );
+    const latest = reviztoService.findLatestTextComment(comments);
     if (!latest) return;
 
     const { rows } = await pool.query(

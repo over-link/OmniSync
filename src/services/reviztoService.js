@@ -298,16 +298,14 @@ async function getIssueComments(userId, region, issueUuid, projectId, date = '20
  * while the issue-level preview is just the base viewpoint with no
  * annotations. This is the one we actually want for markup sync.
  */
-async function getLatestMarkupComment(userId, region, issueUuid, projectId) {
-  const comments = await getIssueComments(userId, region, issueUuid, projectId);
+function findLatestMarkupComment(comments) {
   for (let i = comments.length - 1; i >= 0; i--) {
     if (comments[i].type === 'markup') return comments[i];
   }
   return null;
 }
 
-async function getLatestTextComment(userId, region, issueUuid, projectId) {
-  const comments = await getIssueComments(userId, region, issueUuid, projectId);
+function findLatestTextComment(comments) {
   for (let i = comments.length - 1; i >= 0; i--) {
     if (comments[i].type === 'text') return comments[i];
   }
@@ -600,8 +598,8 @@ module.exports = {
   buildStampTitleLookup,
   buildStampOptions,
   getIssueComments,
-  getLatestTextComment,
-  getLatestMarkupComment,
+  findLatestTextComment,
+  findLatestMarkupComment,
   toAccIssue,
   mapStatusFromAcc,
   mapStatusToAcc,
