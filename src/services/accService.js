@@ -122,6 +122,48 @@ async function getProjectMembers(userId, project) {
   return members;
 }
 
+// ─── Locations (Location Breakdown Structure) ───────────────────────
+
+/**
+ * GET .../construction/locations/v2/projects/{projectId}/trees/{treeId}/nodes
+ * — every node in the project's Location Breakdown Structure (the tree
+ * behind ACC's "Location" field on an issue, distinct from the free-text
+ * "Location Details" field). `treeId` is always "default" — a project can
+ * only have one tree. Confirmed path, params, and response shape
+ * (pagination/results/id/name/parentId) directly from Autodesk's own
+ * Locations API reference — but that reference's own example response
+ * shows the stripped (no "b." prefix) ID in a returned nextUrl, and
+ * passing the full acc_project_id here got a real "container is
+ * unprocessable" error back — confirms it wants the same stripped
+ * container ID as the Construction Issues API, despite docs text
+ * suggesting a Data-Management-style ID. Returns [] (not an error) if the
+ * project has no Locations tree configured — a 404 here just means
+ * "nothing to match against," not a real failure.
+ */
+async function getLocationNodes(userId, project) {
+  const token = await getValidAccToken(userId);
+  const containerId = _containerId(project);
+  const nodes = [];
+  let offset = 0;
+  const limit = 100;
+  try {
+    while (true) {
+      const { data } = await axios.get(
+        `${APS_BASE}/construction/locations/v2/projects/${containerId}/trees/default/nodes`,
+        { headers: { Authorization: `Bearer ${token}` }, params: { limit, offset } }
+      );
+      const results = data.results || [];
+      nodes.push(...results);
+      if (!results.length || nodes.length >= (data.pagination?.totalResults || 0)) break;
+      offset += limit;
+    }
+  } catch (err) {
+    if (err.response?.status === 404) return [];
+    throw err;
+  }
+  return nodes;
+}
+
 // ─── Webhooks ───────────────────────────────────────────────────────
 
 async function registerWebhook(userId, project, callbackUrl) {
@@ -349,6 +391,7 @@ module.exports = {
   getIssueComments,
   getIssueSubtypes,
   getProjectMembers,
+  getLocationNodes,
   registerWebhook,
   getWebhookStatus,
   listWebhooks,

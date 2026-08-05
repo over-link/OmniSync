@@ -87,6 +87,42 @@ async function makeAssigneeResolver(userId, project) {
   };
 }
 
+// ─── location resolution (Revizto level name -> ACC location node ID) ─
+
+/**
+ * Same lazy-fetch-once-then-cache-in-closure shape as makeAssigneeResolver:
+ * fetches the project's ACC Location Breakdown Structure at most once per
+ * push run, matches by node name (case-insensitive). A project with no
+ * Locations tree configured, or a level name with no matching node, just
+ * means locationId doesn't get set — not a failure of the push.
+ */
+async function makeLocationResolver(userId, project) {
+  let nodesByName = null;
+  return async (levelName) => {
+    if (!nodesByName) {
+      try {
+        const nodes = await accService.getLocationNodes(userId, project);
+        nodesByName = {};
+        for (const n of nodes) if (n.name) nodesByName[n.name.toLowerCase()] = n.id;
+        // Visible even on the success path, unlike most resolvers here —
+        // this lookup was never confirmed against real ACC data, so seeing
+        // "0 nodes" vs "12 nodes: Level 1, Level 2, ..." in the log is the
+        // fastest way to tell "no Locations tree configured" apart from
+        // "tree exists but names don't match" without guessing.
+        console.log(`[sync] ACC Locations for project "${project.name}": ${nodes.length} node(s)${nodes.length ? ' — ' + nodes.map((n) => n.name).join(', ') : ''}`);
+      } catch (err) {
+        console.warn('[sync] Could not look up ACC locations (skipping location mapping):', err.response?.data?.detail || err.message);
+        nodesByName = {};
+      }
+    }
+    const match = nodesByName[levelName.toLowerCase()] || null;
+    if (!match) {
+      console.warn(`[sync] No ACC location node matches Revizto level "${levelName}" for project "${project.name}".`);
+    }
+    return match;
+  };
+}
+
 // ─── Push: Revizto issue -> ACC (create or update) ────────────────────
 
 async function pushIssueToAcc(userId, project, reviztoIssue) {
@@ -115,6 +151,10 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
   // failing broadly, that's the first thing to check.
   const assigneeResolver = await makeAssigneeResolver(userId, project);
 
+  // Resolves Revizto's level name to an ACC location node ID, matching
+  // against the project's own configured Location Breakdown Structure.
+  const locationResolver = await makeLocationResolver(userId, project);
+
   const payload = await reviztoService.toAccIssue(reviztoIssue, {
     subtypeLookup,
     defaultSubtypeId: project.acc_default_subtype_id,
@@ -122,6 +162,7 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
     customTypeMap,
     reviztoStatusName,
     assigneeResolver,
+    locationResolver,
   });
 
   let accIssueId;

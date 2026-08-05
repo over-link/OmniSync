@@ -53,13 +53,19 @@ async function request(userId, region, method, url, options = {}) {
 
 // ─── Issues ───────────────────────────────────────────────────────
 
+// clashAndLocationFields (level/zone/room/area/etc.) is gated behind this
+// explicit flag — confirmed from real docs: NOT included by default even
+// with sendFullIssueData: true. Requested on every issue fetch since the
+// level/zone -> ACC mapping needs it unconditionally.
+const ADDITIONAL_FIELDS = ['appendClashAndLocationFields'];
+
 async function getIssues(userId, region, projectUuid, filters = {}) {
   const allIssues = [];
   let page = 0;
   let totalPages = 1;
   while (page < totalPages) {
     const response = await request(userId, region, 'POST', `/project/${projectUuid}/issue-filter/filter`, {
-      body: { page, limit: 100, sendFullIssueData: true, alwaysFiltersDTO: [], ...filters },
+      body: { page, limit: 100, sendFullIssueData: true, alwaysFiltersDTO: [], additionalFields: ADDITIONAL_FIELDS, ...filters },
     });
     const issues = response.data?.data || [];
     allIssues.push(...issues);
@@ -76,6 +82,7 @@ async function getIssue(userId, region, projectUuid, issueId) {
       limit: 1,
       sendFullIssueData: true,
       alwaysFiltersDTO: [{ type: 'id', expr: 1, value: [String(issueId)] }],
+      additionalFields: ADDITIONAL_FIELDS,
     },
   });
   const issues = response.data?.data || [];
@@ -523,13 +530,25 @@ function mapStatusFromAcc(accStatus) {
  * Build an ACC issue payload from a Revizto issue.
  * assigneeResolver: async (email) => autodeskId | null
  */
-async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, assigneeResolver, customStatusMap = null, customTypeMap = null, reviztoStatusName = null } = {}) {
+async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, assigneeResolver, locationResolver, customStatusMap = null, customTypeMap = null, reviztoStatusName = null } = {}) {
   const title = unwrap(reviztoIssue.title) || '(no title)';
   // Revizto issues have no description field of their own — this is a
   // fixed marker instead, so users can filter/identify synced issues in
   // ACC by description.
   const description = 'Synced from Revizto';
   const dueDate = formatDateForAcc(reviztoIssue.deadline);
+
+  // Confirmed from real Revizto docs: clashAndLocationFields.level/.zone
+  // are both array[string] — normally one entry, more than one only for a
+  // clash issue spanning multiple levels/zones. ACC's locationId is a
+  // single value (a reference into the project's own Location Breakdown
+  // Structure tree), not an array, so only the first level is used when
+  // an issue spans several. Only populated on the response if the request
+  // explicitly asks for it via additionalFields (see getIssues/getIssue).
+
+  const levels = reviztoIssue.clashAndLocationFields?.level || [];
+  const primaryLevel = levels[0] || null;
+  const zones = reviztoIssue.clashAndLocationFields?.zone || [];
 
   // Status comes from `customStatus` (a UUID resolved against the
   // project's workflow settings) — NOT `status`, which Revizto's own docs
@@ -554,6 +573,23 @@ async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, 
   // plausible cause of the "must be string" validation error seen on
   // issues without a due date set.
   if (dueDate) payload.dueDate = dueDate;
+
+  // locationResolver: async (levelName) => ACC location node ID | null —
+  // resolves by matching the level's name against the project's own
+  // Location Breakdown Structure (fetched by the caller, since that needs
+  // project/token context this function doesn't have). No match (no
+  // Locations tree configured, or no node with this name) just leaves
+  // locationId unset — locationDetails is reserved for zone, below, not
+  // used as a level fallback.
+  if (primaryLevel && locationResolver) {
+    const locationId = await locationResolver(primaryLevel);
+    if (locationId) payload.locationId = locationId;
+  }
+
+  // Zone -> ACC's locationDetails (free text) — kept separate from the
+  // level/locationId mapping above by design, so this field is reserved
+  // for zone specifically rather than doubling as a level fallback.
+  if (zones.length) payload.locationDetails = zones.join(', ');
 
   // assigneeResolver is really a generic (email) -> Autodesk user ID
   // resolver — reused here for both assignee (single) and watchers
