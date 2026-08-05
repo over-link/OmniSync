@@ -525,7 +525,10 @@ function mapStatusFromAcc(accStatus) {
  */
 async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, assigneeResolver, customStatusMap = null, customTypeMap = null, reviztoStatusName = null } = {}) {
   const title = unwrap(reviztoIssue.title) || '(no title)';
-  const description = unwrap(reviztoIssue.description) || '';
+  // Revizto issues have no description field of their own — this is a
+  // fixed marker instead, so users can filter/identify synced issues in
+  // ACC by description.
+  const description = 'Synced from Revizto';
   const dueDate = formatDateForAcc(reviztoIssue.deadline);
 
   // Status comes from `customStatus` (a UUID resolved against the
