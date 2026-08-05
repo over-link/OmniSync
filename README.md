@@ -113,6 +113,7 @@ suggested — this is the actual, verified shape now in use:
 | Stamp abbreviation | `stampAbbr` | **Not** `stamp` — that field doesn't exist on the real payload. This was an actual bug (empty stamp/stamp-category filters) until caught against real data. |
 | Stamp category | *(derived)* | Not a direct field — resolved by looking up `stampAbbr` against the project's stamp templates (`getStampPresets` + `buildStampCategoryLookup`). |
 | Assignee | `assignee.value` | Confirmed to be a bare email address, not a name. **Resolved to a display name** via `GET /license/{licenseUuid}/team` (the license's member list, which includes `fullname`) — uses the *viewing user's own* saved license as the context, assuming the project was set up under that same license (true for the normal setup flow). Falls back to showing the raw email if the person isn't found in that license's member list (e.g. assigned but not a member, or genuinely a different license). |
+| Level / zone / room / area / grid | `clashAndLocationFields.level` / `.zone` / etc. | `array[string]`. **Not returned by default** — even with `sendFullIssueData: true`, this object comes back `undefined` unless the request also includes `additionalFields: ['appendClashAndLocationFields']`. Confirmed by testing: the field is genuinely documented under this same `issue-filter/filter` endpoint, just gated behind that extra param. |
 
 **Lesson learned twice over on this feature**: a docs *example* (like the
 stamp-template response) doesn't guarantee the same field behaves
@@ -274,7 +275,33 @@ projects`, or ask your Revizto contact) and save it there once.
 `sync_map.last_pulled_acc_comment_id` (idempotent `ALTER TABLE`). Run
 `npm run migrate`.
 
-## Field mapping (status & issue type)
+## Field mapping — what's automatic vs. what's admin-configurable
+
+Two different mechanisms, don't confuse them:
+
+- **Automatic** — always applied on every push, no setup required. Either
+  there's nothing to configure (direct copy) or the mapping is resolved
+  live against real data (e.g. matching a name against a live list) rather
+  than a stored table.
+- **Admin-configurable (manual)** — an admin picks the mapping on `/setup`
+  per project; it's stored in the database and takes priority over a
+  hardcoded fallback used when nothing's configured yet.
+
+| Revizto field | ACC field | Direction | How it's mapped |
+|---|---|---|---|
+| `title` | `title` | Revizto → ACC | Automatic — direct copy |
+| *(none — Revizto has no description field)* | `description` | Revizto → ACC | Automatic — fixed marker `"Synced from Revizto"`, so issues are filterable in ACC by description |
+| `customStatusName` | `status` | Both | **Admin-configurable** (Setup page) — falls back to a hardcoded default map (`reviztoService.mapStatusToAcc`) when unset |
+| `stampAbbr` (shown as "Category > Stamp Title") | `issueSubtypeId` (issue type) | Revizto → ACC | **Admin-configurable** (Setup page) — falls back to keyword-matching the title, then the project's default subtype |
+| `clashAndLocationFields.level` | `locationId` | Revizto → ACC | Automatic — matched by name against the ACC project's own Location Breakdown Structure (live lookup, nothing stored); no match just leaves it unset |
+| `clashAndLocationFields.zone` | `locationDetails` | Revizto → ACC | Automatic — free text, always written when a zone is set (kept separate from level so it isn't used as a location fallback) |
+| `deadline` | `dueDate` | Revizto → ACC | Automatic — direct copy (formatted), omitted entirely if unset |
+| `assignee` (email) | `assignedTo` | Both | Automatic — resolved via ACC's project members list, with an optional manual per-project override (`user_map` table, not exposed in the UI yet) |
+| `watchers` (emails) | `watchers` | Both | Same resolution as assignee, just an array |
+| latest text comment | comment | Both | Automatic — only the single latest comment, not full history |
+| markup preview image (with drawings) | attachment | Revizto → ACC | Automatic — only the latest markup version, uploaded once per version |
+
+### Status & issue type — the admin-configurable ones
 
 On `/setup`, pick a project to configure how Revizto's statuses/types map
 to ACC's. Admin-only, same as the rest of project setup.
@@ -298,6 +325,33 @@ breaking projects that haven't touched it yet.
 **Migration needed**: two new tables, `status_map` and `type_map` (plain
 `CREATE TABLE IF NOT EXISTS`, no `ALTER` needed since they're brand new).
 Run `npm run migrate`.
+
+### Level & zone — the automatic ones
+
+**Level → ACC's Location field (`locationId`)**: resolved by matching the
+Revizto issue's level name against the ACC project's own configured
+Location Breakdown Structure (fetched live via `GET
+construction/locations/v2/projects/{id}/trees/default/nodes`, matched
+case-insensitively by node name) — no admin setup, and nothing stored
+locally. If the ACC project has no Locations tree configured, or no node's
+name matches, `locationId` is simply left unset for that push rather than
+failing it.
+
+**Zone → ACC's Location Details field (`locationDetails`)**: always written
+as plain text when the Revizto issue has a zone set. Deliberately kept
+separate from the level/`locationId` mapping above — `locationDetails`
+isn't used as a fallback when level has no matching location node, so it
+stays reserved for zone specifically.
+
+Both pull from Revizto's `clashAndLocationFields` object — **only present
+on the response if explicitly requested**: confirmed from real testing
+that `additionalFields: ['appendClashAndLocationFields']` must be passed
+on `issue-filter/filter`, since `sendFullIssueData: true` alone does not
+include it (a real bug hit and fixed while building this — see
+`reviztoService.getIssues`/`getIssue`).
+
+No migration needed — this reads live from both systems on every push,
+nothing new is stored in the database.
 
 ## Syncing issues (updated model)
 
