@@ -383,8 +383,12 @@ async function _pushLatestCommentToAcc(userId, project, reviztoIssue, accIssueId
     // WE pushed ACC->Revizto becomes this issue's new "latest text
     // comment," which would otherwise look like a genuine new Revizto
     // comment and get pushed right back to ACC. Mark it seen without
-    // re-pushing.
-    if ((latest.text || '').includes('- synced from ACC')) {
+    // re-pushing. Also covers the auto-posted "Deadline changed via ACC
+    // sync" comment (see handleAccWebhook) — deliberately kept as its own
+    // exact phrase, not tagged with "- synced from ACC", so it stays
+    // readable in Revizto; this second check is what keeps it a one-time
+    // post instead of also getting echoed back into ACC.
+    if ((latest.text || '').includes('- synced from ACC') || latest.text === 'Deadline changed via ACC sync') {
       await pool.query(
         'UPDATE sync_map SET last_pushed_comment_uuid = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
         [project.id, String(reviztoIssue.id), latest.uuid]
@@ -596,6 +600,41 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
     }
   } catch (err) {
     console.warn('[webhook] Could not sync priority back to Revizto (skipping):', err.response?.data?.message || err.message);
+  }
+
+  // Due date (ACC's dueDate -> Revizto's deadline), the reverse of the
+  // Revizto->ACC direction (reviztoService.formatDateForAcc). UNCONFIRMED:
+  // assumes accIssue.dueDate on the GET response is the same date-only
+  // string format used when writing it (never independently confirmed for
+  // GET specifically — same category of assumption as the ACC comments
+  // GET shape, flagged elsewhere in this file). Wrapped separately so a
+  // failure here doesn't block status/assignee/priority above.
+  try {
+    if (accIssue.dueDate) {
+      // updateIssueDeadline returns null on a no-op (date unchanged) — only
+      // post the explanatory comment when a real change was made, not on
+      // every webhook delivery where the date happens to already match.
+      const changed = await reviztoService.updateIssueDeadline(
+        userId,
+        project.revizto_region,
+        project.revizto_project_uuid,
+        reviztoIssueId,
+        accIssue.dueDate,
+        reporterEmail
+      );
+      if (changed) {
+        await reviztoService.addComment(
+          userId,
+          project.revizto_region,
+          project.revizto_project_uuid,
+          reviztoIssueId,
+          'Deadline changed via ACC sync',
+          reporterEmail
+        );
+      }
+    }
+  } catch (err) {
+    console.warn('[webhook] Could not sync due date back to Revizto (skipping):', err.response?.data?.message || err.message);
   }
 
   // Comment pulling from ACC happens via pollAccCommentsForProject (see

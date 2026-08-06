@@ -234,6 +234,25 @@ async function updateIssuePriority(userId, region, projectUuid, issueId, newPrio
   return _postDiffComment(userId, region, projectUuid, issue.uuid, { priority: { old: oldPriority, new: newPriority } }, reporterEmail);
 }
 
+/**
+ * Updates an issue's deadline (due date) — ACC -> Revizto direction. Same
+ * UNCONFIRMED caveat as priority/assignee/watchers — extrapolated diff
+ * pattern, not confirmed against real Revizto write docs. ACC's dueDate is
+ * date-only (no time component); Revizto's raw deadline is a full
+ * datetime string ("YYYY-MM-DD HH:MM:SS", confirmed format from real data
+ * elsewhere in this file) — appended as midnight when writing back. The
+ * no-op check compares only the date portion, so a same-day value with a
+ * different time-of-day isn't mistaken for a real change.
+ */
+async function updateIssueDeadline(userId, region, projectUuid, issueId, newDueDate, reporterEmail) {
+  const issue = await getIssue(userId, region, projectUuid, issueId);
+  const oldDeadline = unwrap(issue.deadline) || null;
+  const oldDatePart = oldDeadline ? oldDeadline.slice(0, 10) : null;
+  if (oldDatePart === newDueDate) return null; // no-op, already this date
+  const newDeadline = `${newDueDate} 00:00:00`;
+  return _postDiffComment(userId, region, projectUuid, issue.uuid, { deadline: { old: oldDeadline, new: newDeadline } }, reporterEmail);
+}
+
 async function addComment(userId, region, projectUuid, issueId, text, reporterEmail) {
   const issue = await getIssue(userId, region, projectUuid, issueId);
   const commentUuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
@@ -702,6 +721,7 @@ module.exports = {
   updateIssueAssignee,
   updateIssueWatchers,
   updateIssuePriority,
+  updateIssueDeadline,
   addComment,
   getProjects,
   getLicenses,
