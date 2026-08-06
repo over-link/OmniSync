@@ -866,27 +866,15 @@ async function pollAccAttachmentsForProject(userId, project, reporterEmail) {
       console.log(`[poll] [step 1 done] downloaded ${buffer.length} bytes, contentType=${contentType}`);
 
       const fileName = displayName || `attachment-${latestId}`;
-      const isImage = /\.(png|jpe?g)$/i.test(fileName) || /^image\/(png|jpe?g)$/i.test(contentType);
 
-      // Images go over as BOTH a markup update (thumbnail in the feed —
-      // confirmed working) AND a plain file attachment (the real,
-      // downloadable original) — a markup-only upload doesn't become the
-      // large image shown in Revizto's markup editor, so this covers both
-      // "shows a thumbnail" and "the actual file is attached."
-      console.log(`[poll] [step 2: upload to Revizto] "${fileName}" for Revizto issue #${row.revizto_issue_id}${isImage ? ' (markup + file)' : ' (file)'}`);
+      // Single plain file attachment for everything, images included — a
+      // markup-type upload was tried and confirmed working at the API
+      // level, but it landed as a broken reference in Revizto's UI
+      // (clicking the thumbnail said "selected issue does not have a
+      // screenshot") rather than a clean, openable image. A plain file
+      // attachment is a single real object with no such gap.
+      console.log(`[poll] [step 2: upload to Revizto] "${fileName}" for Revizto issue #${row.revizto_issue_id} (file)`);
       try {
-        if (isImage) {
-          await reviztoService.addAttachment(
-            userId,
-            project.revizto_region,
-            project.revizto_project_uuid,
-            row.revizto_issue_id,
-            buffer,
-            fileName,
-            reporterEmail,
-            { asMarkup: true }
-          );
-        }
         await reviztoService.addAttachment(
           userId,
           project.revizto_region,
