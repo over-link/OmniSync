@@ -282,6 +282,8 @@ async function addComment(userId, region, projectUuid, issueId, text, reporterEm
   return data;
 }
 
+const _MIME_BY_EXT = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', pdf: 'application/pdf' };
+
 /**
  * Uploads a file to a Revizto issue — either as a real markup update
  * (asMarkup: true, image files only — Revizto's own docs confirm only
@@ -291,7 +293,11 @@ async function addComment(userId, region, projectUuid, issueId, text, reporterEm
  * multipart/form-data with the file's bytes in a `file_<commentUuid>`
  * field alongside the comments JSON array. For a markup update, `markup`
  * must be present (even if empty) to indicate no drawings were added on
- * top of the new image.
+ * top of the new image — real testing got a bare 500 from Revizto's
+ * server with `markup: ''`, so trying `null` instead as a different
+ * reading of "an empty field." Also now sets the multipart file part's
+ * Content-Type explicitly by extension, instead of relying on form-data's
+ * auto-detection from the filename.
  */
 async function addAttachment(userId, region, projectUuid, issueId, fileBuffer, fileName, reporterEmail, { asMarkup = false } = {}) {
   const issue = await getIssue(userId, region, projectUuid, issueId);
@@ -300,14 +306,19 @@ async function addAttachment(userId, region, projectUuid, issueId, fileBuffer, f
     return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
   });
   const commentEntry = asMarkup
-    ? { type: 'markup', uuid: commentUuid, reporter: reporterEmail, markup: '' }
+    ? { type: 'markup', uuid: commentUuid, reporter: reporterEmail, markup: null }
     : { type: 'file', uuid: commentUuid, reporter: reporterEmail };
+
+  const ext = (fileName.split('.').pop() || '').toLowerCase();
+  const contentType = _MIME_BY_EXT[ext] || 'application/octet-stream';
 
   const form = new FormData();
   form.append('projectUuid', projectUuid);
   form.append('issueUuid', issue.uuid);
   form.append('comments', JSON.stringify([commentEntry]));
-  form.append(`file_${commentUuid}`, fileBuffer, { filename: fileName });
+  form.append(`file_${commentUuid}`, fileBuffer, { filename: fileName, contentType });
+
+  console.log(`[revizto] addAttachment: ${JSON.stringify(commentEntry)}, file "${fileName}" (${contentType}), ${fileBuffer.length} bytes`);
 
   const token = await getValidReviztoToken(userId);
   const { data } = await axios.post(`${baseUrl(region)}/comment/add`, form, {
