@@ -868,8 +868,25 @@ async function pollAccAttachmentsForProject(userId, project, reporterEmail) {
       const fileName = displayName || `attachment-${latestId}`;
       const isImage = /\.(png|jpe?g)$/i.test(fileName) || /^image\/(png|jpe?g)$/i.test(contentType);
 
-      console.log(`[poll] [step 2: upload to Revizto] "${fileName}" as ${isImage ? 'markup' : 'file'} for Revizto issue #${row.revizto_issue_id}`);
+      // Images go over as BOTH a markup update (thumbnail in the feed —
+      // confirmed working) AND a plain file attachment (the real,
+      // downloadable original) — a markup-only upload doesn't become the
+      // large image shown in Revizto's markup editor, so this covers both
+      // "shows a thumbnail" and "the actual file is attached."
+      console.log(`[poll] [step 2: upload to Revizto] "${fileName}" for Revizto issue #${row.revizto_issue_id}${isImage ? ' (markup + file)' : ' (file)'}`);
       try {
+        if (isImage) {
+          await reviztoService.addAttachment(
+            userId,
+            project.revizto_region,
+            project.revizto_project_uuid,
+            row.revizto_issue_id,
+            buffer,
+            fileName,
+            reporterEmail,
+            { asMarkup: true }
+          );
+        }
         await reviztoService.addAttachment(
           userId,
           project.revizto_region,
@@ -878,7 +895,7 @@ async function pollAccAttachmentsForProject(userId, project, reporterEmail) {
           buffer,
           fileName,
           reporterEmail,
-          { asMarkup: isImage }
+          { asMarkup: false }
         );
       } catch (err) {
         throw new Error(`[step 2: upload to Revizto] status ${err.response?.status}: ${JSON.stringify(err.response?.data) || err.message}`);

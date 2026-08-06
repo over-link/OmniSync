@@ -294,12 +294,16 @@ const _MIME_BY_EXT = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', 
  * field alongside the comments JSON array. For a markup update, `markup`
  * is a REQUIRED array[string] field — confirmed from Revizto's own
  * "Markup update" comment schema: "For the method to work correctly,
- * provide an empty array." Earlier attempts used `''` (500 error) then
- * `null` (no error, but landed as a plain feed thumbnail rather than
- * replacing the issue's actual displayed markup) — neither is the
- * documented type. Also sets the multipart file part's Content-Type
- * explicitly by extension, instead of relying on form-data's
- * auto-detection from the filename.
+ * provide an empty array."
+ *
+ * Confirmed by real testing: this correctly creates a markup-type comment
+ * with a visible thumbnail in the issue's feed, but does NOT make the
+ * image become the large image shown in Revizto's markup editor — that
+ * likely requires actual viewpoint/pin data only created when a person
+ * draws directly in Revizto's own client, not reachable via this
+ * endpoint. By design (see pollAccAttachmentsForProject), an image is
+ * pushed as BOTH a markup update (thumbnail in the feed) AND a plain file
+ * attachment (the real, downloadable original) — not one or the other.
  */
 async function addAttachment(userId, region, projectUuid, issueId, fileBuffer, fileName, reporterEmail, { asMarkup = false } = {}) {
   const issue = await getIssue(userId, region, projectUuid, issueId);
@@ -307,20 +311,19 @@ async function addAttachment(userId, region, projectUuid, issueId, fileBuffer, f
     const r = (Math.random() * 16) | 0;
     return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
   });
+  const ext = (fileName.split('.').pop() || '').toLowerCase();
+  const mime = _MIME_BY_EXT[ext] || 'application/octet-stream';
   const commentEntry = asMarkup
     ? { type: 'markup', uuid: commentUuid, reporter: reporterEmail, markup: [] }
     : { type: 'file', uuid: commentUuid, reporter: reporterEmail };
-
-  const ext = (fileName.split('.').pop() || '').toLowerCase();
-  const contentType = _MIME_BY_EXT[ext] || 'application/octet-stream';
 
   const form = new FormData();
   form.append('projectUuid', projectUuid);
   form.append('issueUuid', issue.uuid);
   form.append('comments', JSON.stringify([commentEntry]));
-  form.append(`file_${commentUuid}`, fileBuffer, { filename: fileName, contentType });
+  form.append(`file_${commentUuid}`, fileBuffer, { filename: fileName, contentType: mime });
 
-  console.log(`[revizto] addAttachment: ${JSON.stringify(commentEntry)}, file "${fileName}" (${contentType}), ${fileBuffer.length} bytes`);
+  console.log(`[revizto] addAttachment: ${JSON.stringify(commentEntry)}, file "${fileName}" (${mime}), ${fileBuffer.length} bytes`);
 
   const token = await getValidReviztoToken(userId);
   const { data } = await axios.post(`${baseUrl(region)}/comment/add`, form, {
