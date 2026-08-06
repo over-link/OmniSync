@@ -852,28 +852,54 @@ async function pollAccAttachmentsForProject(userId, project, reporterEmail) {
         continue;
       }
 
-      const { buffer, contentType } = await accService.downloadAttachmentFile(userId, latest.storageUrn);
+      // TEMP DEBUG: labeled steps so a failure pinpoints exactly which
+      // leg (ACC download, Revizto upload, or the follow-up comment)
+      // actually broke, instead of a bare "Internal Server Error" that
+      // could come from any of the three.
+      console.log(`[poll] [step 1: download] "${displayName}" from ACC for Revizto issue #${row.revizto_issue_id}`);
+      let buffer, contentType;
+      try {
+        ({ buffer, contentType } = await accService.downloadAttachmentFile(userId, latest.storageUrn));
+      } catch (err) {
+        throw new Error(`[step 1: download from ACC] status ${err.response?.status}: ${JSON.stringify(err.response?.data) || err.message}`);
+      }
+      console.log(`[poll] [step 1 done] downloaded ${buffer.length} bytes, contentType=${contentType}`);
+
       const fileName = displayName || `attachment-${latestId}`;
       const isImage = /\.(png|jpe?g)$/i.test(fileName) || /^image\/(png|jpe?g)$/i.test(contentType);
 
-      await reviztoService.addAttachment(
-        userId,
-        project.revizto_region,
-        project.revizto_project_uuid,
-        row.revizto_issue_id,
-        buffer,
-        fileName,
-        reporterEmail,
-        { asMarkup: isImage }
-      );
-      await reviztoService.addComment(
-        userId,
-        project.revizto_region,
-        project.revizto_project_uuid,
-        row.revizto_issue_id,
-        'Attachment added via ACC sync',
-        reporterEmail
-      );
+      console.log(`[poll] [step 2: upload to Revizto] "${fileName}" as ${isImage ? 'markup' : 'file'} for Revizto issue #${row.revizto_issue_id}`);
+      try {
+        await reviztoService.addAttachment(
+          userId,
+          project.revizto_region,
+          project.revizto_project_uuid,
+          row.revizto_issue_id,
+          buffer,
+          fileName,
+          reporterEmail,
+          { asMarkup: isImage }
+        );
+      } catch (err) {
+        throw new Error(`[step 2: upload to Revizto] status ${err.response?.status}: ${JSON.stringify(err.response?.data) || err.message}`);
+      }
+      console.log('[poll] [step 2 done]');
+
+      console.log('[poll] [step 3: post explanatory comment]');
+      try {
+        await reviztoService.addComment(
+          userId,
+          project.revizto_region,
+          project.revizto_project_uuid,
+          row.revizto_issue_id,
+          'Attachment added via ACC sync',
+          reporterEmail
+        );
+      } catch (err) {
+        throw new Error(`[step 3: post comment] status ${err.response?.status}: ${JSON.stringify(err.response?.data) || err.message}`);
+      }
+      console.log('[poll] [step 3 done]');
+
       await pool.query(
         'UPDATE sync_map SET last_pulled_acc_attachment_id = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
         [project.id, row.revizto_issue_id, latestId]
