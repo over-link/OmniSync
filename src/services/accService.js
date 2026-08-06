@@ -92,16 +92,14 @@ async function getIssueComments(userId, project, issueId) {
 
 /**
  * GET .../construction/issues/v1/projects/{projectId}/attachments/{issueId}/items
- * — an issue's attachments. NOT confirmed the way comments/subtypes were:
- * a real test showed the base issue GET does NOT include attachments
- * inline (empty array every time), same as comments — this dedicated
- * endpoint is a best guess (path pattern "attachments/{issueId}/items",
- * from the official tutorial) applying the SAME base-path correction
- * already proven necessary for the POST attach endpoint in this file
- * (`construction/issues/v1`, not the tutorial's bare `issues/v1` — see
- * _attachToIssue). Logs the full error response if this 404s so the real
- * path can be confirmed from Autodesk's own error message rather than
- * guessed again blind.
+ * — an issue's attachments. Path and response shape both confirmed from
+ * Autodesk's own "Download Issue Attachments" tutorial: the array is
+ * under an `attachments` key specifically (NOT `results`/`data` like
+ * every other list endpoint in this file — the one real bug found here,
+ * silently returning [] every time since the path itself was already
+ * right). Excludes soft-deleted entries (isDeleted: true, per the
+ * confirmed field) and sorts oldest-first by createdOn, defensively —
+ * same treatment as getIssueComments, since order isn't documented.
  */
 async function getIssueAttachments(userId, project, issueId) {
   const { token, baseURL } = await _client(userId, project);
@@ -109,7 +107,8 @@ async function getIssueAttachments(userId, project, issueId) {
     const { data } = await axios.get(`${baseURL}/attachments/${issueId}/items`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    return data?.results || data?.data || [];
+    const attachments = (data?.attachments || []).filter((a) => !a.isDeleted);
+    return attachments.sort((a, b) => new Date(a.createdOn || 0) - new Date(b.createdOn || 0));
   } catch (err) {
     console.warn(`[acc] getIssueAttachments failed (status ${err.response?.status}):`, JSON.stringify(err.response?.data) || err.message);
     throw err;
@@ -467,14 +466,12 @@ async function attachImageToIssue(userId, project, issueId, imageUrl, displayNam
  * Downloads an ACC attachment's actual file bytes, for the ACC->Revizto
  * attachment sync direction — the reverse of attachImageToIssue's upload
  * pipeline. `storageUrn` (format: urn:adsk.objects:os.object:{bucketKey}/
- * {objectKey}) comes from an attachment entry on the issue (confirmed
- * shape from Autodesk's own docs — same URN format this file already
- * parses on the upload side in _createStorage). Downloading uses the
- * symmetric counterpart of the upload flow's signed URL step
- * (signeds3download vs signeds3upload), a standard, well-documented OSS
- * API pair — NOT independently confirmed by real testing yet the way the
- * upload side was, so treat the exact response shape as a first guess if
- * this doesn't work on first try.
+ * {objectKey}) comes from an attachment entry on the issue. Confirmed end
+ * to end from Autodesk's own "Download Issue Attachments" tutorial: GET
+ * signeds3download returns a `url` field (not an array like the upload
+ * side's signeds3upload), and the actual file download must NOT include
+ * an Authorization header (the signed URL carries its own auth) — this
+ * already didn't send one, which turned out to be correct.
  */
 async function downloadAttachmentFile(userId, storageUrn) {
   const token = await getValidAccToken(userId);
@@ -486,10 +483,7 @@ async function downloadAttachmentFile(userId, storageUrn) {
     `${APS_BASE}/oss/v2/buckets/${bucketKey}/objects/${objectKey}/signeds3download`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
-  // TEMP DEBUG: this response shape is a guess (symmetric with the
-  // upload side's signeds3upload), not confirmed by real testing yet.
-  console.log('[acc] Raw signeds3download response:', JSON.stringify(signed));
-  const downloadUrl = signed?.url || signed?.urls?.[0];
+  const downloadUrl = signed?.url;
   if (!downloadUrl) throw new Error(`No signed download URL returned: ${JSON.stringify(signed)}`);
 
   const { data: fileData, headers } = await axios.get(downloadUrl, { responseType: 'arraybuffer' });
