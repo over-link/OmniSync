@@ -823,13 +823,14 @@ async function pollAccAttachmentsForProject(userId, project, reporterEmail) {
   );
   for (const row of rows) {
     try {
-      const accIssue = await accService.getIssue(userId, project, row.acc_issue_id);
-      const attachments = accIssue.attachments || [];
-      // TEMP DEBUG: whether attachments really comes back inline on the
-      // issue GET (vs. needing a separate endpoint), and its real field
-      // names (attachmentId vs id, displayName vs fileName, storageUrn
-      // format), were never confirmed the way comments/customAttributes
-      // were — dumping the raw array so we can verify or fix in one pass.
+      // Confirmed by real testing: attachments do NOT come back inline on
+      // the base issue GET (always empty), same as comments — needs the
+      // dedicated endpoint instead.
+      const attachments = await accService.getIssueAttachments(userId, project, row.acc_issue_id);
+      // TEMP DEBUG: this dedicated endpoint's path and field names
+      // (attachmentId vs id, displayName vs fileName, storageUrn format)
+      // are a best guess, not confirmed — dumping the raw array so we can
+      // verify or fix in one pass.
       console.log(`[poll] ACC issue ${row.acc_issue_id} attachments: ${attachments.length} — ${JSON.stringify(attachments)}`);
       if (!attachments.length) continue;
 

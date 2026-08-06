@@ -90,6 +90,32 @@ async function getIssueComments(userId, project, issueId) {
   return comments.slice().sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
 }
 
+/**
+ * GET .../construction/issues/v1/projects/{projectId}/attachments/{issueId}/items
+ * — an issue's attachments. NOT confirmed the way comments/subtypes were:
+ * a real test showed the base issue GET does NOT include attachments
+ * inline (empty array every time), same as comments — this dedicated
+ * endpoint is a best guess (path pattern "attachments/{issueId}/items",
+ * from the official tutorial) applying the SAME base-path correction
+ * already proven necessary for the POST attach endpoint in this file
+ * (`construction/issues/v1`, not the tutorial's bare `issues/v1` — see
+ * _attachToIssue). Logs the full error response if this 404s so the real
+ * path can be confirmed from Autodesk's own error message rather than
+ * guessed again blind.
+ */
+async function getIssueAttachments(userId, project, issueId) {
+  const { token, baseURL } = await _client(userId, project);
+  try {
+    const { data } = await axios.get(`${baseURL}/attachments/${issueId}/items`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return data?.results || data?.data || [];
+  } catch (err) {
+    console.warn(`[acc] getIssueAttachments failed (status ${err.response?.status}):`, JSON.stringify(err.response?.data) || err.message);
+    throw err;
+  }
+}
+
 async function getIssueSubtypes(userId, project) {
   const { token, baseURL } = await _client(userId, project);
   const { data } = await axios.get(`${baseURL}/issue-types`, {
@@ -477,6 +503,7 @@ module.exports = {
   updateIssue,
   addComment,
   getIssueComments,
+  getIssueAttachments,
   getIssueSubtypes,
   getProjectMembers,
   getLocationNodes,
