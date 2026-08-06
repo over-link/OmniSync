@@ -123,6 +123,101 @@ async function makeLocationResolver(userId, project) {
   };
 }
 
+// ─── custom attribute resolution (title -> ACC attribute definition) ──
+
+// Only these ACC custom fields are touched by this sync — deliberately
+// not looking up every custom field in the project, both to avoid noise
+// and to avoid the sync reaching into fields it has no business managing.
+const MANAGED_CUSTOM_FIELDS = ['Grid Intersection', 'Room', 'Tags', 'Revizto ID', 'Issue Priority'];
+
+/**
+ * Same lazy-fetch-once-then-cache-in-closure shape as makeLocationResolver,
+ * restricted to MANAGED_CUSTOM_FIELDS. Also checks issue-attribute-mappings:
+ * a field existing in the project does NOT mean it's usable on every issue
+ * — ACC scopes each custom field to specific issue subtypes (or the whole
+ * project via a "container"-level mapping), and rejects a value for a
+ * field that isn't mapped to that issue's subtype (confirmed by real
+ * testing: "custom attribute definition is deleted or unmapped"). Returns
+ * the resolver as async (title, subtypeId) => definition | null.
+ * issueContext ({ reviztoIssueId, accIssueId }) is just for logging — so
+ * an "isn't mapped" warning names the specific issue to go check in ACC,
+ * instead of leaving you guessing which of several linked issues it was.
+ */
+async function makeCustomAttributeResolver(userId, project, issueContext = {}) {
+  let defsByTitle = null;
+  let mappingsByAttrId = null;
+  let issueTypeIdBySubtypeId = null;
+  return async (title, subtypeId) => {
+    if (!defsByTitle) {
+      try {
+        const [defs, mappings, subtypes] = await Promise.all([
+          accService.getIssueAttributeDefinitions(userId, project),
+          accService.getIssueAttributeMappings(userId, project),
+          accService.getIssueSubtypes(userId, project),
+        ]);
+        // ACC lets a custom field be enabled per specific subtype OR per
+        // parent issue type (which then covers all its subtypes) — need
+        // this lookup to check the issueType-level case too, below.
+        issueTypeIdBySubtypeId = Object.fromEntries(subtypes.map((s) => [s.id, s.issueTypeId]));
+        defsByTitle = {};
+        for (const d of defs) {
+          if (d.title && MANAGED_CUSTOM_FIELDS.some((t) => t.toLowerCase() === d.title.toLowerCase())) {
+            defsByTitle[d.title.toLowerCase()] = d;
+          }
+        }
+        mappingsByAttrId = {};
+        for (const m of mappings) {
+          if (!mappingsByAttrId[m.attributeDefinitionId]) mappingsByAttrId[m.attributeDefinitionId] = [];
+          mappingsByAttrId[m.attributeDefinitionId].push(m);
+        }
+        const found = Object.values(defsByTitle);
+        // For list-type fields, show the actual option labels too — the
+        // fastest way to compare against Revizto's raw value and spot a
+        // naming mismatch (e.g. Revizto's "Normal" vs ACC's "Medium")
+        // without another round trip.
+        const describe = (d) =>
+          d.dataType === 'list'
+            ? `${d.title} (list: ${(d.metadata?.list?.options || []).map((o) => o.value ?? o.label).join(' / ') || 'no options found'})`
+            : `${d.title} (${d.dataType})`;
+        console.log(`[sync] ACC managed custom fields for project "${project.name}": ${found.length ? found.map(describe).join(', ') : 'none of ' + MANAGED_CUSTOM_FIELDS.join(', ') + ' found'}`);
+      } catch (err) {
+        console.warn('[sync] Could not look up ACC custom field definitions (skipping grid/room/tags/revizto-id mapping):', err.response?.data?.detail || err.message);
+        defsByTitle = {};
+        mappingsByAttrId = {};
+        issueTypeIdBySubtypeId = {};
+      }
+    }
+    const def = defsByTitle[title.toLowerCase()] || null;
+    if (!def) {
+      console.warn(`[sync] No ACC custom field named "${title}" found for project "${project.name}".`);
+      return null;
+    }
+    const attrMappings = mappingsByAttrId[def.id] || [];
+    const issueTypeId = issueTypeIdBySubtypeId[subtypeId] || null;
+    const applicable = attrMappings.some(
+      (m) =>
+        m.mappedItemType === 'container' ||
+        (m.mappedItemType === 'issueSubtype' && m.mappedItemId === subtypeId) ||
+        (m.mappedItemType === 'issueType' && issueTypeId && m.mappedItemId === issueTypeId)
+    );
+    if (!applicable) {
+      // TEMP DEBUG: the "checked in ACC" vs "still shows unmapped"
+      // mismatch reported during testing means one of our assumptions
+      // about mappedItemType/mappedItemId is wrong — dump the raw
+      // mapping entries for this specific field so we can see the actual
+      // values instead of guessing further.
+      console.log(`[sync] Raw ACC mappings for "${title}" (attributeDefinitionId ${def.id}), issue subtype ${subtypeId}, issue type ${issueTypeId}:`, JSON.stringify(attrMappings));
+      const { reviztoIssueId, accIssueId } = issueContext;
+      const issueLabel = accIssueId
+        ? `ACC issue ${accIssueId} (Revizto #${reviztoIssueId ?? '?'})`
+        : `Revizto issue #${reviztoIssueId ?? '?'}`;
+      console.warn(`[sync] ACC custom field "${title}" exists but isn't mapped to this issue's subtype (subtype ${subtypeId}) — skipping for ${issueLabel} in project "${project.name}".`);
+      return null;
+    }
+    return def;
+  };
+}
+
 // ─── Push: Revizto issue -> ACC (create or update) ────────────────────
 
 async function pushIssueToAcc(userId, project, reviztoIssue) {
@@ -155,6 +250,15 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
   // against the project's own configured Location Breakdown Structure.
   const locationResolver = await makeLocationResolver(userId, project);
 
+  // Resolves a custom field title (e.g. "Grid", "Room") to its ACC
+  // attribute definition ID — ACC has no native fields for these, unlike
+  // level/zone. issueContext is just so an "isn't mapped" warning can name
+  // this specific issue.
+  const customAttributeResolver = await makeCustomAttributeResolver(userId, project, {
+    reviztoIssueId: reviztoIssue.id,
+    accIssueId: existingAccId,
+  });
+
   const payload = await reviztoService.toAccIssue(reviztoIssue, {
     subtypeLookup,
     defaultSubtypeId: project.acc_default_subtype_id,
@@ -163,6 +267,7 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
     reviztoStatusName,
     assigneeResolver,
     locationResolver,
+    customAttributeResolver,
   });
 
   let accIssueId;
@@ -445,6 +550,31 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
     }
   } catch (err) {
     console.warn('[webhook] Could not sync assignee/watchers back to Revizto (skipping):', err.response?.data?.message || err.message);
+  }
+
+  // Priority (ACC "Issue Priority" custom field -> Revizto's priority
+  // field), the reverse direction of the Revizto->ACC mapping in
+  // toAccIssue. UNCONFIRMED: assumes accIssue.customAttributes entries
+  // expose a plain, human-readable `value` for a list-type field (per
+  // Autodesk's own docs, GET issue responses include title/type/value per
+  // attribute) — if this pulls through as a raw option ID instead of the
+  // display text, that assumption is wrong; check server logs for the
+  // actual shape and adjust. Wrapped separately from assignee/watchers so
+  // a failure here doesn't block that sync either.
+  try {
+    const priorityAttr = (accIssue.customAttributes || []).find((a) => (a.title || '').toLowerCase() === 'issue priority');
+    if (priorityAttr && priorityAttr.value != null && priorityAttr.value !== '') {
+      await reviztoService.updateIssuePriority(
+        userId,
+        project.revizto_region,
+        project.revizto_project_uuid,
+        reviztoIssueId,
+        priorityAttr.value,
+        reporterEmail
+      );
+    }
+  } catch (err) {
+    console.warn('[webhook] Could not sync priority back to Revizto (skipping):', err.response?.data?.message || err.message);
   }
 
   // Comment pulling from ACC happens via pollAccCommentsForProject (see

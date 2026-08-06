@@ -219,6 +219,21 @@ async function updateIssueWatchers(userId, region, projectUuid, issueId, newWatc
   return _postDiffComment(userId, region, projectUuid, issue.uuid, { watchers: { old: oldWatchers, new: newWatcherEmails } }, reporterEmail);
 }
 
+/**
+ * Updates an issue's priority (ACC -> Revizto direction, for the
+ * bidirectional Issue Priority mapping). Same UNCONFIRMED caveat as
+ * updateIssueAssignee/updateIssueWatchers — extrapolated from the proven
+ * customStatus diff pattern (priority is a plain top-level field, same
+ * shape as assignee), not confirmed against real Revizto write docs. Test
+ * and report back if a priority change in ACC doesn't show up in Revizto.
+ */
+async function updateIssuePriority(userId, region, projectUuid, issueId, newPriority, reporterEmail) {
+  const issue = await getIssue(userId, region, projectUuid, issueId);
+  const oldPriority = unwrap(issue.priority) || null;
+  if (oldPriority === newPriority) return null; // no-op
+  return _postDiffComment(userId, region, projectUuid, issue.uuid, { priority: { old: oldPriority, new: newPriority } }, reporterEmail);
+}
+
 async function addComment(userId, region, projectUuid, issueId, text, reporterEmail) {
   const issue = await getIssue(userId, region, projectUuid, issueId);
   const commentUuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
@@ -527,10 +542,38 @@ function mapStatusFromAcc(accStatus) {
 }
 
 /**
+ * Converts a raw string value into whatever ACC's customAttributes API
+ * expects for that field's data type: passed through as-is for
+ * text/paragraph/numeric fields, but resolved to the matching dropdown
+ * option's ID (not its display label) for list-type fields — confirmed
+ * from Autodesk's own custom-attributes docs that list values must be the
+ * option's ID. No matching option (a Revizto value with no equivalent in
+ * ACC's dropdown) just skips that attribute rather than sending a bad
+ * value ACC would reject outright.
+ */
+function _resolveCustomAttributeValue(definition, rawValue) {
+  if (definition.dataType !== 'list') return String(rawValue);
+  const options = definition.metadata?.list?.options || [];
+  const match = options.find((o) => String(o.value ?? o.label ?? '').toLowerCase() === String(rawValue).toLowerCase());
+  return match ? match.id : null;
+}
+
+function _addCustomAttribute(list, definition, rawValue) {
+  if (!definition || rawValue == null || rawValue === '') return;
+  const value = _resolveCustomAttributeValue(definition, rawValue);
+  if (value == null) {
+    console.warn(`[revizto] No matching ACC dropdown option on "${definition.title}" for Revizto value "${rawValue}"`);
+    return;
+  }
+  console.log(`[revizto] Setting ACC custom field "${definition.title}" from Revizto value "${rawValue}"${definition.dataType === 'list' ? ` -> option id ${value}` : ''}`);
+  list.push({ attributeDefinitionId: definition.id, value });
+}
+
+/**
  * Build an ACC issue payload from a Revizto issue.
  * assigneeResolver: async (email) => autodeskId | null
  */
-async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, assigneeResolver, locationResolver, customStatusMap = null, customTypeMap = null, reviztoStatusName = null } = {}) {
+async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, assigneeResolver, locationResolver, customAttributeResolver, customStatusMap = null, customTypeMap = null, reviztoStatusName = null } = {}) {
   const title = unwrap(reviztoIssue.title) || '(no title)';
   // Revizto issues have no description field of their own — this is a
   // fixed marker instead, so users can filter/identify synced issues in
@@ -549,6 +592,13 @@ async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, 
   const levels = reviztoIssue.clashAndLocationFields?.level || [];
   const primaryLevel = levels[0] || null;
   const zones = reviztoIssue.clashAndLocationFields?.zone || [];
+  const grids = reviztoIssue.clashAndLocationFields?.grid || [];
+  const rooms = reviztoIssue.clashAndLocationFields?.room || [];
+  const tagsList = unwrap(reviztoIssue.tags) || [];
+  // Top-level field (not under clashAndLocationFields), same
+  // {value, timestamp}-wrapped shape as assignee/deadline/etc. — no extra
+  // additionalFields param needed, same as those.
+  const priority = unwrap(reviztoIssue.priority) || null;
 
   // Status comes from `customStatus` (a UUID resolved against the
   // project's workflow settings) — NOT `status`, which Revizto's own docs
@@ -591,6 +641,31 @@ async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, 
   // for zone specifically rather than doubling as a level fallback.
   if (zones.length) payload.locationDetails = zones.join(', ');
 
+  // Grid, room, tags, the issue's own ID, & priority -> ACC custom fields
+  // ("Grid Intersection", "Room", "Tags", "Revizto ID", "Issue Priority")
+  // — ACC has no native fields for these, unlike level/zone, so
+  // customAttributeResolver looks up the admin-created custom field by
+  // title instead of a built-in column, and also checks it's actually
+  // mapped to this issue's subtype (subtypeId, computed above) — a field
+  // can exist in the project but not apply to every issue subtype. No
+  // match (field doesn't exist, wrong title, not mapped to this subtype,
+  // etc.) just skips that one attribute rather than failing the push.
+  // Revizto ID is written on every push (not conditional like the others)
+  // since it's always available and useful for traceability back to the
+  // source issue.
+  const customAttributes = [];
+  if (customAttributeResolver) {
+    if (grids.length) _addCustomAttribute(customAttributes, await customAttributeResolver('Grid Intersection', subtypeId), grids.join(', '));
+    if (rooms.length) _addCustomAttribute(customAttributes, await customAttributeResolver('Room', subtypeId), rooms.join(', '));
+    if (tagsList.length) _addCustomAttribute(customAttributes, await customAttributeResolver('Tags', subtypeId), tagsList.join(', '));
+    if (reviztoIssue.id != null) _addCustomAttribute(customAttributes, await customAttributeResolver('Revizto ID', subtypeId), String(reviztoIssue.id));
+    // Issue Priority is a dropdown/list field in ACC, not free text (unlike
+    // the others above) — _addCustomAttribute resolves the raw Revizto
+    // priority string to the matching dropdown option's ID.
+    if (priority) _addCustomAttribute(customAttributes, await customAttributeResolver('Issue Priority', subtypeId), priority);
+  }
+  if (customAttributes.length) payload.customAttributes = customAttributes;
+
   // assigneeResolver is really a generic (email) -> Autodesk user ID
   // resolver — reused here for both assignee (single) and watchers
   // (array), not just assignee despite the parameter name.
@@ -626,6 +701,7 @@ module.exports = {
   updateIssueStatus,
   updateIssueAssignee,
   updateIssueWatchers,
+  updateIssuePriority,
   addComment,
   getProjects,
   getLicenses,

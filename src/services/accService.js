@@ -101,6 +101,61 @@ async function getIssueSubtypes(userId, project) {
   );
 }
 
+/**
+ * GET .../construction/issues/v1/projects/{projectId}/issue-attribute-definitions
+ * — the project's admin-created custom issue fields (ACC has no native
+ * grid/room fields, so those map to custom fields here instead). Same
+ * container-ID convention and results/pagination response shape as every
+ * other Issues API call in this file — confirmed path from Autodesk's own
+ * API reference text (unlike the Locations endpoint's containers/projects
+ * mixup, this one follows the established Issues API pattern exactly).
+ */
+async function getIssueAttributeDefinitions(userId, project) {
+  const { token, baseURL } = await _client(userId, project);
+  const definitions = [];
+  let offset = 0;
+  const limit = 100;
+  while (true) {
+    const { data } = await axios.get(`${baseURL}/issue-attribute-definitions`, {
+      headers: { Authorization: `Bearer ${token}` },
+      params: { limit, offset },
+    });
+    const results = data.results || [];
+    definitions.push(...results);
+    if (!results.length || definitions.length >= (data.pagination?.totalResults || 0)) break;
+    offset += limit;
+  }
+  return definitions;
+}
+
+/**
+ * GET .../construction/issues/v1/projects/{projectId}/issue-attribute-mappings
+ * — which issue type/subtype (or the whole project) each custom field
+ * actually applies to. A field existing in issue-attribute-definitions
+ * does NOT mean it's usable on every issue — ACC rejects a customAttributes
+ * value with "custom attribute definition is deleted or unmapped" if the
+ * field isn't mapped to that specific issue's subtype (confirmed by real
+ * testing). Each mapping has attributeDefinitionId, mappedItemType
+ * ('container' | 'issueType' | 'issueSubtype'), and mappedItemId.
+ */
+async function getIssueAttributeMappings(userId, project) {
+  const { token, baseURL } = await _client(userId, project);
+  const mappings = [];
+  let offset = 0;
+  const limit = 100;
+  while (true) {
+    const { data } = await axios.get(`${baseURL}/issue-attribute-mappings`, {
+      headers: { Authorization: `Bearer ${token}` },
+      params: { limit, offset },
+    });
+    const results = data.results || [];
+    mappings.push(...results);
+    if (!results.length || mappings.length >= (data.pagination?.totalResults || 0)) break;
+    offset += limit;
+  }
+  return mappings;
+}
+
 // ─── Project members / assignee mapping ────────────────────────────
 
 async function getProjectMembers(userId, project) {
@@ -392,6 +447,8 @@ module.exports = {
   getIssueSubtypes,
   getProjectMembers,
   getLocationNodes,
+  getIssueAttributeDefinitions,
+  getIssueAttributeMappings,
   registerWebhook,
   getWebhookStatus,
   listWebhooks,
