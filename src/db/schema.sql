@@ -141,6 +141,12 @@ ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_pushed_comment_uuid TEXT;
 -- comment-specific).
 ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_pulled_acc_comment_id TEXT;
 
+-- Tracks the last ACC attachment ID we've already pulled into Revizto,
+-- for the polling-based attachment sync (ACC attachment events aren't
+-- confirmed to fire the issue.updated webhook, so this uses the same
+-- polling approach already proven out for comments, not the webhook).
+ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_pulled_acc_attachment_id TEXT;
+
 -- Tracks whether the Revizto markup preview image has already been
 -- attached to the linked ACC issue, so it doesn't re-upload the same
 -- image every 2-minute cycle.

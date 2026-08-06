@@ -387,8 +387,11 @@ async function _pushLatestCommentToAcc(userId, project, reviztoIssue, accIssueId
     // sync" comment (see handleAccWebhook) — deliberately kept as its own
     // exact phrase, not tagged with "- synced from ACC", so it stays
     // readable in Revizto; this second check is what keeps it a one-time
-    // post instead of also getting echoed back into ACC.
-    if ((latest.text || '').includes('- synced from ACC') || latest.text === 'Deadline changed via ACC sync') {
+    // post instead of also getting echoed back into ACC. Same treatment
+    // for the "Attachment added via ACC sync" comment from
+    // pollAccAttachmentsForProject.
+    const isAutoPostedComment = latest.text === 'Deadline changed via ACC sync' || latest.text === 'Attachment added via ACC sync';
+    if ((latest.text || '').includes('- synced from ACC') || isAutoPostedComment) {
       await pool.query(
         'UPDATE sync_map SET last_pushed_comment_uuid = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
         [project.id, String(reviztoIssue.id), latest.uuid]
@@ -803,6 +806,83 @@ async function pollAccCommentsForProject(userId, project, reporterEmail) {
   }
 }
 
+/**
+ * Polling-based ACC->Revizto attachment sync — same reasoning as
+ * pollAccCommentsForProject: attachment additions aren't confirmed to
+ * fire the issue.updated webhook event, so this actively checks rather
+ * than relying on one. Only pushes the single latest attachment, matching
+ * the "latest only" pattern already used for comments and markup. Images
+ * (.png/.jpg/.jpeg) go over as a real Revizto markup update; anything
+ * else (PDFs, etc.) goes over as a plain file attachment comment, since
+ * Revizto's markup mechanism only accepts those three image types.
+ */
+async function pollAccAttachmentsForProject(userId, project, reporterEmail) {
+  const { rows } = await pool.query(
+    'SELECT revizto_issue_id, acc_issue_id, last_pulled_acc_attachment_id FROM sync_map WHERE project_id = $1',
+    [project.id]
+  );
+  for (const row of rows) {
+    try {
+      const accIssue = await accService.getIssue(userId, project, row.acc_issue_id);
+      const attachments = accIssue.attachments || [];
+      // TEMP DEBUG: whether attachments really comes back inline on the
+      // issue GET (vs. needing a separate endpoint), and its real field
+      // names (attachmentId vs id, displayName vs fileName, storageUrn
+      // format), were never confirmed the way comments/customAttributes
+      // were — dumping the raw array so we can verify or fix in one pass.
+      console.log(`[poll] ACC issue ${row.acc_issue_id} attachments: ${attachments.length} — ${JSON.stringify(attachments)}`);
+      if (!attachments.length) continue;
+
+      const latest = attachments[attachments.length - 1];
+      const latestId = latest.attachmentId || latest.id;
+      if (!latestId || String(latestId) === String(row.last_pulled_acc_attachment_id)) continue; // nothing new
+
+      const displayName = latest.displayName || latest.fileName || '';
+      // Ping-pong guard: an image WE pushed Revizto->ACC (see
+      // _pushMarkupImageToAcc) is attached with this exact display name
+      // pattern — without this check, it would look like a genuine new
+      // ACC attachment on the next poll and get imported right back into
+      // Revizto as a "new" one.
+      if (displayName.startsWith('Revizto Issue ')) {
+        await pool.query(
+          'UPDATE sync_map SET last_pulled_acc_attachment_id = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
+          [project.id, row.revizto_issue_id, latestId]
+        );
+        continue;
+      }
+
+      const { buffer, contentType } = await accService.downloadAttachmentFile(userId, latest.storageUrn);
+      const fileName = displayName || `attachment-${latestId}`;
+      const isImage = /\.(png|jpe?g)$/i.test(fileName) || /^image\/(png|jpe?g)$/i.test(contentType);
+
+      await reviztoService.addAttachment(
+        userId,
+        project.revizto_region,
+        project.revizto_project_uuid,
+        row.revizto_issue_id,
+        buffer,
+        fileName,
+        reporterEmail,
+        { asMarkup: isImage }
+      );
+      await reviztoService.addComment(
+        userId,
+        project.revizto_region,
+        project.revizto_project_uuid,
+        row.revizto_issue_id,
+        'Attachment added via ACC sync',
+        reporterEmail
+      );
+      await pool.query(
+        'UPDATE sync_map SET last_pulled_acc_attachment_id = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
+        [project.id, row.revizto_issue_id, latestId]
+      );
+    } catch (err) {
+      console.warn(`[poll] Could not check ACC attachments for issue ${row.acc_issue_id} (skipping):`, err.response?.data?.detail || err.message);
+    }
+  }
+}
+
 module.exports = {
   pushIssueToAcc,
   pushAllOpenIssues,
@@ -816,4 +896,5 @@ module.exports = {
   recordLink,
   getSyncStats,
   pollAccCommentsForProject,
+  pollAccAttachmentsForProject,
 };

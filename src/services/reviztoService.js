@@ -283,6 +283,44 @@ async function addComment(userId, region, projectUuid, issueId, text, reporterEm
 }
 
 /**
+ * Uploads a file to a Revizto issue — either as a real markup update
+ * (asMarkup: true, image files only — Revizto's own docs confirm only
+ * .png/.jpg/.jpeg are accepted, up to 38MB) or as a generic file
+ * attachment comment (asMarkup: false, anything except .exe/.dmg, up to
+ * 38MB) — confirmed shape from Revizto's own "Add issue comments" docs:
+ * multipart/form-data with the file's bytes in a `file_<commentUuid>`
+ * field alongside the comments JSON array. For a markup update, `markup`
+ * must be present (even if empty) to indicate no drawings were added on
+ * top of the new image.
+ */
+async function addAttachment(userId, region, projectUuid, issueId, fileBuffer, fileName, reporterEmail, { asMarkup = false } = {}) {
+  const issue = await getIssue(userId, region, projectUuid, issueId);
+  const commentUuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
+  const commentEntry = asMarkup
+    ? { type: 'markup', uuid: commentUuid, reporter: reporterEmail, markup: '' }
+    : { type: 'file', uuid: commentUuid, reporter: reporterEmail };
+
+  const form = new FormData();
+  form.append('projectUuid', projectUuid);
+  form.append('issueUuid', issue.uuid);
+  form.append('comments', JSON.stringify([commentEntry]));
+  form.append(`file_${commentUuid}`, fileBuffer, { filename: fileName });
+
+  const token = await getValidReviztoToken(userId);
+  const { data } = await axios.post(`${baseUrl(region)}/comment/add`, form, {
+    headers: { Authorization: `Bearer ${token}`, ...form.getHeaders() },
+  });
+  const commentResult = data?.data?.[0]?.result;
+  if (commentResult !== undefined && commentResult !== 0) {
+    console.warn('[revizto] attachment/markup upload failed:', JSON.stringify(data));
+  }
+  return data;
+}
+
+/**
  * GET /v5/project/list/{licenseUuid}/paged — the real, documented endpoint.
  * (Earlier version of this code called a `/project/list?licenseId=` shape
  * copied from the old app, which turned out not to match current docs —
@@ -734,6 +772,7 @@ module.exports = {
   updateIssuePriority,
   updateIssueDeadline,
   addComment,
+  addAttachment,
   getProjects,
   getLicenses,
   getLicenseMembers,

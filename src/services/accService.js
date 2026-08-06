@@ -437,6 +437,39 @@ async function attachImageToIssue(userId, project, issueId, imageUrl, displayNam
   }
 }
 
+/**
+ * Downloads an ACC attachment's actual file bytes, for the ACC->Revizto
+ * attachment sync direction — the reverse of attachImageToIssue's upload
+ * pipeline. `storageUrn` (format: urn:adsk.objects:os.object:{bucketKey}/
+ * {objectKey}) comes from an attachment entry on the issue (confirmed
+ * shape from Autodesk's own docs — same URN format this file already
+ * parses on the upload side in _createStorage). Downloading uses the
+ * symmetric counterpart of the upload flow's signed URL step
+ * (signeds3download vs signeds3upload), a standard, well-documented OSS
+ * API pair — NOT independently confirmed by real testing yet the way the
+ * upload side was, so treat the exact response shape as a first guess if
+ * this doesn't work on first try.
+ */
+async function downloadAttachmentFile(userId, storageUrn) {
+  const token = await getValidAccToken(userId);
+  const match = storageUrn?.match(/^urn:adsk\.objects:os\.object:([^/]+)\/(.+)$/);
+  if (!match) throw new Error(`Unexpected storage URN format: ${storageUrn}`);
+  const [, bucketKey, objectKey] = match;
+
+  const { data: signed } = await axios.get(
+    `${APS_BASE}/oss/v2/buckets/${bucketKey}/objects/${objectKey}/signeds3download`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  // TEMP DEBUG: this response shape is a guess (symmetric with the
+  // upload side's signeds3upload), not confirmed by real testing yet.
+  console.log('[acc] Raw signeds3download response:', JSON.stringify(signed));
+  const downloadUrl = signed?.url || signed?.urls?.[0];
+  if (!downloadUrl) throw new Error(`No signed download URL returned: ${JSON.stringify(signed)}`);
+
+  const { data: fileData, headers } = await axios.get(downloadUrl, { responseType: 'arraybuffer' });
+  return { buffer: Buffer.from(fileData), contentType: headers['content-type'] || 'application/octet-stream' };
+}
+
 module.exports = {
   getIssues,
   getIssue,
@@ -447,6 +480,7 @@ module.exports = {
   getIssueSubtypes,
   getProjectMembers,
   getLocationNodes,
+  downloadAttachmentFile,
   getIssueAttributeDefinitions,
   getIssueAttributeMappings,
   registerWebhook,

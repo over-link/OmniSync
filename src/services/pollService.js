@@ -21,11 +21,13 @@ async function pollAllProjects() {
         console.log(`[poll] "${project.name}": ${results.length} linked issue(s) re-synced, ${errors.length} errors`);
       }
 
-      // No webhook event exists for ACC comments, so this has to
-      // actively poll rather than react — same cycle as the push above.
+      // No webhook event exists for ACC comments (or is confirmed for
+      // attachments), so both have to actively poll rather than react —
+      // same cycle as the push above.
       const { rows: ownerRows } = await pool.query('SELECT email FROM users WHERE id = $1', [project.owner_user_id]);
       const reporterEmail = ownerRows[0]?.email;
       await syncService.pollAccCommentsForProject(project.owner_user_id, project, reporterEmail);
+      await syncService.pollAccAttachmentsForProject(project.owner_user_id, project, reporterEmail);
     } catch (err) {
       if (err instanceof ReconnectRequiredError) {
         console.warn(`[poll] Project "${project.name}" owner needs to reconnect ${err.provider}: ${err.reason}`);
