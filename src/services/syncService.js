@@ -554,22 +554,36 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
 
   // Priority (ACC "Issue Priority" custom field -> Revizto's priority
   // field), the reverse direction of the Revizto->ACC mapping in
-  // toAccIssue. UNCONFIRMED: assumes accIssue.customAttributes entries
-  // expose a plain, human-readable `value` for a list-type field (per
-  // Autodesk's own docs, GET issue responses include title/type/value per
-  // attribute) — if this pulls through as a raw option ID instead of the
-  // display text, that assumption is wrong; check server logs for the
-  // actual shape and adjust. Wrapped separately from assignee/watchers so
-  // a failure here doesn't block that sync either.
+  // toAccIssue. CONFIRMED BY REAL TESTING (not the docs' implication):
+  // for a list-type field, accIssue.customAttributes[].value is the raw
+  // OPTION ID (e.g. "fe69a532-..."), not its display label — Revizto
+  // rejected that UUID outright when sent as-is ("Invalid method
+  // parameters"). Resolved back to the option's label via the same
+  // definition metadata used for the forward direction, then lowercased
+  // to match Revizto's own value format (its "old" value came back as
+  // lowercase "minor", not ACC's title-case "Minor"). Wrapped separately
+  // from assignee/watchers so a failure here doesn't block that sync.
   try {
     const priorityAttr = (accIssue.customAttributes || []).find((a) => (a.title || '').toLowerCase() === 'issue priority');
     if (priorityAttr && priorityAttr.value != null && priorityAttr.value !== '') {
+      let priorityValue = priorityAttr.value;
+      const defs = await accService.getIssueAttributeDefinitions(userId, project);
+      const priorityDef = defs.find((d) => (d.title || '').toLowerCase() === 'issue priority');
+      if (priorityDef?.dataType === 'list') {
+        const options = priorityDef.metadata?.list?.options || [];
+        const match = options.find((o) => o.id === priorityAttr.value);
+        if (match) {
+          priorityValue = String(match.value ?? match.label ?? priorityAttr.value).toLowerCase();
+        } else {
+          console.warn(`[webhook] ACC priority option ID "${priorityAttr.value}" not found in "Issue Priority"'s option list — sending as-is.`);
+        }
+      }
       await reviztoService.updateIssuePriority(
         userId,
         project.revizto_region,
         project.revizto_project_uuid,
         reviztoIssueId,
-        priorityAttr.value,
+        priorityValue,
         reporterEmail
       );
     }
