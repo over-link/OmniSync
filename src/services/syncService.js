@@ -575,8 +575,15 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
         if (match) {
           priorityValue = String(match.value ?? match.label ?? priorityAttr.value).toLowerCase();
         } else {
-          console.warn(`[webhook] ACC priority option ID "${priorityAttr.value}" not found in "Issue Priority"'s option list — sending as-is.`);
+          console.warn(`[webhook] ACC priority option ID "${priorityAttr.value}" not found in "Issue Priority"'s option list (${options.length} option(s): ${JSON.stringify(options)}) — sending as-is.`);
         }
+      } else {
+        // Previously fell through here silently with no log at all —
+        // looked identical to a successful text-field pass-through, which
+        // made a real failure (couldn't find the definition, or its
+        // dataType wasn't "list" as expected) indistinguishable from
+        // "working as intended" in the logs.
+        console.warn(`[webhook] Could not resolve "Issue Priority" definition/dataType for value resolution (found definition: ${JSON.stringify(priorityDef) || 'none'}) — sending raw value "${priorityAttr.value}" as-is.`);
       }
       await reviztoService.updateIssuePriority(
         userId,
