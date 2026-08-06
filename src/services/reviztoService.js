@@ -240,16 +240,27 @@ async function updateIssuePriority(userId, region, projectUuid, issueId, newPrio
  * pattern, not confirmed against real Revizto write docs. ACC's dueDate is
  * date-only (no time component); Revizto's raw deadline is a full
  * datetime string ("YYYY-MM-DD HH:MM:SS", confirmed format from real data
- * elsewhere in this file) — appended as midnight when writing back. The
- * no-op check compares only the date portion, so a same-day value with a
- * different time-of-day isn't mistaken for a real change.
+ * elsewhere in this file).
+ *
+ * Anchored at NOON, not midnight — confirmed by real testing: writing
+ * midnight ("00:00:00") showed up a day EARLY in Revizto (an ACC due date
+ * of Aug 14 displayed as Aug 13), a classic timezone-boundary bug — some
+ * layer between here and Revizto's display is shifting the timestamp by a
+ * few hours, and at midnight that shift crosses into the previous day.
+ * Noon gives up to +/-12 hours of slack in either direction before the
+ * date portion could roll over, without needing to know exactly which
+ * layer (transport, Revizto's storage, or its display) is doing the
+ * shifting.
+ *
+ * The no-op check compares only the date portion, so a same-day value
+ * with a different time-of-day isn't mistaken for a real change.
  */
 async function updateIssueDeadline(userId, region, projectUuid, issueId, newDueDate, reporterEmail) {
   const issue = await getIssue(userId, region, projectUuid, issueId);
   const oldDeadline = unwrap(issue.deadline) || null;
   const oldDatePart = oldDeadline ? oldDeadline.slice(0, 10) : null;
   if (oldDatePart === newDueDate) return null; // no-op, already this date
-  const newDeadline = `${newDueDate} 00:00:00`;
+  const newDeadline = `${newDueDate} 12:00:00`;
   return _postDiffComment(userId, region, projectUuid, issue.uuid, { deadline: { old: oldDeadline, new: newDeadline } }, reporterEmail);
 }
 
