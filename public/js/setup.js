@@ -144,22 +144,52 @@ function prettyStatus(s) {
 
 function renderStatusMapRows(options, currentMap) {
   const container = document.getElementById('status-map-rows');
-  if (!options.reviztoStatuses.length) {
-    container.textContent = 'No Revizto statuses found for this project.';
+  const autoMapped = options.autoMappedStatuses || [];
+  const mappable = options.reviztoStatuses || [];
+
+  if (!autoMapped.length && !mappable.length) {
+    container.textContent = 'No Revizto statuses found yet — statuses appear here once an issue with that status exists.';
     return;
   }
-  container.innerHTML = options.reviztoStatuses
+
+  // Read-only: "To do"/"Completed" category statuses always auto-map to a
+  // fixed ACC status, no admin config needed — shown greyed out so it's
+  // clear they're already handled, using a distinct class (not
+  // .mapping-row) so the save button's row query below doesn't pick these
+  // up and choke on the missing .status-select.
+  const autoRowsHtml = autoMapped
     .map(
-      (s) => `<div class="mapping-row" data-revizto-status="${s}">
-        <span>${s}</span>
+      (s) => `<div class="status-auto-row" title="Auto-mapped by status category (${s.category}) — no configuration needed">
+        <span>${s.name}</span>
         <span class="bridge-connector" aria-hidden="true">→</span>
-        <select class="status-select">
-          <option value="">— default —</option>
-          ${options.accStatuses.map((a) => `<option value="${a}" ${currentMap[s] === a ? 'selected' : ''}>${prettyStatus(a)}</option>`).join('')}
-        </select>
+        <span class="badge badge-neutral">${prettyStatus(s.accStatus)} · auto</span>
       </div>`
     )
     .join('');
+
+  // Editable: "Tracking" category statuses (the ones needing a judgment
+  // call between ACC statuses like in_progress/in_review/etc.), shown for
+  // every current issue so an admin can configure the project correctly
+  // from the start. Unmapped ones are highlighted red — they still sync
+  // (defaulting to ACC "Draft" as a safeguard, see toAccIssue), but
+  // should be mapped explicitly.
+  const editableRowsHtml = mappable.length
+    ? mappable
+        .map((s) => {
+          const mapped = currentMap[s];
+          return `<div class="mapping-row" data-revizto-status="${s}">
+            <span>${s}</span>
+            <span class="bridge-connector" aria-hidden="true">→</span>
+            <select class="status-select${mapped ? '' : ' mapping-select-unmapped'}" title="${mapped ? '' : 'Not mapped — defaults to ACC \'Draft\' until configured'}">
+              <option value="">-Select ACC Status-</option>
+              ${options.accStatuses.map((a) => `<option value="${a}" ${mapped === a ? 'selected' : ''}>${prettyStatus(a)}</option>`).join('')}
+            </select>
+          </div>`;
+        })
+        .join('')
+    : '<div class="hint">No "Tracking" category statuses in use yet.</div>';
+
+  container.innerHTML = autoRowsHtml + editableRowsHtml;
 }
 
 document.getElementById('save-status-map-btn').addEventListener('click', async () => {
@@ -176,51 +206,48 @@ document.getElementById('save-status-map-btn').addEventListener('click', async (
   }
 });
 
+// One row per stamp actually in use (options.reviztoStamps, already
+// filtered to in-use by the backend) — no manual "add row" step needed.
+// Unmapped ones get a red-highlighted select so they're impossible to
+// miss, instead of silently having no row at all. Falls back to the
+// project's default ACC subtype server-side if left unmapped (see
+// reviztoService.toAccIssue), so this is a visibility aid, not something
+// that blocks issues from syncing.
 function renderTypeMapRows(options, currentMap) {
   const container = document.getElementById('type-map-rows');
-  const entries = Object.entries(currentMap);
-  container.innerHTML = '';
-  if (!entries.length) {
-    addTypeMapRow('', '');
-  } else {
-    for (const [reviztoType, accSubtypeId] of entries) addTypeMapRow(reviztoType, accSubtypeId);
+  const stamps = options.reviztoStamps || [];
+  if (!stamps.length) {
+    container.textContent = 'No Revizto stamps in use yet — they appear here once an issue with that stamp exists.';
+    return;
   }
+  container.innerHTML = stamps
+    .map((s) => {
+      const mapped = currentMap[s.value];
+      return `<div class="mapping-row" data-revizto-type="${s.value}">
+        <span>${s.label}</span>
+        <span class="bridge-connector" aria-hidden="true">→</span>
+        <select class="subtype-select${mapped ? '' : ' mapping-select-unmapped'}" title="${mapped ? '' : 'Not mapped — defaults to the project\'s default ACC issue type until configured'}">
+          <option value="">-Select ACC Issue Type-</option>
+          ${(options.accSubtypes || []).map((a) => `<option value="${a.id}" ${a.id === mapped ? 'selected' : ''}>${a.label}</option>`).join('')}
+        </select>
+      </div>`;
+    })
+    .join('');
 }
-
-function addTypeMapRow(reviztoType, accSubtypeId) {
-  const container = document.getElementById('type-map-rows');
-  const row = document.createElement('div');
-  row.className = 'mapping-row';
-  row.innerHTML = `
-    <select class="type-select">
-      <option value="">-Select Revizto Stamp-</option>
-      ${(mappingOptions?.reviztoStamps || []).map((s) => `<option value="${s.value}" ${s.value === reviztoType ? 'selected' : ''}>${s.label}</option>`).join('')}
-    </select>
-    <span class="bridge-connector" aria-hidden="true">→</span>
-    <select class="subtype-select">
-      <option value="">-Select ACC Issue Type-</option>
-      ${(mappingOptions?.accSubtypes || []).map((s) => `<option value="${s.id}" ${s.id === accSubtypeId ? 'selected' : ''}>${s.label}</option>`).join('')}
-    </select>
-    <button type="button" class="btn secondary remove-row-btn">Remove</button>
-  `;
-  row.querySelector('.remove-row-btn').addEventListener('click', () => row.remove());
-  container.appendChild(row);
-}
-
-document.getElementById('add-type-row-btn').addEventListener('click', () => addTypeMapRow('', ''));
 
 document.getElementById('save-type-map-btn').addEventListener('click', async () => {
   const projectId = document.getElementById('active-project-select').value;
   const resultEl = document.getElementById('type-map-result');
   const mappings = [...document.querySelectorAll('#type-map-rows .mapping-row')]
     .map((row) => ({
-      reviztoType: row.querySelector('.type-select').value,
+      reviztoType: row.dataset.reviztoType,
       accSubtypeId: row.querySelector('.subtype-select').value,
     }))
     .filter((m) => m.reviztoType && m.accSubtypeId);
   try {
     await api(`/api/projects/${projectId}/type-map`, { method: 'POST', body: JSON.stringify({ mappings }) });
     resultEl.textContent = 'Saved ✓';
+    await loadFieldMapping(projectId); // re-render so the red highlight clears for newly-mapped stamps
   } catch (err) {
     resultEl.textContent = err.message;
   }
@@ -276,6 +303,11 @@ async function loadProjects() {
       <button data-id="${p.id}" class="btn secondary check-webhook-btn">Check webhook status</button>
       <button data-id="${p.id}" data-webhook-id="${p.webhook_id || ''}" class="btn secondary delete-webhook-btn">Delete webhook</button>
       <span class="webhook-result" data-id="${p.id}"></span>
+      <div class="hint">Default ACC issue type (safeguard for unmapped stamps) —
+        <select class="default-subtype-select" data-id="${p.id}" data-current="${p.acc_default_subtype_id || ''}"><option value="">Loading...</option></select>
+        <button data-id="${p.id}" class="btn secondary save-default-subtype-btn">Save</button>
+        <span class="default-subtype-result" data-id="${p.id}"></span>
+      </div>
       ${
         p.revizto_project_id
           ? ''
@@ -287,6 +319,38 @@ async function loadProjects() {
     `;
     list.appendChild(row);
   }
+  // Separate async pass per project so N slow ACC subtype lookups don't
+  // block the rest of the list from rendering.
+  list.querySelectorAll('.default-subtype-select').forEach((select) => {
+    const id = select.dataset.id;
+    const current = select.dataset.current;
+    api(`/api/projects/${id}/subtypes`)
+      .then(({ subtypes }) => {
+        select.innerHTML =
+          '<option value="">— none set —</option>' +
+          subtypes.map((s) => `<option value="${s.id}" ${s.id === current ? 'selected' : ''}>${s.issueTypeTitle} > ${s.title}</option>`).join('');
+      })
+      .catch(() => {
+        select.innerHTML = '<option value="">Could not load ACC issue types</option>';
+      });
+  });
+  list.querySelectorAll('.save-default-subtype-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      const select = document.querySelector(`.default-subtype-select[data-id="${id}"]`);
+      const resultEl = document.querySelector(`.default-subtype-result[data-id="${id}"]`);
+      resultEl.textContent = 'Saving...';
+      try {
+        await api(`/api/projects/${id}/default-subtype`, {
+          method: 'PATCH',
+          body: JSON.stringify({ acc_default_subtype_id: select.value }),
+        });
+        resultEl.textContent = 'Saved ✓';
+      } catch (err) {
+        resultEl.textContent = err.message;
+      }
+    });
+  });
   list.querySelectorAll('.register-webhook-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.id;

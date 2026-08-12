@@ -1,11 +1,13 @@
 /**
  * services/fieldMapping.js
  * Lets admins configure Revizto <-> ACC status and issue-type mappings
- * per project, instead of relying only on the hardcoded defaults
- * (reviztoService's mapStatusToAcc keyword map, and STAMP_SUBTYPE_MAP
- * title-keyword matching). Configured mappings take priority; the
- * hardcoded defaults remain as a fallback so projects that haven't
- * configured anything keep working exactly as before.
+ * per project. Status: "To do"/"Completed" category statuses auto-map
+ * with no config needed; everything else falls back to ACC "Draft" (a
+ * deliberate safeguard, not a guess) until explicitly mapped. Type: an
+ * unmapped stamp falls back to the project's configured default subtype,
+ * then reviztoService's STAMP_SUBTYPE_MAP title-keyword matching as a
+ * last resort. Configured mappings always take priority over either
+ * fallback.
  */
 const pool = require('../db/pool');
 const reviztoService = require('./reviztoService');
@@ -28,30 +30,66 @@ const ACC_STATUS_OPTIONS = [
 
 // ─── Option lists for the mapping UI (real data, not guesses) ────────
 
-// These 4 are common to virtually every Revizto project's default
-// workflow — always shown in the mapping dropdown in this order, even if
-// no current issue happens to have that status yet, so an admin can
-// pre-configure them. CASING NOTE: only "In progress" (lowercase "p") is
-// confirmed from real data; "Open"/"Solved"/"Closed" are reasonable
-// guesses — if one doesn't match what you see on real issues, that
-// mismatch is the thing to fix here.
+// Kept for sort preference in the mapping dropdown — "In progress" is the
+// only one of these that realistically shows up there now (it's the one
+// commonly under the "Tracking" category, below); "Open"/"Solved"/
+// "Closed" typically fall under "To do"/"Completed" and auto-map instead.
+// CASING NOTE: only "In progress" (lowercase "p") is confirmed from real
+// data — "Open"/"Solved"/"Closed" are reasonable guesses.
 const CANONICAL_STATUS_ORDER = ['Open', 'In progress', 'Solved', 'Closed'];
 
+// Category-based auto status routing — confirmed from real docs (GET
+// .../issue-workflow/settings, statuses[].category = "To do" | "Tracking"
+// | "Completed"). "To do"/"Completed" always route to a fixed ACC status
+// with no admin config needed, matching reviztoService.toAccIssue exactly
+// — only "Tracking" (Revizto's own description: "in-progress issues...
+// being worked on or investigated") needs a judgment call, since ACC has
+// several statuses that could reasonably apply.
+const AUTO_MAPPED_CATEGORIES = { 'To do': 'open', Completed: 'completed' };
+
 async function getMappingOptions(userId, project) {
-  const [issues, subtypes, stampPresets] = await Promise.all([
+  const [issues, subtypes, stampPresets, workflowSettings] = await Promise.all([
     reviztoService.getIssues(userId, project.revizto_region, project.revizto_project_uuid),
     accService.getIssueSubtypes(userId, project),
     reviztoService.getStampPresets(userId, project.revizto_region, project.revizto_project_uuid).catch(() => []),
+    reviztoService.getWorkflowSettings(userId, project.revizto_region, project.revizto_project_uuid).catch(() => ({ statuses: [] })),
   ]);
 
-  // Statuses actually in use on existing issues (used for the unmapped
-  // warning, so we don't flag a canonical status as "unmapped" when no
-  // issue even has it yet — that's not an actual problem).
+  // name -> category. First non-deleted match wins if a name is somehow
+  // reused across workflows with different categories — same caveat
+  // already documented for the plain name->uuid map above.
+  const categoryByStatusName = {};
+  for (const s of workflowSettings?.statuses || []) {
+    if (!s.deletedAt && !(s.name in categoryByStatusName)) categoryByStatusName[s.name] = s.category;
+  }
+  console.log(`[fieldMapping] Status categories for project "${project.name}":`, JSON.stringify(categoryByStatusName));
+
+  // In use on any current Revizto issue — shown from the start so an
+  // admin can configure the project correctly upfront, not just after
+  // issues get linked (explicit request: "things don't slip through the
+  // cracks"). Same scope as the stamps list below.
   const inUseStatuses = [...new Set(issues.map((i) => reviztoService.unwrap(i.customStatusName)).filter(Boolean))];
-  // For the mapping dropdown: canonical 4 first in fixed order, then any
-  // other in-use statuses not already in that set, alphabetically.
-  const extraStatuses = inUseStatuses.filter((s) => !CANONICAL_STATUS_ORDER.includes(s)).sort();
-  const reviztoStatuses = [...CANONICAL_STATUS_ORDER, ...extraStatuses];
+
+  // Read-only informational rows — greyed out in the UI.
+  const autoMappedStatuses = inUseStatuses
+    .filter((s) => AUTO_MAPPED_CATEGORIES[categoryByStatusName[s]])
+    .sort()
+    .map((s) => ({ name: s, category: categoryByStatusName[s], accStatus: AUTO_MAPPED_CATEGORIES[categoryByStatusName[s]] }));
+
+  // Editable rows: "Tracking" category statuses, plus (defensively) any
+  // status whose category couldn't be resolved at all — those fall back
+  // to the pre-category hardcoded map server-side (see toAccIssue), and
+  // an admin should still be able to override that explicitly rather than
+  // have no visibility into it.
+  const mappableStatusNames = inUseStatuses.filter((s) => !AUTO_MAPPED_CATEGORIES[categoryByStatusName[s]]);
+  const reviztoStatuses = [...mappableStatusNames].sort((a, b) => {
+    const ai = CANONICAL_STATUS_ORDER.indexOf(a);
+    const bi = CANONICAL_STATUS_ORDER.indexOf(b);
+    if (ai !== -1 && bi !== -1) return ai - bi;
+    if (ai !== -1) return -1;
+    if (bi !== -1) return 1;
+    return a.localeCompare(b);
+  });
 
   // Same "in use" filter for stamps — a project can have many stamp
   // templates defined that no current issue actually uses; without this
@@ -61,8 +99,9 @@ async function getMappingOptions(userId, project) {
   const reviztoStamps = reviztoService.buildStampOptions(stampPresets).filter((s) => usedStampAbbrs.has(s.value));
 
   return {
-    reviztoStatuses,
-    reviztoStatusesInUse: inUseStatuses, // for the warning check — not padded with unused canonical statuses
+    reviztoStatuses, // editable/mappable only — Tracking (or unresolved-category) statuses in use on any current issue
+    reviztoStatusesInUse: reviztoStatuses, // kept for the unmapped-warning check — same meaning now (mappable statuses actually in use)
+    autoMappedStatuses, // read-only informational rows for the UI
     accStatuses: ACC_STATUS_OPTIONS,
     accSubtypes: subtypes.map((s) => ({ id: s.id, label: `${s.issueTypeTitle} > ${s.title}` })),
     reviztoStamps,

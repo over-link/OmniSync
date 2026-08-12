@@ -394,6 +394,21 @@ router.patch('/api/projects/:id/revizto-project-id', requireAdmin, async (req, r
   res.json({ project: rows[0] });
 });
 
+// Was previously only settable via a raw text ID field on the "Add
+// project pairing" form (easy to skip, since it was marked optional) —
+// this is the ONLY thing that gives an unmapped-type issue somewhere real
+// to land in ACC, so it needs to be viewable/editable for a project that
+// already exists, not just at creation time.
+router.patch('/api/projects/:id/default-subtype', requireAdmin, async (req, res) => {
+  const { acc_default_subtype_id } = req.body;
+  const { rows } = await pool.query('UPDATE projects SET acc_default_subtype_id = $2 WHERE id = $1 RETURNING *', [
+    req.params.id,
+    acc_default_subtype_id || null,
+  ]);
+  if (!rows[0]) return res.status(404).json({ error: 'Project not found' });
+  res.json({ project: rows[0] });
+});
+
 router.post('/api/projects/:id/sync', requireLogin, async (req, res) => {
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });

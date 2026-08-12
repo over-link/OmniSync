@@ -236,6 +236,20 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
   // issue response. No UUID resolution needed for this.
   const reviztoStatusName = reviztoService.unwrap(reviztoIssue.customStatusName) ?? null;
 
+  // Drives the category-based auto status routing in toAccIssue (To
+  // do/Completed auto-map, Tracking needs admin config) — resolved here
+  // since it needs project/region context toAccIssue doesn't have. This
+  // is a live workflow-settings lookup that pushIssueToAcc never made
+  // before category-based routing existed — caught so a transient
+  // failure here degrades to the pre-category fallback behavior (see
+  // toAccIssue's status block) rather than failing the whole push.
+  let statusCategory = null;
+  try {
+    statusCategory = await reviztoService.getStatusCategory(userId, project.revizto_region, project.revizto_project_uuid, reviztoIssue);
+  } catch (err) {
+    console.warn(`[sync] Could not resolve status category for issue ${reviztoIssue.id} (falling back to pre-category status mapping):`, err.message);
+  }
+
   // Resolves email -> Autodesk user ID for both assignee and watchers.
   // Was disabled for a while after an earlier bug where a failure here
   // (Construction Admin API access, separate from Issues API access)
@@ -259,12 +273,13 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
     accIssueId: existingAccId,
   });
 
-  const payload = await reviztoService.toAccIssue(reviztoIssue, {
+  const { payload, statusNeedsMapping, typeNeedsMapping } = await reviztoService.toAccIssue(reviztoIssue, {
     subtypeLookup,
     defaultSubtypeId: project.acc_default_subtype_id,
     customStatusMap,
     customTypeMap,
     reviztoStatusName,
+    statusCategory,
     assigneeResolver,
     locationResolver,
     customAttributeResolver,
@@ -273,12 +288,29 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
   let accIssueId;
   if (existingAccId) {
     const updated = await accService.updateIssue(userId, project, existingAccId, payload);
-    await clearSyncError(project.id, reviztoIssue.id);
     accIssueId = existingAccId;
   } else {
     const created = await accService.createIssue(userId, project, payload);
     await recordLink(project.id, reviztoIssue.id, created.id);
     accIssueId = created.id;
+  }
+
+  // Tracking-category status and/or stamp with no admin mapping
+  // configured (defaulted to ACC "Open" / the project's default subtype
+  // in toAccIssue) — surfaces on both the Setup page mapping-warnings and
+  // the Issues page error pill/hover, since this reuses the same
+  // sync_map.last_error column as genuine push failures.
+  const mappingWarnings = [];
+  if (statusNeedsMapping) {
+    mappingWarnings.push(`Status "${reviztoStatusName}" (Tracking category) has no ACC mapping configured — defaulted to Draft.`);
+  }
+  if (typeNeedsMapping) {
+    mappingWarnings.push('Issue type/stamp has no ACC mapping configured — defaulted to the project\'s default ACC issue type.');
+  }
+  if (mappingWarnings.length) {
+    await recordSyncError(project.id, reviztoIssue.id, `${mappingWarnings.join(' ')} Configure it on the Setup page.`);
+  } else {
+    await clearSyncError(project.id, reviztoIssue.id);
   }
 
   // Fetch comments ONCE and share between comment-push and markup-push —
@@ -737,14 +769,18 @@ async function getSyncStats(userId, project) {
   const [reviztoIssues, accIssues, syncRows] = await Promise.all([
     reviztoService.getIssues(userId, project.revizto_region, project.revizto_project_uuid),
     accService.getIssues(userId, project).catch(() => []),
-    pool.query('SELECT last_error FROM sync_map WHERE project_id = $1', [project.id]).then((r) => r.rows),
+    pool.query('SELECT revizto_issue_id, last_error FROM sync_map WHERE project_id = $1', [project.id]).then((r) => r.rows),
   ]);
-  const errorCount = syncRows.filter((r) => r.last_error).length;
+  const errorRows = syncRows.filter((r) => r.last_error);
   return {
     reviztoCount: reviztoIssues.length,
     accCount: accIssues.length,
     syncedCount: syncRows.length,
-    errorCount,
+    errorCount: errorRows.length,
+    // Per-issue detail for the Issues page's error pill hover — kept
+    // separate from errorCount (which alone is enough for most callers)
+    // so the count itself doesn't change shape for anything relying on it.
+    errors: errorRows.map((r) => ({ reviztoIssueId: r.revizto_issue_id, message: r.last_error })),
   };
 }
 

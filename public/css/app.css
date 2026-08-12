@@ -346,9 +346,33 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
   border-bottom: 1px solid var(--line);
   font-size: 0.88rem;
 }
-.mapping-row .type-select { flex: 1; min-width: 220px; }
 .mapping-row .subtype-select { flex: 1; min-width: 220px; }
 #mapping-panels h3 { font-size: 0.92rem; margin: 1.25rem 0 0.4rem; }
+
+/* Unmapped status/issue-type row — flags a status or stamp with no
+   configured ACC mapping without requiring the admin to notice it's
+   simply missing from the list (it still syncs via the safeguard default
+   either way — ACC "Open" for status, the project's default subtype for
+   issue type). Shared between the status and type mapping selects. */
+.mapping-select-unmapped {
+  border: 1px solid var(--danger);
+  background: var(--danger-dim);
+  color: var(--danger);
+}
+
+/* Auto-mapped status rows ("To do"/"Completed" category) — same layout
+   as .mapping-row, greyed out to signal "already handled, no action
+   needed" without looking like a broken/empty editable row. */
+.status-auto-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.88rem;
+  color: var(--muted);
+  opacity: 0.7;
+}
 
 /* ── Setup page: two-column layout ──────────────────────────────── */
 .setup-columns {

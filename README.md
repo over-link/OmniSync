@@ -291,40 +291,64 @@ Two different mechanisms, don't confuse them:
 |---|---|---|---|
 | `title` | `title` | Revizto → ACC | Automatic — direct copy |
 | *(none — Revizto has no description field)* | `description` | Revizto → ACC | Automatic — fixed marker `"Synced from Revizto"`, so issues are filterable in ACC by description |
-| `customStatusName` | `status` | Both | **Admin-configurable** (Setup page) — falls back to a hardcoded default map (`reviztoService.mapStatusToAcc`) when unset |
-| `stampAbbr` (shown as "Category > Stamp Title") | `issueSubtypeId` (issue type) | Revizto → ACC | **Admin-configurable** (Setup page) — falls back to keyword-matching the title, then the project's default subtype |
+| `customStatusName` category | `status` | Both (pull is one-way today, see below) | **Category-based**: "To do"/"Completed" auto-map, no config. "Tracking" (and any unresolved category) is **admin-configurable** (Setup page); falls back to ACC `Draft` + a flagged sync error if unmapped |
+| `stampAbbr` (shown as "Category > Stamp Title") | `issueSubtypeId` (issue type) | Revizto → ACC | **Admin-configurable** (Setup page) — falls back through: project's default subtype → title-keyword guess → auto-detected "General" subtype → first available, so a push can never fail from a missing subtype. Unmapped flags a sync error |
 | `clashAndLocationFields.level` | `locationId` | Revizto → ACC | Automatic — matched by name against the ACC project's own Location Breakdown Structure (live lookup, nothing stored); no match just leaves it unset |
 | `clashAndLocationFields.zone` | `locationDetails` | Revizto → ACC | Automatic — free text, always written when a zone is set (kept separate from level so it isn't used as a location fallback) |
-| `deadline` | `dueDate` | Revizto → ACC | Automatic — direct copy (formatted), omitted entirely if unset |
+| `clashAndLocationFields.grid` / `.room`, `tags`, issue's own numeric ID, `priority` | ACC custom fields ("Grid Intersection", "Room", "Tags", "Revizto ID", "Issue Priority") | Priority is bidirectional; the rest are Revizto → ACC | Automatic — matched by title against the project's own custom fields (ACC has no native fields for these), see "Custom field mapping" below |
+| `deadline` | `dueDate` | Both | Automatic — direct copy; ACC → Revizto also posts a one-time "Deadline changed via ACC sync" comment, see below |
 | `assignee` (email) | `assignedTo` | Both | Automatic — resolved via ACC's project members list, with an optional manual per-project override (`user_map` table, not exposed in the UI yet) |
 | `watchers` (emails) | `watchers` | Both | Same resolution as assignee, just an array |
 | latest text comment | comment | Both | Automatic — only the single latest comment, not full history |
 | markup preview image (with drawings) | attachment | Revizto → ACC | Automatic — only the latest markup version, uploaded once per version |
+| *(reverse: ACC attachments)* | photo/PDF attachment | ACC → Revizto | Automatic, polling-based — see "Attachment sync" below |
 
-### Status & issue type — the admin-configurable ones
+### Status mapping — category-based, only "Tracking" needs config
 
-On `/setup`, pick a project to configure how Revizto's statuses/types map
-to ACC's. Admin-only, same as the rest of project setup.
+Revizto statuses each belong to a **category**, confirmed from real docs
+(`GET /project/{uuid}/issue-workflow/settings`, `statuses[].category`):
+`"To do"`, `"Tracking"`, or `"Completed"`.
 
-- **Status mapping**: Revizto statuses are pulled live from that project's
-  actual workflow settings (not guessed) — no docs dependency there. ACC's
-  status options are its fixed enum (confirmed from the old app's working
-  code, not a guess). Unmapped statuses fall back to the hardcoded default
-  in `reviztoService.mapStatusToAcc`, so existing projects don't break.
-- **Issue type mapping**: **Revizto stamp** (dropdown, "Category > Stamp
-  Title", value stored is the stamp abbreviation — matches what's actually
-  on an issue via `stampAbbr`) → **ACC issue type** (dropdown, "Type >
-  Subtype", real data from ACC). Both sides are now real dropdowns, no
-  free-text entry — this replaced an earlier version that used free-text
-  Revizto type entry before we had confirmed field names.
+- **"To do"** → always ACC `open`. **"Completed"** → always ACC
+  `completed`. No config, no exceptions — shown greyed out on the Setup
+  page as a read-only "already handled" row.
+- **"Tracking"** (and any status whose category can't be resolved) checks
+  the admin-configured mapping (`status_map`, Setup page) **first** — if
+  you've mapped it, your choice wins, every time. **Only if unmapped**
+  does it fall back to ACC `Draft` (a deliberate safeguard value, distinct
+  from any real status) and flag a sync error/warning until you map it.
+- The Setup page lists **every** Tracking-category status currently in
+  use on any issue (not just linked ones) — so you can configure a
+  project fully before syncing starts, "so things don't slip through the
+  cracks." Unmapped ones are highlighted red.
 
-Configured mappings take priority; anything not configured falls back to
-the existing hardcoded defaults, so turning this feature on doesn't risk
-breaking projects that haven't touched it yet.
+### Issue type mapping — guaranteed to resolve to something
 
-**Migration needed**: two new tables, `status_map` and `type_map` (plain
-`CREATE TABLE IF NOT EXISTS`, no `ALTER` needed since they're brand new).
-Run `npm run migrate`.
+**Revizto stamp** (dropdown, "Category > Stamp Title", value stored is
+the abbreviation — matches `stampAbbr`) → **ACC issue type** (dropdown,
+real subtypes from ACC). Every stamp currently in use is listed; unmapped
+ones are highlighted red.
+
+Unmapped falls back through, in order: the project's configured **default
+subtype** (a real per-project setting now — see below) → a title-keyword
+guess → an auto-detected subtype literally named **"General"** → whatever
+subtype happens to be first. This chain always resolves to *something* —
+confirmed by real testing that ACC rejects a create/update with a 400 if
+`issueSubtypeId` is missing entirely, which happened once before this
+fallback existed. Unmapped also flags a sync error/warning.
+
+**Default ACC issue type** (`projects.acc_default_subtype_id`) used to be
+settable only via a raw ID text field on project creation, with no way to
+view or change it afterward — now has a proper dropdown per project on
+the Setup page (`PATCH /api/projects/:id/default-subtype`).
+
+Both mapping tables (`status_map`, `type_map`) take priority over their
+fallback chain, so turning this feature on doesn't risk breaking projects
+that haven't touched it yet.
+
+**Migration needed**: `status_map`, `type_map` tables (already existed);
+no new migration for the category logic itself — it reads Revizto's live
+workflow settings on every push, nothing new stored.
 
 ### Level & zone — the automatic ones
 
@@ -353,6 +377,70 @@ include it (a real bug hit and fixed while building this — see
 No migration needed — this reads live from both systems on every push,
 nothing new is stored in the database.
 
+### Custom field mapping — Grid, Room, Tags, Revizto ID, Issue Priority
+
+ACC has no native fields for grid intersection, room, tags, or "the
+Revizto issue's own ID" — these map to **admin-created ACC custom
+fields** instead, matched by title (a fixed managed list, not every
+custom field in the project) and only written if ACC's own
+`issue-attribute-mappings` says that field actually applies to the
+issue's subtype (checked at the subtype, issue-type, *or* project-wide
+level — confirmed by real testing that a field correctly enabled in ACC
+still showed as "unmapped" until the issue-type-level case was added).
+
+**Issue Priority** is the one bidirectional field here: Revizto → ACC
+resolves the raw priority string to the matching **dropdown option ID**
+(confirmed ACC list-type custom fields require the ID, not the label).
+ACC → Revizto reads the field back off the webhook payload and resolves
+the option ID back to a label — confirmed by real testing that ACC's GET
+response returns the raw option ID here too, not a readable label as the
+docs implied — then lowercases it to match Revizto's own value format.
+
+No migration needed for any of this — nothing new stored, all resolved
+live against ACC's real custom field definitions on every push.
+
+## Priority & due date (bidirectional)
+
+Both work the same way structurally: Revizto → ACC on every push;
+ACC → Revizto via the webhook, using the same diff-comment mechanism
+already proven for status/assignee/watchers.
+
+**Due date**: ACC's `dueDate` is date-only; Revizto's `deadline` is a
+full datetime. Writing back is anchored at **noon**, not midnight —
+confirmed by real testing that midnight showed up a day *early* in
+Revizto (a timezone-boundary shift crossing into the previous day at that
+exact boundary). Also posts a one-time "Deadline changed via ACC sync"
+comment when the date actually changes, tagged so it doesn't get echoed
+back into ACC by the existing Revizto→ACC comment sync.
+
+## Attachment sync (ACC → Revizto)
+
+**Polling-based**, same reasoning as ACC comments: attachment additions
+aren't confirmed to fire the `issue.updated` webhook event, so this
+actively checks each linked issue every 2 minutes rather than reacting to
+one. Only the single latest *new* attachment per cycle.
+
+Listing attachments needed a dedicated endpoint (`GET
+construction/issues/v1/projects/{id}/attachments/{issueId}/items`) —
+confirmed by testing that the base issue GET does **not** include
+attachments inline (always empty), same as comments. One real bug found:
+the response wraps the array under an `attachments` key specifically, not
+`results`/`data` like every other list endpoint in this file.
+
+Every attachment (photos and PDFs alike) is pushed to Revizto as a plain
+**file attachment comment**. A markup-type upload was tried first and
+confirmed to correctly create a visible thumbnail in Revizto's comment
+feed, but did **not** become the large image shown in Revizto's markup
+editor — that likely needs real viewpoint/pin data only created by
+drawing directly in Revizto's client, not reachable via this API. A
+one-time "Attachment added via ACC sync" comment follows, and a guard
+skips re-importing attachments this app already pushed the other
+direction (matched by the `"Revizto Issue "` naming `_pushMarkupImageToAcc`
+already uses).
+
+**Migration needed**: `sync_map.last_pulled_acc_attachment_id`
+(idempotent `ALTER TABLE`). Run `npm run migrate`.
+
 ## Syncing issues (updated model)
 
 **Linking is manual; staying in sync is automatic.**
@@ -369,11 +457,10 @@ nothing new is stored in the database.
 4. Click **"Show linked issues"** any time to see a two-column view:
    Revizto's current title/status next to ACC's, for every linked issue.
 
-**Known limitation:** the webhook side (ACC→Revizto) currently only updates
-status and the latest comment — not title/description/due date going back
-into Revizto. Building that out further requires confirming Revizto's issue
-*field* update API (beyond the status-via-diff-comment mechanism we already
-have) — flag if you want that built out next.
+**Known limitation:** the webhook side (ACC→Revizto) now updates status,
+assignee/watchers, priority, due date, the latest comment, and attachments
+— just not **title** yet. Everything else uses the same status-via-
+diff-comment mechanism, extended field by field.
 
 ## Webhooks — registering the ACC side
 
@@ -459,9 +546,9 @@ as the project's owner.
 - **Revizto refresh token expiry (monthly, flat vs. inactivity-based) is unconfirmed.**
   The docs say "valid for 1 month" with no mention of resetting on use. Confirm
   with Revizto support/your API contact.
-- **ACC → Revizto sync only handles status + latest comment.** Attachments and
-  due-date/assignee sync back to Revizto are stubbed as extension points in
-  `syncService.handleAccWebhook` — not yet implemented both ways.
+- **ACC → Revizto doesn't sync title.** Status, assignee/watchers,
+  priority, due date, latest comment, and attachments all now sync both
+  ways — title is the one field still Revizto → ACC only.
 - **New issues created directly in ACC are not yet auto-created in Revizto.**
   `handleAccWebhook` detects and logs this case but doesn't act on it — needs
   a decision on which side is source-of-truth for new issue creation before

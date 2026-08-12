@@ -158,10 +158,10 @@ ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS markup_uploaded BOOLEAN NOT NULL D
 -- the same "latest wins, re-check each cycle" treatment as text comments.
 ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_markup_comment_uuid TEXT;
 
--- Admin-configured status mapping, per project. Falls back to the
--- hardcoded default mapping in reviztoService.mapStatusToAcc when no
--- row exists for a given Revizto status (so existing projects don't
--- break just because they haven't configured this yet).
+-- Admin-configured status mapping, per project. "To do"/"Completed"
+-- category statuses (see reviztoService.toAccIssue) auto-map without
+-- needing a row here; everything else falls back to ACC "Draft" as a
+-- deliberate safeguard when no row exists for a given Revizto status.
 CREATE TABLE IF NOT EXISTS status_map (
   id              SERIAL PRIMARY KEY,
   project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

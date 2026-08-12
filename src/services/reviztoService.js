@@ -121,6 +121,26 @@ async function getStatusMap(userId, region, projectUuid) {
 }
 
 /**
+ * Resolves an issue's current status CATEGORY — "To do", "Tracking", or
+ * "Completed", confirmed from real docs (GET .../issue-workflow/settings'
+ * statuses[].category). Matches by the issue's customStatus UUID first
+ * (precise — respects the same multi-workflow same-name-different-UUID
+ * caveat as _resolveStatusUuidForIssue), falling back to matching by
+ * customStatusName if the UUID lookup doesn't resolve (e.g. issue has no
+ * customType/workflow context). Returns null if neither resolves, so
+ * callers can fall back to pre-category behavior rather than guessing.
+ */
+async function getStatusCategory(userId, region, projectUuid, issue) {
+  const settings = await getWorkflowSettings(userId, region, projectUuid);
+  const statuses = settings.statuses || [];
+  const statusUuid = issue.customStatus?.value || null;
+  const statusName = unwrap(issue.customStatusName) || null;
+  const byUuid = statusUuid ? statuses.find((s) => s.uuid === statusUuid && !s.deletedAt) : null;
+  const byName = !byUuid && statusName ? statuses.find((s) => s.name === statusName && !s.deletedAt) : null;
+  return (byUuid || byName)?.category || null;
+}
+
+/**
  * Resolves a target status NAME to the correct UUID for a SPECIFIC
  * issue, respecting which workflow actually governs it. An issue's
  * workflow is determined by its issue TYPE (customType), not the issue
@@ -596,18 +616,21 @@ function getSubtypeIdForIssue(title, subtypeLookup, defaultSubtypeId) {
   return defaultSubtypeId;
 }
 
-function mapStatusToAcc(reviztoStatus) {
-  const safeStatus = reviztoStatus == null ? '' : String(reviztoStatus).toLowerCase().trim();
-  const map = {
-    open: 'open',
-    'in progress': 'in_progress',
-    inprogress: 'in_progress',
-    in_progress: 'in_progress',
-    solved: 'completed',
-    closed: 'closed',
-    void: 'closed',
-  };
-  return map[safeStatus] || 'open';
+/**
+ * Last-resort subtype fallback, so an issue can never fail to sync purely
+ * because nothing resolved a subtype (ACC rejects create/update with a
+ * 400 if issueSubtypeId is missing — confirmed by real testing). First
+ * tries to auto-detect a subtype actually named "General" (subtypeLookup
+ * keys are "IssueType > Subtype" labels, e.g. "Design > General") since
+ * that's explicitly what should back this safeguard when nothing else is
+ * configured; failing that, picks whatever subtype happens to be first,
+ * since ANY valid subtype beats a hard sync failure.
+ */
+function _findFallbackSubtypeId(subtypeLookup) {
+  const entries = Object.entries(subtypeLookup);
+  const general = entries.find(([label]) => label.toLowerCase().includes('general'));
+  if (general) return general[1];
+  return entries[0]?.[1] || null;
 }
 
 function mapStatusFromAcc(accStatus) {
@@ -654,10 +677,15 @@ function _addCustomAttribute(list, definition, rawValue) {
 }
 
 /**
- * Build an ACC issue payload from a Revizto issue.
+ * Build an ACC issue payload from a Revizto issue. Returns
+ * { payload, statusNeedsMapping, typeNeedsMapping } — true when the
+ * issue's status/stamp has no admin mapping configured and had to fall
+ * back to a safeguard default (Draft / the project's default subtype); the
+ * caller uses these to record a visible sync error rather than silently
+ * accepting the safeguard.
  * assigneeResolver: async (email) => autodeskId | null
  */
-async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, assigneeResolver, locationResolver, customAttributeResolver, customStatusMap = null, customTypeMap = null, reviztoStatusName = null } = {}) {
+async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, assigneeResolver, locationResolver, customAttributeResolver, customStatusMap = null, customTypeMap = null, reviztoStatusName = null, statusCategory = null } = {}) {
   const title = unwrap(reviztoIssue.title) || '(no title)';
   // Revizto issues have no description field of their own — this is a
   // fixed marker instead, so users can filter/identify synced issues in
@@ -686,20 +714,52 @@ async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, 
 
   // Status comes from `customStatus` (a UUID resolved against the
   // project's workflow settings) — NOT `status`, which Revizto's own docs
-  // mark deprecated and doesn't reliably exist on real responses. The
-  // caller (syncService.pushIssueToAcc) resolves the UUID to a name via
-  // getStatusMap before calling this, since that resolution needs
-  // project/region context this function doesn't have.
-  const status = (customStatusMap && customStatusMap[reviztoStatusName]) || mapStatusToAcc(reviztoStatusName);
+  // mark deprecated and doesn't reliably exist on real responses.
+  //
+  // Category-based auto-routing, confirmed from real docs (statuses[].
+  // category = "To do" | "Tracking" | "Completed"): "To do" and
+  // "Completed" always map to a fixed ACC status with no admin config
+  // needed. Every other case — "Tracking" (Revizto's own description:
+  // "in-progress issues... being worked on or investigated"), or a
+  // category that couldn't be resolved at all (e.g. issue has no workflow
+  // match) — needs an explicit admin decision, since ACC has several
+  // statuses that could reasonably apply (in_progress, in_review, etc.).
+  // If not configured, default to "draft" (a safeguard, not a real
+  // answer — deliberately distinct from any real status so an unmapped
+  // issue can't be mistaken for one that's genuinely open/in-progress)
+  // and flag it via statusNeedsMapping rather than silently guessing.
+  let status;
+  let statusNeedsMapping = false;
+  if (statusCategory === 'To do') {
+    status = 'open';
+  } else if (statusCategory === 'Completed') {
+    status = 'completed';
+  } else {
+    const configured = customStatusMap && customStatusMap[reviztoStatusName];
+    if (configured) {
+      status = configured;
+    } else {
+      status = 'draft';
+      statusNeedsMapping = true;
+    }
+  }
 
   // Admin-configured type mapping is now keyed by stamp abbreviation (the
   // Setup page dropdown shows "Category > Stamp Title" but stores the
-  // abbreviation, since that's what's actually on an issue). Falls back to
-  // customTypeName, then title-keyword matching, when no configured
-  // mapping matches.
+  // abbreviation, since that's what's actually on an issue). Falls back,
+  // in order: the project's configured default subtype, a title-keyword
+  // guess, an auto-detected "General" subtype, then literally any
+  // available subtype — all safeguards, not a real answer (flagged via
+  // typeNeedsMapping), but guaranteed to resolve to SOMETHING so the push
+  // can never fail with a 400 purely from a missing issueSubtypeId.
   const rawType = unwrap(reviztoIssue.stampAbbr) ?? unwrap(reviztoIssue.customTypeName) ?? null;
+  const typeConfigured = customTypeMap && rawType && customTypeMap[rawType];
+  const typeNeedsMapping = !typeConfigured;
   const subtypeId =
-    (customTypeMap && rawType && customTypeMap[rawType]) || getSubtypeIdForIssue(title, subtypeLookup, defaultSubtypeId);
+    typeConfigured ||
+    defaultSubtypeId ||
+    getSubtypeIdForIssue(title, subtypeLookup, null) ||
+    _findFallbackSubtypeId(subtypeLookup);
 
   const payload = { title: String(title), description: String(description), status, issueSubtypeId: subtypeId };
   // ACC's API likely wants dueDate either a real date string or omitted
@@ -776,7 +836,7 @@ async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, 
     if (resolvedWatchers.length) payload.watchers = resolvedWatchers;
   }
 
-  return payload;
+  return { payload, statusNeedsMapping, typeNeedsMapping };
 }
 
 module.exports = {
@@ -787,6 +847,7 @@ module.exports = {
   updateIssueWatchers,
   updateIssuePriority,
   updateIssueDeadline,
+  getWorkflowSettings,
   addComment,
   addAttachment,
   getProjects,
@@ -794,6 +855,7 @@ module.exports = {
   getLicenseMembers,
   buildMemberNameLookup,
   getStatusMap,
+  getStatusCategory,
   getStampPresets,
   buildStampCategoryLookup,
   buildStampTitleLookup,
@@ -803,6 +865,5 @@ module.exports = {
   findLatestMarkupComment,
   toAccIssue,
   mapStatusFromAcc,
-  mapStatusToAcc,
   unwrap,
 };

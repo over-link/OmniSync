@@ -69,6 +69,7 @@ async function loadStats(projectId) {
   const accEl = document.getElementById('stat-acc-count');
   const syncedEl = document.getElementById('stat-synced-count');
   const errEl = document.getElementById('stat-error-count');
+  const errPill = document.getElementById('stat-error-pill');
   [revEl, accEl, syncedEl, errEl].forEach((el) => (el.textContent = '…'));
   try {
     const stats = await api(`/api/projects/${projectId}/stats`);
@@ -76,9 +77,13 @@ async function loadStats(projectId) {
     accEl.textContent = stats.accCount;
     syncedEl.textContent = stats.syncedCount;
     errEl.textContent = stats.errorCount;
-    document.getElementById('stat-error-pill').classList.toggle('stat-pill-error-active', stats.errorCount > 0);
+    errPill.classList.toggle('stat-pill-error-active', stats.errorCount > 0);
+    // Native title tooltip — simplest way to let admins hover for detail
+    // without a new UI component; supports multiple lines via \n.
+    errPill.title = (stats.errors || []).map((e) => `#${e.reviztoIssueId}: ${e.message}`).join('\n');
   } catch {
     [revEl, accEl, syncedEl, errEl].forEach((el) => (el.textContent = '—'));
+    errPill.title = '';
   }
 }
 
