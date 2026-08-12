@@ -155,7 +155,7 @@ function renderBoard() {
       const rightMeta = i.linked
         ? i.acc?.error
           ? `<span class="hint">${i.acc.error}</span>`
-          : `#${i.acc.id} — ${i.acc.title} <em>(${prettyStatus(i.acc.status)})</em>`
+          : `#${i.acc.displayId ?? i.acc.id} — ${i.acc.title} <em>(${prettyStatus(i.acc.status)})</em>`
         : `<label class="link-checkbox"><input type="checkbox" value="${i.id}" /> Select to link</label>`;
       return `<div class="${rowClass}">
         <span>${leftMeta}</span>

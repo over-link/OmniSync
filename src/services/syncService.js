@@ -727,7 +727,11 @@ async function getIssuesBoard(userId, project) {
     if (accIssueId) {
       try {
         const accIssue = await accService.getIssue(userId, project, accIssueId);
-        acc = { id: accIssueId, title: accIssue.title, status: accIssue.status };
+        // displayId is ACC's own human-readable issue number (confirmed
+        // from real docs — distinct from `id`, the internal UUID used for
+        // API calls). Shown in the UI instead of the UUID; falls back to
+        // the UUID if displayId is ever missing rather than showing blank.
+        acc = { id: accIssueId, displayId: accIssue.displayId ?? accIssueId, title: accIssue.title, status: accIssue.status };
       } catch (err) {
         acc = { id: accIssueId, error: err.response?.data?.detail || err.message };
       }
