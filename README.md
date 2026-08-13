@@ -291,7 +291,7 @@ Two different mechanisms, don't confuse them:
 |---|---|---|---|
 | `title` | `title` | Revizto → ACC | Automatic — direct copy |
 | *(none — Revizto has no description field)* | `description` | Revizto → ACC | Automatic — fixed marker `"Synced from Revizto"`, so issues are filterable in ACC by description |
-| `customStatusName` category | `status` | Both (pull is one-way today, see below) | **Category-based**: "To do"/"Completed" auto-map, no config. "Tracking" (and any unresolved category) is **admin-configurable** (Setup page); falls back to ACC `Draft` + a flagged sync error if unmapped |
+| `customStatusName` category | `status` | Both, admin-configurable both ways | Push: **category-based** — "To do"/"Completed" auto-map, "Tracking" (or unresolved) is admin-configurable, falls back to ACC `Draft` + a flagged error if unmapped. Pull: admin-configurable `acc_status_map`, falls back to a hardcoded guess + a flagged warning if unmapped |
 | `stampAbbr` (shown as "Category > Stamp Title") | `issueSubtypeId` (issue type) | Revizto → ACC | **Admin-configurable** (Setup page) — falls back through: project's default subtype → title-keyword guess → auto-detected "General" subtype → first available, so a push can never fail from a missing subtype. Unmapped flags a sync error |
 | `clashAndLocationFields.level` | `locationId` | Revizto → ACC | Automatic — matched by name against the ACC project's own Location Breakdown Structure (live lookup, nothing stored); no match just leaves it unset |
 | `clashAndLocationFields.zone` | `locationDetails` | Revizto → ACC | Automatic — free text, always written when a zone is set (kept separate from level so it isn't used as a location fallback) |
@@ -321,6 +321,18 @@ Revizto statuses each belong to a **category**, confirmed from real docs
   use on any issue (not just linked ones) — so you can configure a
   project fully before syncing starts, "so things don't slip through the
   cracks." Unmapped ones are highlighted red.
+
+### ACC → Revizto status mapping — the reverse direction
+
+The pull direction previously had **no admin override at all** — just a
+hardcoded guess (`mapStatusFromAcc`, e.g. ACC `pending` → Revizto
+`"Open"`), confirmed by real report to not always be what's wanted, with
+no way to change it. Now the new `acc_status_map` table (all 9 fixed ACC
+statuses, admin-configurable target Revizto status) is checked first;
+only falls back to the hardcoded guess — highlighted red on the Setup
+page — if that specific ACC status isn't mapped.
+
+**Migration needed**: new `acc_status_map` table. Run `npm run migrate`.
 
 ### Issue type mapping — guaranteed to resolve to something
 

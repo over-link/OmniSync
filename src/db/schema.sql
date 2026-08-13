@@ -183,4 +183,19 @@ CREATE TABLE IF NOT EXISTS type_map (
   UNIQUE (project_id, revizto_type)
 );
 
+-- Admin-configured REVERSE status mapping (ACC status -> Revizto status),
+-- per project — the ACC->Revizto direction previously had no admin
+-- override at all, only the hardcoded guess in reviztoService.
+-- mapStatusFromAcc (e.g. "pending" -> "Open", which isn't always what an
+-- admin actually wants). acc_status is one of ACC's fixed 9 enum values;
+-- unmapped falls back to that same hardcoded guess, flagged on the Setup
+-- page rather than silently applied.
+CREATE TABLE IF NOT EXISTS acc_status_map (
+  id              SERIAL PRIMARY KEY,
+  project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  acc_status      TEXT NOT NULL,
+  revizto_status  TEXT NOT NULL,
+  UNIQUE (project_id, acc_status)
+);
+
 -- connect-pg-simple creates its own "session" table automatically on first run.

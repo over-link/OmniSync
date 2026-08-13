@@ -346,7 +346,8 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
   border-bottom: 1px solid var(--line);
   font-size: 0.88rem;
 }
-.mapping-row .subtype-select { flex: 1; min-width: 220px; }
+.mapping-row .subtype-select,
+.mapping-row .revizto-status-select { flex: 1; min-width: 220px; }
 #mapping-panels h3 { font-size: 0.92rem; margin: 1.25rem 0 0.4rem; }
 
 /* Unmapped status/issue-type row — flags a status or stamp with no

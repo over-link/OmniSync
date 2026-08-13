@@ -64,6 +64,11 @@ async function getMappingOptions(userId, project) {
   }
   console.log(`[fieldMapping] Status categories for project "${project.name}":`, JSON.stringify(categoryByStatusName));
 
+  // Every valid Revizto status name project-wide (not just in-use) — the
+  // target list for the ACC->Revizto mapping dropdown below, so an admin
+  // can map any real status, not only ones some issue already has.
+  const allReviztoStatusNames = [...new Set((workflowSettings?.statuses || []).filter((s) => !s.deletedAt).map((s) => s.name))].sort();
+
   // In use on any current Revizto issue — shown from the start so an
   // admin can configure the project correctly upfront, not just after
   // issues get linked (explicit request: "things don't slip through the
@@ -105,6 +110,7 @@ async function getMappingOptions(userId, project) {
     accStatuses: ACC_STATUS_OPTIONS,
     accSubtypes: subtypes.map((s) => ({ id: s.id, label: `${s.issueTypeTitle} > ${s.title}` })),
     reviztoStamps,
+    allReviztoStatusNames, // target dropdown options for the ACC->Revizto mapping below
   };
 }
 
@@ -126,6 +132,35 @@ async function saveStatusMap(projectId, mappings) {
       await client.query(
         'INSERT INTO status_map (project_id, revizto_status, acc_status) VALUES ($1, $2, $3)',
         [projectId, m.reviztoStatus, m.accStatus]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// ─── ACC->Revizto status map CRUD (the reverse direction) ────────────
+
+async function getAccStatusMap(projectId) {
+  const { rows } = await pool.query('SELECT acc_status, revizto_status FROM acc_status_map WHERE project_id = $1', [projectId]);
+  return Object.fromEntries(rows.map((r) => [r.acc_status, r.revizto_status]));
+}
+
+async function saveAccStatusMap(projectId, mappings) {
+  // mappings: [{ accStatus, reviztoStatus }]
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM acc_status_map WHERE project_id = $1', [projectId]);
+    for (const m of mappings) {
+      if (!m.accStatus || !m.reviztoStatus) continue;
+      await client.query(
+        'INSERT INTO acc_status_map (project_id, acc_status, revizto_status) VALUES ($1, $2, $3)',
+        [projectId, m.accStatus, m.reviztoStatus]
       );
     }
     await client.query('COMMIT');
@@ -172,10 +207,11 @@ async function saveTypeMap(projectId, mappings) {
  * not a general stat (unlike getSyncStats, which any user can see).
  */
 async function getUnmappedFields(userId, project) {
-  const [mappingOptions, savedStatusMap, savedTypeMap] = await Promise.all([
+  const [mappingOptions, savedStatusMap, savedTypeMap, savedAccStatusMap] = await Promise.all([
     getMappingOptions(userId, project),
     getStatusMap(project.id),
     getTypeMap(project.id),
+    getAccStatusMap(project.id),
   ]);
 
   const unmappedStatuses = mappingOptions.reviztoStatusesInUse.filter((s) => !savedStatusMap[s]);
@@ -183,8 +219,12 @@ async function getUnmappedFields(userId, project) {
   const unmappedStamps = (mappingOptions.reviztoStamps || [])
     .filter((s) => !mappedStampAbbrs.has(s.value))
     .map((s) => s.label);
+  // Every ACC status is a candidate here (it's a fixed enum, not
+  // "in use" filtered) — an admin should see all 9 up front, same
+  // reasoning as the Revizto side showing everything from the start.
+  const unmappedAccStatuses = ACC_STATUS_OPTIONS.filter((s) => !savedAccStatusMap[s]);
 
-  return { unmappedStatuses, unmappedStamps };
+  return { unmappedStatuses, unmappedStamps, unmappedAccStatuses };
 }
 
 module.exports = {
@@ -192,6 +232,8 @@ module.exports = {
   getMappingOptions,
   getStatusMap,
   saveStatusMap,
+  getAccStatusMap,
+  saveAccStatusMap,
   getTypeMap,
   saveTypeMap,
   getUnmappedFields,

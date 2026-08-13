@@ -62,13 +62,16 @@ async function loadMappingWarnings(projectId) {
   const warningsEl = document.getElementById('setup-warnings');
   warningsEl.textContent = 'Loading...';
   try {
-    const { unmappedStatuses, unmappedStamps } = await api(`/api/projects/${projectId}/mapping-warnings`);
+    const { unmappedStatuses, unmappedStamps, unmappedAccStatuses } = await api(`/api/projects/${projectId}/mapping-warnings`);
     const warnings = [];
     if (unmappedStatuses.length) {
       warnings.push(`⚠️ ${unmappedStatuses.length} status${unmappedStatuses.length === 1 ? '' : 'es'} in use but not mapped: ${unmappedStatuses.join(', ')}`);
     }
     if (unmappedStamps.length) {
       warnings.push(`⚠️ ${unmappedStamps.length} stamp${unmappedStamps.length === 1 ? '' : 's'} in use but not mapped: ${unmappedStamps.join(', ')}`);
+    }
+    if (unmappedAccStatuses && unmappedAccStatuses.length) {
+      warnings.push(`⚠️ ${unmappedAccStatuses.length} ACC status${unmappedAccStatuses.length === 1 ? '' : 'es'} not mapped back to Revizto (using a built-in guess): ${unmappedAccStatuses.map(prettyStatus).join(', ')}`);
     }
     warningsEl.innerHTML = warnings.length
       ? warnings.map((w) => `<div class="dashboard-warning">${w}</div>`).join('')
@@ -119,21 +122,26 @@ let mappingOptions = null;
 async function loadFieldMapping(projectId) {
   const statusRows = document.getElementById('status-map-rows');
   const typeRows = document.getElementById('type-map-rows');
+  const accStatusRows = document.getElementById('acc-status-map-rows');
   statusRows.textContent = 'Loading...';
   typeRows.textContent = 'Loading...';
+  accStatusRows.textContent = 'Loading...';
   try {
-    const [options, statusMapRes, typeMapRes] = await Promise.all([
+    const [options, statusMapRes, typeMapRes, accStatusMapRes] = await Promise.all([
       api(`/api/projects/${projectId}/mapping-options`),
       api(`/api/projects/${projectId}/status-map`),
       api(`/api/projects/${projectId}/type-map`),
+      api(`/api/projects/${projectId}/acc-status-map`),
     ]);
     mappingOptions = options;
     renderStatusMapRows(options, statusMapRes.map);
     renderTypeMapRows(options, typeMapRes.map);
+    renderAccStatusMapRows(options, accStatusMapRes.map);
   } catch (err) {
     const msg = err.data?.reason ? `${err.message}: ${err.data.reason}` : err.message;
     statusRows.textContent = msg;
     typeRows.textContent = msg;
+    accStatusRows.textContent = msg;
   }
 }
 
@@ -248,6 +256,53 @@ document.getElementById('save-type-map-btn').addEventListener('click', async () 
     await api(`/api/projects/${projectId}/type-map`, { method: 'POST', body: JSON.stringify({ mappings }) });
     resultEl.textContent = 'Saved ✓';
     await loadFieldMapping(projectId); // re-render so the red highlight clears for newly-mapped stamps
+  } catch (err) {
+    resultEl.textContent = err.message;
+  }
+});
+
+// The reverse direction: one row per ACC status (a fixed 9-value enum,
+// not "in use" filtered — an admin should see all of them up front).
+// Unmapped ones are red-highlighted, same treatment as the other two
+// mapping lists; falls back to a built-in guess (reviztoService.
+// mapStatusFromAcc) server-side if left unmapped, so this doesn't block
+// the ACC->Revizto pull, just flags that it's using a guess.
+function renderAccStatusMapRows(options, currentMap) {
+  const container = document.getElementById('acc-status-map-rows');
+  const accStatuses = options.accStatuses || [];
+  if (!accStatuses.length) {
+    container.textContent = 'Could not load ACC statuses.';
+    return;
+  }
+  container.innerHTML = accStatuses
+    .map((accStatus) => {
+      const mapped = currentMap[accStatus];
+      return `<div class="mapping-row" data-acc-status="${accStatus}">
+        <span>${prettyStatus(accStatus)}</span>
+        <span class="bridge-connector" aria-hidden="true">→</span>
+        <select class="revizto-status-select${mapped ? '' : ' mapping-select-unmapped'}" title="${mapped ? '' : 'Not mapped — falls back to a built-in guess until configured'}">
+          <option value="">-Select Revizto Status-</option>
+          ${(options.allReviztoStatusNames || []).map((s) => `<option value="${s}" ${s === mapped ? 'selected' : ''}>${s}</option>`).join('')}
+        </select>
+      </div>`;
+    })
+    .join('');
+}
+
+document.getElementById('save-acc-status-map-btn').addEventListener('click', async () => {
+  const projectId = document.getElementById('active-project-select').value;
+  const resultEl = document.getElementById('acc-status-map-result');
+  const mappings = [...document.querySelectorAll('#acc-status-map-rows .mapping-row')]
+    .map((row) => ({
+      accStatus: row.dataset.accStatus,
+      reviztoStatus: row.querySelector('.revizto-status-select').value,
+    }))
+    .filter((m) => m.accStatus && m.reviztoStatus);
+  try {
+    await api(`/api/projects/${projectId}/acc-status-map`, { method: 'POST', body: JSON.stringify({ mappings }) });
+    resultEl.textContent = 'Saved ✓';
+    await loadFieldMapping(projectId);
+    await loadMappingWarnings(projectId);
   } catch (err) {
     resultEl.textContent = err.message;
   }
