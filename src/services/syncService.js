@@ -410,34 +410,40 @@ async function _pushMarkupImageToAcc(userId, project, reviztoIssue, accIssueId, 
   }
 }
 
+/**
+ * Resolves a Revizto member's email to their display name via the
+ * license's member list, for tagging who actually wrote a comment/
+ * attachment when syncing it to the other platform. Only a fallback for
+ * when the richer `author` object (firstname/lastname, present on real
+ * comment data — confirmed) isn't available; useful specifically when
+ * that person has no account on the other side, so the "reporter"/system
+ * account alone wouldn't say who it really came from. Falls back to the
+ * bare email if no license/member match is found either.
+ */
+async function _resolveReviztoAuthorName(userId, project, email) {
+  if (!email) return null;
+  try {
+    const reviztoTokens = await tokenStore.getReviztoTokens(userId);
+    if (!reviztoTokens?.license_id) return email;
+    const members = await reviztoService.getLicenseMembers(userId, project.revizto_region, reviztoTokens.license_id);
+    const nameByEmail = reviztoService.buildMemberNameLookup(members);
+    return nameByEmail[email.toLowerCase()] || email;
+  } catch (err) {
+    console.warn(`[sync] Could not resolve Revizto author name for ${email} (using email):`, err.message);
+    return email;
+  }
+}
+
 async function _pushLatestCommentToAcc(userId, project, reviztoIssue, accIssueId, comments) {
   try {
     const latest = reviztoService.findLatestTextComment(comments);
-    // TEMP DEBUG TRACE: pins down exactly where this exits without
-    // logging the comment sample below — no text comment found at all
-    // vs. found but already marked pushed. Also dumps the full comment
-    // list (type/uuid/short preview, in array order) to check whether
-    // the docs' "sorted oldest-first" claim actually holds, and whether
-    // a freshly-added comment even comes back as type 'text'. Remove
-    // once the real issue is identified.
-    console.log(
-      `[sync] _pushLatestCommentToAcc trace for issue ${reviztoIssue.id}: ${comments.length} comment(s) total, latest text comment: ${latest ? latest.uuid : 'none'}`,
-      JSON.stringify(comments.map((c) => ({ type: c.type, uuid: c.uuid, reporter: c.reporter, preview: (c.text || c.body || '').slice(0, 40) })))
-    );
     if (!latest) return;
 
     const { rows } = await pool.query(
       'SELECT last_pushed_comment_uuid FROM sync_map WHERE project_id = $1 AND revizto_issue_id = $2',
       [project.id, String(reviztoIssue.id)]
     );
-    console.log(`[sync] _pushLatestCommentToAcc trace for issue ${reviztoIssue.id}: last_pushed_comment_uuid=${rows[0]?.last_pushed_comment_uuid}, latest.uuid=${latest.uuid}`);
     if (rows[0]?.last_pushed_comment_uuid === latest.uuid) return; // already pushed
-
-    // TEMP DEBUG: need the real shape of the `reporter` field on a comment
-    // we READ back (confirmed only for what we send on POST: a plain
-    // email string) before author attribution can be added to the
-    // synced-to-ACC text. Remove once confirmed.
-    console.log(`[sync] Revizto comment sample for issue ${reviztoIssue.id}:`, JSON.stringify(latest));
 
     // Same ping-pong protection as the ACC->Revizto direction: a comment
     // WE pushed ACC->Revizto becomes this issue's new "latest text
@@ -450,7 +456,10 @@ async function _pushLatestCommentToAcc(userId, project, reviztoIssue, accIssueId
     // post instead of also getting echoed back into ACC. Same treatment
     // for the "Attachment added via ACC sync" comment from
     // pollAccAttachmentsForProject.
-    const isAutoPostedComment = latest.text === 'Deadline changed via ACC sync' || latest.text === 'Attachment added via ACC sync';
+    // "Attachment added via ACC sync" now gets a "by <name>" suffix
+    // appended (see pollAccAttachmentsForProject), so this needs a prefix
+    // check rather than exact equality to still recognize it.
+    const isAutoPostedComment = latest.text === 'Deadline changed via ACC sync' || (latest.text || '').startsWith('Attachment added via ACC sync');
     if ((latest.text || '').includes('- synced from ACC') || isAutoPostedComment) {
       await pool.query(
         'UPDATE sync_map SET last_pushed_comment_uuid = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
@@ -459,7 +468,14 @@ async function _pushLatestCommentToAcc(userId, project, reviztoIssue, accIssueId
       return;
     }
 
-    await accService.addComment(userId, project, accIssueId, `${latest.text || ''} - synced from Revizto`);
+    // `author` (confirmed from a real comment: {firstname, lastname,
+    // email, ...}) is richer than `reporter` (bare email) and needs no
+    // extra API call — preferred when present, with the license-lookup
+    // helper as a fallback for older/edge-case comments that might lack it.
+    const authorFromObject = [latest.author?.firstname, latest.author?.lastname].filter(Boolean).join(' ') || null;
+    const authorName = authorFromObject || (await _resolveReviztoAuthorName(userId, project, latest.reporter));
+    const attribution = authorName ? ` by ${authorName}` : '';
+    await accService.addComment(userId, project, accIssueId, `${latest.text || ''} - synced from Revizto${attribution}`);
     await pool.query(
       'UPDATE sync_map SET last_pushed_comment_uuid = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
       [project.id, String(reviztoIssue.id), latest.uuid]
@@ -866,6 +882,29 @@ async function getSyncStats(userId, project) {
  * rather than react to a push notification. Called on the same 2-minute
  * cycle as the existing Revizto->ACC auto-resync.
  */
+/**
+ * Resolves an ACC autodeskId (the `createdBy` field on comments and
+ * attachments — confirmed via real testing) to a display name, for
+ * tagging who actually posted a comment/attachment when syncing it into
+ * Revizto. `.name` is a best guess for the field on getProjectMembers'
+ * member objects — not yet independently confirmed, so this falls back
+ * through a couple of reasonable alternatives before giving up. Returns
+ * null (not the autodeskId) on failure so callers can skip attribution
+ * cleanly rather than tagging a comment with a meaningless ID string.
+ */
+async function _resolveAccAuthorName(userId, project, autodeskId) {
+  if (!autodeskId) return null;
+  try {
+    const members = await accService.getProjectMembers(userId, project);
+    const member = members.find((m) => m.autodeskId === autodeskId);
+    if (!member) return null;
+    return member.name || [member.firstName, member.lastName].filter(Boolean).join(' ') || member.email || null;
+  } catch (err) {
+    console.warn(`[poll] Could not resolve ACC author name for ${autodeskId} (skipping attribution):`, err.message);
+    return null;
+  }
+}
+
 async function pollAccCommentsForProject(userId, project, reporterEmail) {
   const { rows } = await pool.query(
     'SELECT revizto_issue_id, acc_issue_id, last_pulled_acc_comment_id FROM sync_map WHERE project_id = $1',
@@ -885,12 +924,6 @@ async function pollAccCommentsForProject(userId, project, reporterEmail) {
       if (!latestId || String(latestId) === String(row.last_pulled_acc_comment_id)) continue; // nothing new
 
       const commentText = latest.body || latest.text || '';
-      // TEMP DEBUG: need the real field name for "who wrote this comment
-      // in ACC" (createdBy? authorId? something nested?) before author
-      // attribution can be added to the synced-to-Revizto text — GET's
-      // shape was never independently confirmed, only guessed from POST's.
-      // Remove once confirmed.
-      console.log(`[poll] ACC comment sample for issue ${row.acc_issue_id}:`, JSON.stringify(latest));
       // Prevents an infinite ping-pong: a comment WE pushed Revizto->ACC
       // becomes ACC's new "latest comment," which would otherwise look
       // like a genuine new ACC comment on the next poll and get pushed
@@ -904,12 +937,14 @@ async function pollAccCommentsForProject(userId, project, reporterEmail) {
         continue;
       }
 
+      const authorName = await _resolveAccAuthorName(userId, project, latest.createdBy);
+      const attribution = authorName ? ` by ${authorName}` : '';
       await reviztoService.addComment(
         userId,
         project.revizto_region,
         project.revizto_project_uuid,
         row.revizto_issue_id,
-        `${commentText} - synced from ACC`,
+        `${commentText} - synced from ACC${attribution}`,
         reporterEmail
       );
       await pool.query(
@@ -1003,12 +1038,13 @@ async function pollAccAttachmentsForProject(userId, project, reporterEmail) {
 
       console.log('[poll] [step 3: post explanatory comment]');
       try {
+        const authorName = await _resolveAccAuthorName(userId, project, latest.createdBy);
         await reviztoService.addComment(
           userId,
           project.revizto_region,
           project.revizto_project_uuid,
           row.revizto_issue_id,
-          'Attachment added via ACC sync',
+          authorName ? `Attachment added via ACC sync by ${authorName}` : 'Attachment added via ACC sync',
           reporterEmail
         );
       } catch (err) {
