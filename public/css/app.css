@@ -103,13 +103,21 @@ body {
 .app-sub { color: var(--muted); margin: 0; font-size: 0.95rem; }
 
 /* ── Issues page: project picker + filters ──────────────────────── */
-.project-picker-card, .filters-card {
+.project-picker-card {
   display: flex;
   align-items: center;
   gap: 0.9rem;
   flex-wrap: wrap;
   padding: 1rem 1.25rem;
 }
+.filters-card {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
+  gap: 0.9rem 1.25rem;
+  padding: 1rem 1.25rem;
+}
+.filters-header { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; margin-bottom: -0.3rem; }
+.filter-count { font-family: var(--font-mono); font-size: 0.8rem; color: var(--muted); }
 .filter-group { display: flex; flex-direction: column; gap: 0.25rem; }
 .filter-group label {
   font-family: var(--font-mono);
@@ -118,6 +126,62 @@ body {
   letter-spacing: 0.06em;
   color: var(--muted);
 }
+
+/* ── Multi-select filter dropdown ────────────────────────────────── */
+.ms { position: relative; }
+.ms-toggle {
+  width: 100%;
+  text-align: left;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  font-weight: 500;
+  font-size: 0.88rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ms-toggle::after { content: "\25BE"; font-size: 0.7rem; color: var(--muted); flex: none; }
+.ms-toggle:hover { background: var(--blueprint-dim); }
+.ms-toggle.active { border-color: var(--blueprint); color: var(--blueprint); }
+.ms-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+  padding: 0.35rem;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.ms-panel.hidden { display: none; }
+.ms-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ms-option:hover { background: var(--blueprint-dim); }
+.ms-option input { margin: 0; }
+.ms-empty { font-size: 0.82rem; color: var(--muted); padding: 0.3rem 0.4rem; }
 
 /* ── Board (two-column Revizto/ACC list) ────────────────────────── */
 .board-card { padding: 1rem 1.25rem; }

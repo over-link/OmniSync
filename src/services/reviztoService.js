@@ -389,6 +389,19 @@ function buildMemberNameLookup(members) {
 }
 
 /**
+ * Builds { [email]: company } from getLicenseMembers' output. `company` is
+ * a top-level field on the member entity itself (a sibling of `user`, NOT
+ * nested under it) — confirmed from real Revizto docs.
+ */
+function buildMemberCompanyLookup(members) {
+  const byEmail = {};
+  for (const m of members) {
+    if (m.user?.email && m.company) byEmail[m.user.email.toLowerCase()] = m.company;
+  }
+  return byEmail;
+}
+
+/**
  * GET /v5/issue/{issueUuid}/comments/date — comments added on/after
  * `date`. Oddly wants the project's NUMERIC id (not the UUID used
  * everywhere else) as a separate param. Returns mixed comment types
@@ -854,6 +867,7 @@ module.exports = {
   getLicenses,
   getLicenseMembers,
   buildMemberNameLookup,
+  buildMemberCompanyLookup,
   getStatusMap,
   getStatusCategory,
   getStampPresets,

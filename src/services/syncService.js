@@ -130,6 +130,16 @@ async function makeLocationResolver(userId, project) {
 // and to avoid the sync reaching into fields it has no business managing.
 const MANAGED_CUSTOM_FIELDS = ['Grid Intersection', 'Room', 'Tags', 'Revizto ID', 'Issue Priority'];
 
+// Revizto returns many categorical fields (status, stamp, tags, etc.) in
+// ALL CAPS. Display as Sentence case for readability — first letter
+// capitalized, everything else lowercase. Display-only: applied once here
+// so the Issues board and its filter dropdowns (which read straight off
+// these board fields) automatically stay consistent with each other.
+function toSentenceCase(s) {
+  if (!s) return s;
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+}
+
 /**
  * Same lazy-fetch-once-then-cache-in-closure shape as makeLocationResolver,
  * restricted to MANAGED_CUSTOM_FIELDS. Also checks issue-attribute-mappings:
@@ -725,10 +735,12 @@ async function getIssuesBoard(userId, project) {
   // license isn't set or the person isn't found (e.g. assigned but not a
   // license member, or a different license than assumed).
   let assigneeNameByEmail = {};
+  let assigneeCompanyByEmail = {};
   if (reviztoTokens?.license_id) {
     try {
       const members = await reviztoService.getLicenseMembers(userId, project.revizto_region, reviztoTokens.license_id);
       assigneeNameByEmail = reviztoService.buildMemberNameLookup(members);
+      assigneeCompanyByEmail = reviztoService.buildMemberCompanyLookup(members);
     } catch (err) {
       console.warn('[issues-board] Could not fetch license members for assignee names:', err.response?.data?.message || err.message);
     }
@@ -755,21 +767,47 @@ async function getIssuesBoard(userId, project) {
     // — confirmed from a real raw issue response, no resolution needed.
     const stampAbbr = reviztoService.unwrap(issue.stampAbbr) ?? null; // was incorrectly `issue.stamp` (doesn't exist)
     const assigneeEmail = reviztoService.unwrap(issue.assignee) ?? null;
+    // priority/level/zone use the same field paths already confirmed and
+    // used in toAccIssue (level/zone need additionalFields: 'appendClashAndLocationFields',
+    // already requested by getIssues). `type` is Revizto's clash indicator
+    // (1 = nonclash issue, 3 = clash issue, confirmed from Revizto docs) —
+    // not to be confused with customType/customTypeName (the issue-type stamp).
+    // Rendered as a label (not a raw boolean) so it slots into the same
+    // scalar string-equality filter mechanism as status/stamp/etc.
+    // Capitalized for display only — the raw lowercase value from Revizto
+    // is still what's sent to ACC's "Issue Priority" custom field elsewhere
+    // (reviztoService.toAccIssue), so that matching logic is untouched.
+    const rawPriority = reviztoService.unwrap(issue.priority) || null;
+    const priority = rawPriority ? rawPriority.charAt(0).toUpperCase() + rawPriority.slice(1) : null;
+    const levels = issue.clashAndLocationFields?.level || [];
+    const zones = issue.clashAndLocationFields?.zone || [];
+    const rooms = issue.clashAndLocationFields?.room || [];
+    const isClash = issue.type === 3 ? 'Clash' : issue.type === 1 ? 'Non-clash' : null;
     board.push({
       id: issue.id,
       title: reviztoService.unwrap(issue.title) || '(no title)',
-      status: reviztoService.unwrap(issue.customStatusName) ?? null,
-      issueType: reviztoService.unwrap(issue.customTypeName) ?? null,
+      status: toSentenceCase(reviztoService.unwrap(issue.customStatusName) ?? null),
+      issueType: toSentenceCase(reviztoService.unwrap(issue.customTypeName) ?? null),
       // Display the stamp's human-readable title, not its raw abbreviation
       // (the abbreviation is still what's used internally for type-mapping
       // matching in toAccIssue — this is display-only).
-      stamp: stampAbbr ? stampTitleByAbbr[stampAbbr] || stampAbbr : null,
-      stampCategory: stampAbbr ? stampCategoryByAbbr[stampAbbr] || null : null,
+      stamp: toSentenceCase(stampAbbr ? stampTitleByAbbr[stampAbbr] || stampAbbr : null),
+      stampCategory: toSentenceCase(stampAbbr ? stampCategoryByAbbr[stampAbbr] || null : null),
       // Show the resolved display name when we have one; fall back to the
       // raw email (still used as the filter's matching value either way,
       // so filtering behavior is unaffected by whether resolution worked).
+      // Not sentence-cased — this is a real person's name, not a category.
       assignee: assigneeEmail ? assigneeNameByEmail[assigneeEmail.toLowerCase()] || assigneeEmail : null,
-      tags: reviztoService.unwrap(issue.tags) || [],
+      // Company is a top-level field on the license member entity (a
+      // sibling of `user`, confirmed from real Revizto docs). Not
+      // sentence-cased — real company names, same reasoning as assignee.
+      assigneeCompany: assigneeEmail ? assigneeCompanyByEmail[assigneeEmail.toLowerCase()] || null : null,
+      tags: (reviztoService.unwrap(issue.tags) || []).map(toSentenceCase),
+      priority,
+      level: levels.map(toSentenceCase),
+      zone: zones.map(toSentenceCase),
+      room: rooms.map(toSentenceCase),
+      isClash,
       linked: !!accIssueId,
       acc,
     });

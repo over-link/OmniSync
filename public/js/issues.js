@@ -10,10 +10,12 @@ async function api(url, options = {}) {
 }
 
 let currentBoard = [];
-const SCALAR_FILTER_FIELDS = ['status', 'stampCategory', 'issueType', 'stamp', 'assignee'];
-const ARRAY_FILTER_FIELDS = ['tags']; // fields where board items hold an array, not a single value
+const SCALAR_FILTER_FIELDS = ['status', 'stampCategory', 'issueType', 'stamp', 'assignee', 'assigneeCompany', 'priority', 'isClash'];
+const ARRAY_FILTER_FIELDS = ['tags', 'level', 'zone', 'room']; // fields where board items hold an array, not a single value
 const ALL_FILTER_FIELDS = [...SCALAR_FILTER_FIELDS, ...ARRAY_FILTER_FIELDS];
-let activeFilters = Object.fromEntries(ALL_FILTER_FIELDS.map((f) => [f, '']));
+// Each filter now holds an array of selected values (empty array = "All"),
+// so multiple values can be chosen per filter at once.
+let activeFilters = Object.fromEntries(ALL_FILTER_FIELDS.map((f) => [f, []]));
 
 window.addEventListener('app:ready', async (e) => {
   if (!e.detail.user) {
@@ -98,24 +100,77 @@ function sortStatusValues(values) {
   return [...canonical, ...extra];
 }
 
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function multiSelectLabel(selected) {
+  if (!selected.length) return 'All';
+  if (selected.length <= 2) return selected.join(', ');
+  return `${selected.length} selected`;
+}
+
+function closeAllMultiSelects() {
+  document.querySelectorAll('.ms-panel').forEach((p) => p.classList.add('hidden'));
+}
+// Close open filter panels when clicking anywhere outside a filter
+// dropdown (but not for clicks inside one, e.g. checking an option).
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.ms')) closeAllMultiSelects();
+});
+
+function renderMultiSelect(container, field, values) {
+  container.innerHTML = `
+    <button type="button" class="ms-toggle">${escapeHtml(multiSelectLabel(activeFilters[field]))}</button>
+    <div class="ms-panel hidden">${
+      values.length
+        ? values
+            .map(
+              (v) =>
+                `<label class="ms-option"><input type="checkbox" value="${escapeHtml(v)}" ${
+                  activeFilters[field].includes(v) ? 'checked' : ''
+                } /> ${escapeHtml(v)}</label>`
+            )
+            .join('')
+        : '<div class="ms-empty">No options</div>'
+    }</div>`;
+  const toggle = container.querySelector('.ms-toggle');
+  const panel = container.querySelector('.ms-panel');
+  toggle.classList.toggle('active', activeFilters[field].length > 0);
+  toggle.addEventListener('click', () => {
+    const isOpen = !panel.classList.contains('hidden');
+    closeAllMultiSelects();
+    if (!isOpen) panel.classList.remove('hidden');
+  });
+  panel.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      activeFilters[field] = cb.checked
+        ? [...activeFilters[field], cb.value]
+        : activeFilters[field].filter((v) => v !== cb.value);
+      toggle.textContent = multiSelectLabel(activeFilters[field]);
+      toggle.classList.toggle('active', activeFilters[field].length > 0);
+      renderBoard();
+    });
+  });
+}
+
 function populateFilterOptions() {
   for (const field of ALL_FILTER_FIELDS) {
-    const select = document.getElementById(`filter-${field}`);
-    const current = select.value;
+    const container = document.getElementById(`filter-${field}`);
     let values = ARRAY_FILTER_FIELDS.includes(field)
       ? [...new Set(currentBoard.flatMap((i) => i[field] || []))].sort()
       : [...new Set(currentBoard.map((i) => i[field]).filter(Boolean))].sort();
     if (field === 'status') values = sortStatusValues(values);
-    select.innerHTML = '<option value="">All</option>' + values.map((v) => `<option value="${v}">${v}</option>`).join('');
-    select.value = values.includes(current) ? current : '';
+    // Drop selections for values no longer present in the board.
+    activeFilters[field] = activeFilters[field].filter((v) => values.includes(v));
+    renderMultiSelect(container, field, values);
   }
 }
 
-ALL_FILTER_FIELDS.forEach((field) => {
-  document.getElementById(`filter-${field}`).addEventListener('change', (e) => {
-    activeFilters[field] = e.target.value;
-    renderBoard();
-  });
+document.getElementById('reset-filters-btn').addEventListener('click', () => {
+  for (const field of ALL_FILTER_FIELDS) activeFilters[field] = [];
+  populateFilterOptions();
+  renderBoard();
 });
 
 function prettyStatus(s) {
@@ -130,12 +185,14 @@ function renderBoard() {
   const actionsEl = document.getElementById('board-actions');
 
   const filtered = currentBoard.filter((i) =>
-    Object.entries(activeFilters).every(([field, val]) => {
-      if (!val) return true;
-      if (ARRAY_FILTER_FIELDS.includes(field)) return (i[field] || []).includes(val);
-      return i[field] === val;
+    Object.entries(activeFilters).every(([field, selected]) => {
+      if (!selected.length) return true;
+      if (ARRAY_FILTER_FIELDS.includes(field)) return (i[field] || []).some((v) => selected.includes(v));
+      return selected.includes(i[field]);
     })
   );
+
+  document.getElementById('filter-issue-count').textContent = `${filtered.length} issue${filtered.length === 1 ? '' : 's'}`;
 
   if (!filtered.length) {
     rowsEl.innerHTML = '';
