@@ -886,9 +886,9 @@ async function getSyncStats(userId, project) {
  * Resolves an ACC autodeskId (the `createdBy` field on comments and
  * attachments — confirmed via real testing) to a display name, for
  * tagging who actually posted a comment/attachment when syncing it into
- * Revizto. `.name` is a best guess for the field on getProjectMembers'
- * member objects — not yet independently confirmed, so this falls back
- * through a couple of reasonable alternatives before giving up. Returns
+ * Revizto. `.name` on getProjectMembers' member objects is confirmed from
+ * a real response (e.g. "Edgar Perez"); firstName/lastName and email are
+ * kept as fallbacks in case a member record is ever missing it. Returns
  * null (not the autodeskId) on failure so callers can skip attribution
  * cleanly rather than tagging a comment with a meaningless ID string.
  */

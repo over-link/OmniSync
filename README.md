@@ -256,11 +256,23 @@ Symmetric with... actually not fully symmetric anymore, see below:
 history or an ongoing thread — matches what was asked for, not a
 limitation to work around later unless you want more.
 
-**Unconfirmed**: the GET comments response's field names (`.body`, `.id`,
-`.createdAt`) are extrapolated from the *POST* endpoint's confirmed shape
-(`{body: comment}`) — the actual GET response schema was never directly
-confirmed from docs or real data. If pulled ACC comments show up blank,
-or new comments aren't detected, this mapping is the first thing to check.
+**Author attribution**: since the account actually posting the synced
+comment is always the syncing/reporter account (not the real author), a
+`- synced from ACC by <name>` / `- synced from Revizto by <name>` suffix
+is appended so it's clear who really wrote it — especially useful when
+that person has no account at all on the other platform. Resolved from:
+Revizto comments' own `author.firstname`/`.lastname` object (confirmed
+from real data), falling back to a `reporter` (email) → license-member
+lookup if `author` is ever missing; ACC comments' `createdBy` (an
+Autodesk user ID, confirmed the same field/format as attachments below),
+resolved to a name via the project members list's `.name` field
+(confirmed from real data, e.g. `"Edgar Perez"`). If a name can't be
+resolved on either side, the suffix is just omitted rather than showing
+a raw ID/email.
+
+GET comments' response shape is now confirmed from real data:
+`{id, issueId, body, createdBy, createdAt, updatedAt, deletedAt, ...}` —
+matches what was previously just extrapolated from the POST shape.
 
 **Needs a one-time backfill for existing projects**: this required adding
 the Revizto project's **numeric ID** (separate from the UUID used
@@ -451,10 +463,13 @@ confirmed to correctly create a visible thumbnail in Revizto's comment
 feed, but did **not** become the large image shown in Revizto's markup
 editor — that likely needs real viewpoint/pin data only created by
 drawing directly in Revizto's client, not reachable via this API. A
-one-time "Attachment added via ACC sync" comment follows, and a guard
-skips re-importing attachments this app already pushed the other
-direction (matched by the `"Revizto Issue "` naming `_pushMarkupImageToAcc`
-already uses).
+one-time "Attachment added via ACC sync" comment follows — tagged with
+`by <name>` when the uploader's `createdBy` resolves to a real name (same
+mechanism as comment attribution above), so the ping-pong guard that
+recognizes this auto-posted comment checks a text *prefix*, not exact
+equality — and a guard skips re-importing attachments this app already
+pushed the other direction (matched by the `"Revizto Issue "` naming
+`_pushMarkupImageToAcc` already uses).
 
 **Migration needed**: `sync_map.last_pulled_acc_attachment_id`
 (idempotent `ALTER TABLE`). Run `npm run migrate`.

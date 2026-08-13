@@ -183,8 +183,6 @@ async function getIssueAttributeMappings(userId, project) {
 
 // ─── Project members / assignee mapping ────────────────────────────
 
-let _loggedMemberSample = false; // TEMP: see below
-
 async function getProjectMembers(userId, project) {
   const token = await getValidAccToken(userId);
   const projectId = _containerId(project);
@@ -200,14 +198,6 @@ async function getProjectMembers(userId, project) {
     members.push(...results);
     if (members.length >= (data.pagination?.totalResults || 0)) break;
     offset += limit;
-  }
-  // TEMP DEBUG: only `.email`/`.autodeskId` are confirmed in use so far —
-  // need to see whether a display-name field (e.g. `.name`) is really
-  // there before using it for comment/attachment author attribution.
-  // Logs once per process. Remove once confirmed.
-  if (!_loggedMemberSample && members.length) {
-    _loggedMemberSample = true;
-    console.log('[acc] project member sample:', JSON.stringify(members[0]));
   }
   return members;
 }
