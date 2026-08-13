@@ -327,10 +327,16 @@ Revizto statuses each belong to a **category**, confirmed from real docs
 The pull direction previously had **no admin override at all** — just a
 hardcoded guess (`mapStatusFromAcc`, e.g. ACC `pending` → Revizto
 `"Open"`), confirmed by real report to not always be what's wanted, with
-no way to change it. Now the new `acc_status_map` table (all 9 fixed ACC
-statuses, admin-configurable target Revizto status) is checked first;
-only falls back to the hardcoded guess — highlighted red on the Setup
-page — if that specific ACC status isn't mapped.
+no way to change it. 4 unambiguous ACC statuses (`open`/`in_progress`/
+`completed`/`closed`) always auto-map (`Open`/`In progress`/`Solved`/
+`Closed`), same "no config needed" treatment as the forward direction's
+"To do"/"Completed" — no admin override possible for these 4, by design.
+For the other 5 (`in_review`/`not_approved`/`in_dispute`/`draft`/
+`pending`), the new `acc_status_map` table (admin-configurable target
+Revizto status) is checked first; only falls back to the hardcoded guess
+— highlighted red on the Setup page — if unmapped. Shown side by side
+with the forward status mapping on the Setup page, since they're the two
+halves of the same concept.
 
 **Migration needed**: new `acc_status_map` table. Run `npm run migrate`.
 

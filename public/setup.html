@@ -87,23 +87,29 @@
           <p class="hint">Revizto and ACC use different status/type vocabularies — configure how they map for each project. Unconfigured statuses/types fall back to built-in defaults. Uses the project selected above.</p>
 
           <div id="mapping-panels" class="hidden">
-            <h3>Status mapping</h3>
-            <p class="hint">Every Revizto status belongs to a category — "To do", "Tracking", or "Completed". <strong>1)</strong> "To do"/"Completed" always auto-map to ACC (grey rows below, nothing to do). <strong>2)</strong> For "Tracking" statuses, your mapping below is used if you've set one. <strong>3)</strong> Only if unmapped does it default to ACC "Draft" as a safeguard — and flags a warning here plus a sync error on the Issues page until you map it. Every Tracking status currently in use is listed (not just synced ones), so you can configure a project fully before syncing starts.</p>
-            <div id="status-map-rows"></div>
-            <button id="save-status-map-btn" class="btn secondary">Save status mapping</button>
-            <span id="status-map-result" class="result-text"></span>
+            <div class="status-mapping-columns">
+              <div>
+                <h3>Status mapping (Revizto → ACC)</h3>
+                <p class="hint">Every Revizto status belongs to a category — "To do", "Tracking", or "Completed". <strong>1)</strong> "To do"/"Completed" always auto-map to ACC (grey rows below, nothing to do). <strong>2)</strong> For "Tracking" statuses, your mapping below is used if you've set one. <strong>3)</strong> Only if unmapped does it default to ACC "Draft" as a safeguard — and flags a warning here plus a sync error on the Issues page until you map it. Every Tracking status currently in use is listed (not just synced ones), so you can configure a project fully before syncing starts.</p>
+                <div id="status-map-rows"></div>
+                <button id="save-status-map-btn" class="btn secondary">Save status mapping</button>
+                <span id="status-map-result" class="result-text"></span>
+              </div>
+
+              <div>
+                <h3>Status mapping (ACC → Revizto)</h3>
+                <p class="hint">4 unambiguous ACC statuses always auto-map to Revizto (grey rows below, nothing to do). <strong>1)</strong> For the rest, your mapping below is used if you've set one, whenever an issue's status changes in ACC. <strong>2)</strong> Only if unmapped does it fall back to a built-in guess (e.g. ACC "Pending" → Revizto "Open") — highlighted red, and flags a warning here, since that guess isn't always what you actually want.</p>
+                <div id="acc-status-map-rows"></div>
+                <button id="save-acc-status-map-btn" class="btn secondary">Save ACC status mapping</button>
+                <span id="acc-status-map-result" class="result-text"></span>
+              </div>
+            </div>
 
             <h3>Issue type mapping</h3>
             <p class="hint">Every Revizto stamp currently in use is listed below. <strong>1)</strong> Your mapping below is used if you've set one. <strong>2)</strong> Otherwise it falls back to this project's <strong>Default ACC issue type</strong> (set per project in the list below — "General" is a good choice). <strong>3)</strong> If that's not set either, a title-keyword guess, then an auto-detected "General" subtype, then whatever's available — this can never fail to sync, but an unmapped stamp is highlighted red and flags a warning here plus a sync error on the Issues page until you map it.</p>
             <div id="type-map-rows"></div>
             <button id="save-type-map-btn" class="btn secondary">Save type mapping</button>
             <span id="type-map-result" class="result-text"></span>
-
-            <h3>ACC → Revizto status mapping (reverse direction)</h3>
-            <p class="hint">All 9 fixed ACC statuses are listed below. <strong>1)</strong> Your mapping below is used if you've set one, whenever an issue's status changes in ACC. <strong>2)</strong> Only if unmapped does it fall back to a built-in guess (e.g. ACC "Pending" → Revizto "Open") — highlighted red, and flags a warning here, since that guess isn't always what you actually want.</p>
-            <div id="acc-status-map-rows"></div>
-            <button id="save-acc-status-map-btn" class="btn secondary">Save ACC status mapping</button>
-            <span id="acc-status-map-result" class="result-text"></span>
           </div>
         </section>
       </div>

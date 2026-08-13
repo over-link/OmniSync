@@ -263,18 +263,32 @@ document.getElementById('save-type-map-btn').addEventListener('click', async () 
 
 // The reverse direction: one row per ACC status (a fixed 9-value enum,
 // not "in use" filtered — an admin should see all of them up front).
-// Unmapped ones are red-highlighted, same treatment as the other two
-// mapping lists; falls back to a built-in guess (reviztoService.
-// mapStatusFromAcc) server-side if left unmapped, so this doesn't block
+// 4 unambiguous ACC statuses (open/in_progress/completed/closed) always
+// auto-map — read-only grey rows, same treatment as the forward
+// direction's "To do"/"Completed". The remaining 5 are editable; unmapped
+// ones are red-highlighted and fall back to a built-in guess
+// (reviztoService.mapStatusFromAcc) server-side, so this doesn't block
 // the ACC->Revizto pull, just flags that it's using a guess.
 function renderAccStatusMapRows(options, currentMap) {
   const container = document.getElementById('acc-status-map-rows');
-  const accStatuses = options.accStatuses || [];
-  if (!accStatuses.length) {
+  const autoMapped = options.autoMappedAccStatuses || [];
+  const mappable = options.mappableAccStatuses || [];
+  if (!autoMapped.length && !mappable.length) {
     container.textContent = 'Could not load ACC statuses.';
     return;
   }
-  container.innerHTML = accStatuses
+
+  const autoRowsHtml = autoMapped
+    .map(
+      (s) => `<div class="status-auto-row" title="Auto-mapped — no configuration needed">
+        <span>${prettyStatus(s.accStatus)}</span>
+        <span class="bridge-connector" aria-hidden="true">→</span>
+        <span class="badge badge-neutral">${s.reviztoStatus} · auto</span>
+      </div>`
+    )
+    .join('');
+
+  const editableRowsHtml = mappable
     .map((accStatus) => {
       const mapped = currentMap[accStatus];
       return `<div class="mapping-row" data-acc-status="${accStatus}">
@@ -287,6 +301,8 @@ function renderAccStatusMapRows(options, currentMap) {
       </div>`;
     })
     .join('');
+
+  container.innerHTML = autoRowsHtml + editableRowsHtml;
 }
 
 document.getElementById('save-acc-status-map-btn').addEventListener('click', async () => {

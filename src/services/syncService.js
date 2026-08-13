@@ -549,14 +549,21 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
     return { action: 'skipped', reason: 'no linked Revizto issue' };
   }
 
-  // Admin-configured ACC->Revizto status mapping (the reverse of
+  // Four ACC statuses have an unambiguous Revizto equivalent and always
+  // auto-map, no admin config possible (explicit request, mirrors the
+  // forward direction's "To do"/"Completed" auto-mapping) — checked
+  // first, takes priority over everything else. For the rest,
+  // admin-configured ACC->Revizto status mapping (the reverse of
   // status_map) takes priority; falls back to the hardcoded guess in
-  // mapStatusFromAcc only if this specific ACC status hasn't been mapped
+  // mapStatusFromAcc only if that specific ACC status hasn't been mapped
   // — confirmed by real report that the guess (e.g. "pending" -> "Open")
   // isn't always what an admin actually wants, with no way to override it
   // before this existed.
   const accStatusMap = await fieldMapping.getAccStatusMap(project.id);
-  const newStatus = accStatusMap[accIssue.status] || reviztoService.mapStatusFromAcc(accIssue.status);
+  const newStatus =
+    fieldMapping.ACC_AUTO_MAPPED_STATUSES[accIssue.status] ||
+    accStatusMap[accIssue.status] ||
+    reviztoService.mapStatusFromAcc(accIssue.status);
   await reviztoService.updateIssueStatus(
     userId,
     project.revizto_region,

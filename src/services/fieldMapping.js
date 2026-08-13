@@ -47,6 +47,23 @@ const CANONICAL_STATUS_ORDER = ['Open', 'In progress', 'Solved', 'Closed'];
 // several statuses that could reasonably apply.
 const AUTO_MAPPED_CATEGORIES = { 'To do': 'open', Completed: 'completed' };
 
+// Reverse direction (ACC->Revizto), explicit request: these 4 ACC
+// statuses have an unambiguous Revizto equivalent, so they always
+// auto-map with no admin config — same treatment as the forward
+// direction's "To do"/"Completed", just a flat lookup since ACC's status
+// field has no category concept of its own to key off of. Uses the
+// confirmed "In progress" casing (lowercase "p") from CANONICAL_STATUS_
+// ORDER, not "In Progress" — Revizto's real status name is case-sensitive
+// for the diff-write mechanism. Only the remaining 5 ACC statuses
+// (in_review, not_approved, in_dispute, draft, pending) need admin
+// mapping.
+const ACC_AUTO_MAPPED_STATUSES = {
+  open: 'Open',
+  in_progress: 'In progress',
+  completed: 'Solved',
+  closed: 'Closed',
+};
+
 async function getMappingOptions(userId, project) {
   const [issues, subtypes, stampPresets, workflowSettings] = await Promise.all([
     reviztoService.getIssues(userId, project.revizto_region, project.revizto_project_uuid),
@@ -103,11 +120,22 @@ async function getMappingOptions(userId, project) {
   const usedStampAbbrs = new Set(issues.map((i) => reviztoService.unwrap(i.stampAbbr)).filter(Boolean));
   const reviztoStamps = reviztoService.buildStampOptions(stampPresets).filter((s) => usedStampAbbrs.has(s.value));
 
+  // Reverse direction: split ACC's fixed 9 statuses the same way as the
+  // forward direction — the 4 unambiguous ones are read-only/auto-mapped,
+  // the rest need admin config.
+  const autoMappedAccStatuses = Object.entries(ACC_AUTO_MAPPED_STATUSES).map(([accStatus, reviztoStatus]) => ({
+    accStatus,
+    reviztoStatus,
+  }));
+  const mappableAccStatuses = ACC_STATUS_OPTIONS.filter((s) => !ACC_AUTO_MAPPED_STATUSES[s]);
+
   return {
     reviztoStatuses, // editable/mappable only — Tracking (or unresolved-category) statuses in use on any current issue
     reviztoStatusesInUse: reviztoStatuses, // kept for the unmapped-warning check — same meaning now (mappable statuses actually in use)
     autoMappedStatuses, // read-only informational rows for the UI
-    accStatuses: ACC_STATUS_OPTIONS,
+    accStatuses: ACC_STATUS_OPTIONS, // the FULL fixed 9 — still used as dropdown target options for the Revizto->ACC "Tracking" mapping
+    mappableAccStatuses, // editable rows only for the ACC->Revizto mapping UI — the 4 auto-mapped ones aren't included here
+    autoMappedAccStatuses, // read-only informational rows for the ACC->Revizto mapping UI
     accSubtypes: subtypes.map((s) => ({ id: s.id, label: `${s.issueTypeTitle} > ${s.title}` })),
     reviztoStamps,
     allReviztoStatusNames, // target dropdown options for the ACC->Revizto mapping below
@@ -219,16 +247,17 @@ async function getUnmappedFields(userId, project) {
   const unmappedStamps = (mappingOptions.reviztoStamps || [])
     .filter((s) => !mappedStampAbbrs.has(s.value))
     .map((s) => s.label);
-  // Every ACC status is a candidate here (it's a fixed enum, not
-  // "in use" filtered) — an admin should see all 9 up front, same
-  // reasoning as the Revizto side showing everything from the start.
-  const unmappedAccStatuses = ACC_STATUS_OPTIONS.filter((s) => !savedAccStatusMap[s]);
+  // Only the 5 non-auto-mapped ACC statuses are candidates here — the 4
+  // auto-mapped ones (open/in_progress/completed/closed) never need
+  // config, so flagging them as "unmapped" would be a false warning.
+  const unmappedAccStatuses = mappingOptions.mappableAccStatuses.filter((s) => !savedAccStatusMap[s]);
 
   return { unmappedStatuses, unmappedStamps, unmappedAccStatuses };
 }
 
 module.exports = {
   ACC_STATUS_OPTIONS,
+  ACC_AUTO_MAPPED_STATUSES,
   getMappingOptions,
   getStatusMap,
   saveStatusMap,
