@@ -415,9 +415,15 @@ async function _pushLatestCommentToAcc(userId, project, reviztoIssue, accIssueId
     const latest = reviztoService.findLatestTextComment(comments);
     // TEMP DEBUG TRACE: pins down exactly where this exits without
     // logging the comment sample below — no text comment found at all
-    // vs. found but already marked pushed. Remove once the real issue is
-    // identified.
-    console.log(`[sync] _pushLatestCommentToAcc trace for issue ${reviztoIssue.id}: ${comments.length} comment(s) total, latest text comment: ${latest ? latest.uuid : 'none'}`);
+    // vs. found but already marked pushed. Also dumps the full comment
+    // list (type/uuid/short preview, in array order) to check whether
+    // the docs' "sorted oldest-first" claim actually holds, and whether
+    // a freshly-added comment even comes back as type 'text'. Remove
+    // once the real issue is identified.
+    console.log(
+      `[sync] _pushLatestCommentToAcc trace for issue ${reviztoIssue.id}: ${comments.length} comment(s) total, latest text comment: ${latest ? latest.uuid : 'none'}`,
+      JSON.stringify(comments.map((c) => ({ type: c.type, uuid: c.uuid, createdAt: c.createdAt ?? c.date ?? null, preview: (c.text || c.body || '').slice(0, 40) })))
+    );
     if (!latest) return;
 
     const { rows } = await pool.query(
