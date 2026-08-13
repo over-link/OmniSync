@@ -422,7 +422,7 @@ async function _pushLatestCommentToAcc(userId, project, reviztoIssue, accIssueId
     // once the real issue is identified.
     console.log(
       `[sync] _pushLatestCommentToAcc trace for issue ${reviztoIssue.id}: ${comments.length} comment(s) total, latest text comment: ${latest ? latest.uuid : 'none'}`,
-      JSON.stringify(comments.map((c) => ({ type: c.type, uuid: c.uuid, createdAt: c.createdAt ?? c.date ?? null, preview: (c.text || c.body || '').slice(0, 40) })))
+      JSON.stringify(comments.map((c) => ({ type: c.type, uuid: c.uuid, reporter: c.reporter, preview: (c.text || c.body || '').slice(0, 40) })))
     );
     if (!latest) return;
 
