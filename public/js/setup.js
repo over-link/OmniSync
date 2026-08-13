@@ -296,7 +296,7 @@ function renderAccStatusMapRows(options, currentMap) {
         <span class="bridge-connector" aria-hidden="true">→</span>
         <select class="revizto-status-select${mapped ? '' : ' mapping-select-unmapped'}" title="${mapped ? '' : 'Not mapped — falls back to a built-in guess until configured'}">
           <option value="">-Select Revizto Status-</option>
-          ${(options.allReviztoStatusNames || []).map((s) => `<option value="${s}" ${s === mapped ? 'selected' : ''}>${s}</option>`).join('')}
+          ${(options.reviztoStatusChoicesForAccMapping || []).map((s) => `<option value="${s}" ${s === mapped ? 'selected' : ''}>${s}</option>`).join('')}
         </select>
       </div>`;
     })

@@ -81,11 +81,6 @@ async function getMappingOptions(userId, project) {
   }
   console.log(`[fieldMapping] Status categories for project "${project.name}":`, JSON.stringify(categoryByStatusName));
 
-  // Every valid Revizto status name project-wide (not just in-use) — the
-  // target list for the ACC->Revizto mapping dropdown below, so an admin
-  // can map any real status, not only ones some issue already has.
-  const allReviztoStatusNames = [...new Set((workflowSettings?.statuses || []).filter((s) => !s.deletedAt).map((s) => s.name))].sort();
-
   // In use on any current Revizto issue — shown from the start so an
   // admin can configure the project correctly upfront, not just after
   // issues get linked (explicit request: "things don't slip through the
@@ -138,7 +133,12 @@ async function getMappingOptions(userId, project) {
     autoMappedAccStatuses, // read-only informational rows for the ACC->Revizto mapping UI
     accSubtypes: subtypes.map((s) => ({ id: s.id, label: `${s.issueTypeTitle} > ${s.title}` })),
     reviztoStamps,
-    allReviztoStatusNames, // target dropdown options for the ACC->Revizto mapping below
+    // Deliberately restricted to just the 4 canonical statuses (not every
+    // real status in the workflow) — explicit request to keep the
+    // ACC->Revizto mapping dropdown simple, since these 4 are the only
+    // sensible targets anyway (this direction is meant to route ACC's
+    // fixed statuses into Revizto's common ones, not every custom one).
+    reviztoStatusChoicesForAccMapping: CANONICAL_STATUS_ORDER,
   };
 }
 
