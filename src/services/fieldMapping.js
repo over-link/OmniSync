@@ -91,12 +91,39 @@ async function getMappingOptions(userId, project) {
     ...new Set((workflowSettings?.statuses || []).filter((s) => !s.deletedAt && validStatusUuids.has(s.uuid)).map((s) => s.name)),
   ];
 
-  // In use on any current Revizto issue — shown from the start so an
-  // admin can configure the project correctly upfront, not just after
-  // issues get linked (explicit request: "things don't slip through the
-  // cracks"). Same scope as the stamps list below.
+  // In use on any current Revizto issue (by literal current status) —
+  // shown from the start so an admin can configure the project correctly
+  // upfront, not just after issues get linked (explicit request: "things
+  // don't slip through the cracks"). Same scope as the stamps list below.
   const inUseStatuses = [...new Set(issues.map((i) => reviztoService.unwrap(i.customStatusName)).filter(Boolean))];
-  const inUseSet = new Set(inUseStatuses);
+
+  // Whole WORKFLOWS currently in use (governing at least one issue, via
+  // that issue's type -> type.workflowUuid) — explicit request: once an
+  // issue is flowing through a workflow, every status in it should be
+  // required to map, not just whichever one an issue's CURRENT status
+  // happens to be sitting in, since the issue could reach any of them.
+  const types = workflowSettings?.types || [];
+  const inUseWorkflowUuids = new Set(
+    issues
+      .map((i) => i.customType?.value)
+      .filter(Boolean)
+      .map((typeUuid) => types.find((t) => t.uuid === typeUuid)?.workflowUuid)
+      .filter(Boolean)
+  );
+  const statusNameByUuid = new Map((workflowSettings?.statuses || []).filter((s) => !s.deletedAt).map((s) => [s.uuid, s.name]));
+  const requiredFromWorkflows = new Set();
+  for (const w of workflowSettings?.workflows || []) {
+    if (w.deletedAt || !inUseWorkflowUuids.has(w.uuid)) continue;
+    for (const s of w.statuses || []) {
+      if (s.deletedAt) continue;
+      const name = statusNameByUuid.get(s.uuid);
+      if (name) requiredFromWorkflows.add(name);
+    }
+  }
+  // Union with the literal in-use statuses too, as a safety net for any
+  // issue whose type/workflow didn't resolve above (e.g. no customType
+  // set) — same fallback reasoning as _resolveStatusUuidForIssue.
+  const requiredStatusNames = new Set([...requiredFromWorkflows, ...inUseStatuses]);
 
   const sortByCanonicalThenName = (a, b) => {
     const ai = CANONICAL_STATUS_ORDER.indexOf(a);
@@ -108,27 +135,31 @@ async function getMappingOptions(userId, project) {
   };
 
   // Read-only informational rows — greyed out in the UI. Only shown when
-  // actually in use, same as before.
+  // actually in use (by literal current status, not just workflow), same
+  // as before — no point flagging a status as "auto-mapped, here's your
+  // heads up" for one nothing has actually used yet.
   const autoMappedStatuses = inUseStatuses
     .filter((s) => REVIZTO_AUTO_MAPPED_STATUSES[s])
     .sort()
     .map((s) => ({ name: s, accStatus: REVIZTO_AUTO_MAPPED_STATUSES[s] }));
 
-  // Editable, required rows: every other custom status actually in use on
-  // a current issue. Unmapped ones are highlighted red and flagged — they
-  // still sync (defaulting to ACC "Draft" as a safeguard, see toAccIssue).
-  const mappableStatusNames = inUseStatuses.filter((s) => !REVIZTO_AUTO_MAPPED_STATUSES[s]);
-  const reviztoStatuses = [...mappableStatusNames].sort(sortByCanonicalThenName);
+  // Editable, required rows: every other custom status in requiredStatusNames
+  // (in use directly, or belonging to a workflow that's in use). Unmapped
+  // ones are highlighted red and flagged — they still sync (defaulting to
+  // ACC "Draft" as a safeguard, see toAccIssue).
+  const mappableStatusNames = [...requiredStatusNames].filter((s) => !REVIZTO_AUTO_MAPPED_STATUSES[s]);
+  const reviztoStatuses = mappableStatusNames.sort(sortByCanonicalThenName);
 
-  // Editable, optional rows: statuses that exist in a workflow but have no
-  // issue using them yet — admins can pre-configure these, but they're
-  // never flagged red/warned since nothing real depends on them yet. Once
-  // a real issue starts using one, it moves into reviztoStatuses above on
-  // the next load (same underlying status_map row still applies either
-  // way — this is purely a visibility/urgency distinction, not a
-  // different storage or push mechanism).
-  const optionalStatusNames = allDefinedStatusNames.filter((s) => !inUseSet.has(s) && !REVIZTO_AUTO_MAPPED_STATUSES[s]);
-  const optionalStatuses = [...optionalStatusNames].sort(sortByCanonicalThenName);
+  // Editable, optional rows: statuses that exist in a workflow but that
+  // workflow isn't in use by any current issue yet — admins can
+  // pre-configure these, but they're never flagged red/warned since
+  // nothing real depends on them yet. Once a real issue starts using that
+  // workflow, all of its statuses move into reviztoStatuses above on the
+  // next load (same underlying status_map row still applies either way —
+  // this is purely a visibility/urgency distinction, not a different
+  // storage or push mechanism).
+  const optionalStatusNames = allDefinedStatusNames.filter((s) => !requiredStatusNames.has(s) && !REVIZTO_AUTO_MAPPED_STATUSES[s]);
+  const optionalStatuses = optionalStatusNames.sort(sortByCanonicalThenName);
 
   // Same "in use" filter for stamps — a project can have many stamp
   // templates defined that no current issue actually uses; without this
