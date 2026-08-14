@@ -483,8 +483,9 @@ pushed the other direction (matched by the `"Revizto Issue "` naming
    records the link (in `sync_map`) — this is the only manual step.
 2. From then on, that issue **auto-resyncs Revizto→ACC every 2 minutes**
    (`POLL_ENABLED=true` by default, `POLL_CRON` controls the schedule) —
-   no further clicks needed. This only touches issues already linked;
-   it never auto-links new ones.
+   no further clicks needed. This only touches issues already linked; it
+   never auto-links new ones **unless auto-sync-by-filter is turned on for
+   the project** — see below.
 3. **ACC→Revizto** happens via webhook — see "Webhooks" below. This is the
    piece that still needs a real deployment to actually test.
 4. Click **"Show linked issues"** any time to see a two-column view:
@@ -494,6 +495,44 @@ pushed the other direction (matched by the `"Revizto Issue "` naming
 assignee/watchers, priority, due date, the latest comment, and attachments
 — just not **title** yet. Everything else uses the same status-via-
 diff-comment mechanism, extended field by field.
+
+### Auto-sync by filter — opt-in exception to "linking is manual"
+
+Setup page, off by default per project. Lets an admin auto-link+push any
+**currently-unlinked** issue matching a set of filter criteria — the same
+12 fields as the Issues page's own filters (status, stamp category, issue
+type, stamp, assignee, assignee company, tag, priority, level, zone, room,
+is-a-clash), rendered with the exact same multi-select dropdown component
+(factored out into `public/js/multiselect.js`, shared by both pages).
+Multiple values within one filter are OR'd together; different filters
+are AND'd together — leave a filter empty to not constrain on it.
+
+Runs on the same 2-minute poll cycle as the existing auto-resync
+(`syncService.autoLinkMatchingIssues`, called from `pollService.js`
+alongside `pushLinkedIssues`). **Deliberately continuous, not one-time**:
+every cycle re-checks every currently-unlinked issue against the saved
+criteria — this means turning the toggle on sweeps up any pre-existing
+matching backlog immediately (not just issues created afterward), and an
+issue edited later to newly match (e.g. priority bumped to Critical) gets
+picked up on its own without needing to re-save the filter. Once a match
+is found, it's linked via the exact same code path as the manual "Link &
+push selected" button (`syncService.pushSelectedIssues`'s `_pushIssueList`
+helper), so there's no separate/divergent linking logic to maintain.
+
+Leaving every filter empty is treated as "nothing to auto-link," even
+with the toggle on — there's deliberately no "auto-link everything"
+switch here, since that would undo the "manual to link" design entirely
+rather than add selective flexibility on top of it.
+
+Stored in `projects.auto_sync_enabled` (boolean) and a new
+`auto_sync_filters` table (one row per project/field/value triple).
+`GET`/`POST /api/projects/:id/auto-sync-filters`; filter option *values*
+reuse the existing `/issues-board` endpoint rather than a separate
+options endpoint, since it's the same real data the Issues page's own
+filters already draw from.
+
+**Migration needed**: `projects.auto_sync_enabled`, new
+`auto_sync_filters` table. Run `npm run migrate`.
 
 ## Webhooks — registering the ACC side
 

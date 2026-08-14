@@ -131,13 +131,22 @@ async function makeLocationResolver(userId, project) {
 const MANAGED_CUSTOM_FIELDS = ['Grid Intersection', 'Room', 'Tags', 'Revizto ID', 'Issue Priority'];
 
 // Revizto returns many categorical fields (status, stamp, tags, etc.) in
-// ALL CAPS. Display as Sentence case for readability — first letter
-// capitalized, everything else lowercase. Display-only: applied once here
-// so the Issues board and its filter dropdowns (which read straight off
-// these board fields) automatically stay consistent with each other.
+// ALL CAPS. Display as Title Case for readability — first letter of EACH
+// word capitalized, rest lowercase. Per-word (not just the string's first
+// character) because multi-word values like a stamp category "01 DESIGN"
+// need every word's first letter capitalized ("01 Design"), not just the
+// string's very first character (a naive single-capitalization pass
+// turned that into "01 design" — confirmed by real testing). Display-only:
+// applied once here so the Issues board and its filter dropdowns (which
+// read straight off these board fields) automatically stay consistent
+// with each other. Never fed back into the actual Revizto/ACC push logic,
+// which always compares against raw unwrap()'d values separately.
 function toSentenceCase(s) {
   if (!s) return s;
-  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+  return s
+    .split(' ')
+    .map((word) => (word ? word.charAt(0).toUpperCase() + word.slice(1).toLowerCase() : word))
+    .join(' ');
 }
 
 /**
@@ -717,35 +726,28 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
 }
 
 /**
- * For the Issues page: every Revizto issue in the project, with its link
- * status (if linked, includes the ACC side's current title/status too),
- * plus fields the UI filters on.
- *
- * FIELD NAMES UNVERIFIED: `stamp`, `stampCategory`, `type`, and `assignee`
- * below are best-guess field paths on Revizto's raw issue object — we
- * don't have confirmed docs for these (unlike title/status/deadline, which
- * came from working code). If filters show blank/wrong values once you
- * have real data, check what field names Revizto's issue-filter response
- * actually uses and fix the `unwrap(...)` calls below accordingly.
+ * Shared lookups needed to compute a Revizto issue's filterable fields
+ * (see _buildFilterableFields below) — fetched once per project/user and
+ * reused across every issue, rather than once per issue. Used by both
+ * getIssuesBoard (the Issues page) and autoLinkMatchingIssues (auto-sync
+ * filter matching), so the two stay consistent with each other by
+ * construction instead of by convention.
  */
-async function getIssuesBoard(userId, project) {
-  const [issues, linkRows, stampPresets, reviztoTokens] = await Promise.all([
-    reviztoService.getIssues(userId, project.revizto_region, project.revizto_project_uuid),
-    pool.query('SELECT revizto_issue_id, acc_issue_id FROM sync_map WHERE project_id = $1', [project.id]).then((r) => r.rows),
+async function _loadFilterableFieldLookups(userId, project) {
+  const [stampPresets, reviztoTokens] = await Promise.all([
     reviztoService.getStampPresets(userId, project.revizto_region, project.revizto_project_uuid).catch(() => []),
     tokenStore.getReviztoTokens(userId),
   ]);
-  const linkMap = new Map(linkRows.map((r) => [String(r.revizto_issue_id), r.acc_issue_id]));
   const { byAbbr: stampCategoryByAbbr } = reviztoService.buildStampCategoryLookup(stampPresets);
   const stampTitleByAbbr = reviztoService.buildStampTitleLookup(stampPresets);
 
-  // Resolve assignee email -> display name via the license's member list.
-  // Uses the CALLING USER's own saved license (from their Revizto
-  // connection) as the license context — assumes the project was set up
-  // under that same license, which is true for the normal "browse my
-  // Revizto projects" setup flow. Falls back to showing the bare email if
-  // license isn't set or the person isn't found (e.g. assigned but not a
-  // license member, or a different license than assumed).
+  // Resolve assignee email -> display name/company via the license's
+  // member list. Uses the CALLING USER's own saved license (from their
+  // Revizto connection) as the license context — assumes the project was
+  // set up under that same license, which is true for the normal "browse
+  // my Revizto projects" setup flow. Falls back to showing the bare email
+  // if license isn't set or the person isn't found (e.g. assigned but not
+  // a license member, or a different license than assumed).
   let assigneeNameByEmail = {};
   let assigneeCompanyByEmail = {};
   if (reviztoTokens?.license_id) {
@@ -754,9 +756,86 @@ async function getIssuesBoard(userId, project) {
       assigneeNameByEmail = reviztoService.buildMemberNameLookup(members);
       assigneeCompanyByEmail = reviztoService.buildMemberCompanyLookup(members);
     } catch (err) {
-      console.warn('[issues-board] Could not fetch license members for assignee names:', err.response?.data?.message || err.message);
+      console.warn('[sync] Could not fetch license members for assignee names (skipping):', err.response?.data?.message || err.message);
     }
   }
+
+  return { stampCategoryByAbbr, stampTitleByAbbr, assigneeNameByEmail, assigneeCompanyByEmail };
+}
+
+/**
+ * Computes a single Revizto issue's filterable fields — the same set the
+ * Issues page filters on (status, stamp, priority, level, etc.) and that
+ * auto-sync filter rules match against. Deliberately excludes `id`/
+ * `title`/`linked`/`acc`, which only getIssuesBoard needs.
+ *
+ * FIELD NAMES UNVERIFIED: `stamp`, `stampCategory`, `type`, and `assignee`
+ * below are best-guess field paths on Revizto's raw issue object — we
+ * don't have confirmed docs for these (unlike title/status/deadline, which
+ * came from working code). If filters show blank/wrong values once you
+ * have real data, check what field names Revizto's issue-filter response
+ * actually uses and fix the `unwrap(...)` calls below accordingly.
+ */
+function _buildFilterableFields(issue, { stampCategoryByAbbr, stampTitleByAbbr, assigneeNameByEmail, assigneeCompanyByEmail }) {
+  // customStatusName / customTypeName are plain, ready-to-display strings
+  // Revizto returns alongside the UUID versions (customStatus/customType)
+  // — confirmed from a real raw issue response, no resolution needed.
+  const stampAbbr = reviztoService.unwrap(issue.stampAbbr) ?? null; // was incorrectly `issue.stamp` (doesn't exist)
+  const assigneeEmail = reviztoService.unwrap(issue.assignee) ?? null;
+  // priority/level/zone use the same field paths already confirmed and
+  // used in toAccIssue (level/zone need additionalFields: 'appendClashAndLocationFields',
+  // already requested by getIssues). `type` is Revizto's clash indicator
+  // (1 = nonclash issue, 3 = clash issue, confirmed from Revizto docs) —
+  // not to be confused with customType/customTypeName (the issue-type stamp).
+  // Rendered as a label (not a raw boolean) so it slots into the same
+  // scalar string-equality filter mechanism as status/stamp/etc.
+  // Capitalized for display only — the raw lowercase value from Revizto
+  // is still what's sent to ACC's "Issue Priority" custom field elsewhere
+  // (reviztoService.toAccIssue), so that matching logic is untouched.
+  const rawPriority = reviztoService.unwrap(issue.priority) || null;
+  const priority = rawPriority ? rawPriority.charAt(0).toUpperCase() + rawPriority.slice(1) : null;
+  const levels = issue.clashAndLocationFields?.level || [];
+  const zones = issue.clashAndLocationFields?.zone || [];
+  const rooms = issue.clashAndLocationFields?.room || [];
+  const isClash = issue.type === 3 ? 'Clash' : issue.type === 1 ? 'Non-clash' : null;
+  return {
+    status: toSentenceCase(reviztoService.unwrap(issue.customStatusName) ?? null),
+    issueType: toSentenceCase(reviztoService.unwrap(issue.customTypeName) ?? null),
+    // Display the stamp's human-readable title, not its raw abbreviation
+    // (the abbreviation is still what's used internally for type-mapping
+    // matching in toAccIssue — this is display-only).
+    stamp: toSentenceCase(stampAbbr ? stampTitleByAbbr[stampAbbr] || stampAbbr : null),
+    stampCategory: toSentenceCase(stampAbbr ? stampCategoryByAbbr[stampAbbr] || null : null),
+    // Show the resolved display name when we have one; fall back to the
+    // raw email (still used as the filter's matching value either way,
+    // so filtering behavior is unaffected by whether resolution worked).
+    // Not sentence-cased — this is a real person's name, not a category.
+    assignee: assigneeEmail ? assigneeNameByEmail[assigneeEmail.toLowerCase()] || assigneeEmail : null,
+    // Company is a top-level field on the license member entity (a
+    // sibling of `user`, confirmed from real Revizto docs). Not
+    // sentence-cased — real company names, same reasoning as assignee.
+    assigneeCompany: assigneeEmail ? assigneeCompanyByEmail[assigneeEmail.toLowerCase()] || null : null,
+    tags: (reviztoService.unwrap(issue.tags) || []).map(toSentenceCase),
+    priority,
+    level: levels.map(toSentenceCase),
+    zone: zones.map(toSentenceCase),
+    room: rooms.map(toSentenceCase),
+    isClash,
+  };
+}
+
+/**
+ * For the Issues page: every Revizto issue in the project, with its link
+ * status (if linked, includes the ACC side's current title/status too),
+ * plus fields the UI filters on.
+ */
+async function getIssuesBoard(userId, project) {
+  const [issues, linkRows, lookups] = await Promise.all([
+    reviztoService.getIssues(userId, project.revizto_region, project.revizto_project_uuid),
+    pool.query('SELECT revizto_issue_id, acc_issue_id FROM sync_map WHERE project_id = $1', [project.id]).then((r) => r.rows),
+    _loadFilterableFieldLookups(userId, project),
+  ]);
+  const linkMap = new Map(linkRows.map((r) => [String(r.revizto_issue_id), r.acc_issue_id]));
 
   const board = [];
   for (const issue of issues) {
@@ -774,57 +853,70 @@ async function getIssuesBoard(userId, project) {
         acc = { id: accIssueId, error: err.response?.data?.detail || err.message };
       }
     }
-    // customStatusName / customTypeName are plain, ready-to-display strings
-    // Revizto returns alongside the UUID versions (customStatus/customType)
-    // — confirmed from a real raw issue response, no resolution needed.
-    const stampAbbr = reviztoService.unwrap(issue.stampAbbr) ?? null; // was incorrectly `issue.stamp` (doesn't exist)
-    const assigneeEmail = reviztoService.unwrap(issue.assignee) ?? null;
-    // priority/level/zone use the same field paths already confirmed and
-    // used in toAccIssue (level/zone need additionalFields: 'appendClashAndLocationFields',
-    // already requested by getIssues). `type` is Revizto's clash indicator
-    // (1 = nonclash issue, 3 = clash issue, confirmed from Revizto docs) —
-    // not to be confused with customType/customTypeName (the issue-type stamp).
-    // Rendered as a label (not a raw boolean) so it slots into the same
-    // scalar string-equality filter mechanism as status/stamp/etc.
-    // Capitalized for display only — the raw lowercase value from Revizto
-    // is still what's sent to ACC's "Issue Priority" custom field elsewhere
-    // (reviztoService.toAccIssue), so that matching logic is untouched.
-    const rawPriority = reviztoService.unwrap(issue.priority) || null;
-    const priority = rawPriority ? rawPriority.charAt(0).toUpperCase() + rawPriority.slice(1) : null;
-    const levels = issue.clashAndLocationFields?.level || [];
-    const zones = issue.clashAndLocationFields?.zone || [];
-    const rooms = issue.clashAndLocationFields?.room || [];
-    const isClash = issue.type === 3 ? 'Clash' : issue.type === 1 ? 'Non-clash' : null;
     board.push({
       id: issue.id,
       title: reviztoService.unwrap(issue.title) || '(no title)',
-      status: toSentenceCase(reviztoService.unwrap(issue.customStatusName) ?? null),
-      issueType: toSentenceCase(reviztoService.unwrap(issue.customTypeName) ?? null),
-      // Display the stamp's human-readable title, not its raw abbreviation
-      // (the abbreviation is still what's used internally for type-mapping
-      // matching in toAccIssue — this is display-only).
-      stamp: toSentenceCase(stampAbbr ? stampTitleByAbbr[stampAbbr] || stampAbbr : null),
-      stampCategory: toSentenceCase(stampAbbr ? stampCategoryByAbbr[stampAbbr] || null : null),
-      // Show the resolved display name when we have one; fall back to the
-      // raw email (still used as the filter's matching value either way,
-      // so filtering behavior is unaffected by whether resolution worked).
-      // Not sentence-cased — this is a real person's name, not a category.
-      assignee: assigneeEmail ? assigneeNameByEmail[assigneeEmail.toLowerCase()] || assigneeEmail : null,
-      // Company is a top-level field on the license member entity (a
-      // sibling of `user`, confirmed from real Revizto docs). Not
-      // sentence-cased — real company names, same reasoning as assignee.
-      assigneeCompany: assigneeEmail ? assigneeCompanyByEmail[assigneeEmail.toLowerCase()] || null : null,
-      tags: (reviztoService.unwrap(issue.tags) || []).map(toSentenceCase),
-      priority,
-      level: levels.map(toSentenceCase),
-      zone: zones.map(toSentenceCase),
-      room: rooms.map(toSentenceCase),
-      isClash,
+      ..._buildFilterableFields(issue, lookups),
       linked: !!accIssueId,
       acc,
     });
   }
   return board;
+}
+
+// Fields where a board item holds an array, not a single value — same
+// split as the Issues page's own ARRAY_FILTER_FIELDS (public/js/issues.js),
+// kept in sync manually since one's server-side and one's client-side.
+const AUTO_SYNC_ARRAY_FIELDS = new Set(['tags', 'level', 'zone', 'room']);
+
+// Same combination semantics as the Issues page's own filters: every
+// configured field must match (AND), and a field matches if the issue's
+// value is one of that field's selected values (OR within the field). A
+// field with no selected values imposes no constraint.
+function _matchesAutoSyncFilters(fields, filters) {
+  return Object.entries(filters).every(([field, selected]) => {
+    if (!selected || !selected.length) return true;
+    if (AUTO_SYNC_ARRAY_FIELDS.has(field)) return (fields[field] || []).some((v) => selected.includes(v));
+    return selected.includes(fields[field]);
+  });
+}
+
+/**
+ * Auto-links (and pushes) any currently-unlinked Revizto issue matching a
+ * project's admin-configured auto-sync filter criteria (Setup page) —
+ * opt-in, off by default (project.auto_sync_enabled). Runs on the same
+ * 2-minute poll cycle as the existing auto-resync (see pollService.js),
+ * so this continuously sweeps: brand-new issues, issues edited to newly
+ * match, AND any pre-existing unlinked backlog that already matched
+ * before the rule was turned on — no special-casing between "new" and
+ * "existing" issues (explicit request).
+ *
+ * No filter VALUES configured at all (even with the toggle on) is treated
+ * as "nothing to do," not "match everything" — an auto-link-everything
+ * toggle would be a much bigger, more surprising behavior change than
+ * what was actually asked for (selective filtering, not a blanket switch
+ * that undoes the "manual to link" design entirely).
+ */
+async function autoLinkMatchingIssues(userId, project) {
+  if (!project.auto_sync_enabled) return [];
+  const filters = await fieldMapping.getAutoSyncFilters(project.id);
+  const hasAnyFilterValue = Object.values(filters).some((values) => values && values.length);
+  if (!hasAnyFilterValue) return [];
+
+  const [issues, linkRows, lookups] = await Promise.all([
+    reviztoService.getIssues(userId, project.revizto_region, project.revizto_project_uuid),
+    pool.query('SELECT revizto_issue_id FROM sync_map WHERE project_id = $1', [project.id]).then((r) => r.rows),
+    _loadFilterableFieldLookups(userId, project),
+  ]);
+  const linkedIds = new Set(linkRows.map((r) => String(r.revizto_issue_id)));
+  const unlinkedMatches = issues.filter((issue) => {
+    if (linkedIds.has(String(issue.id))) return false;
+    return _matchesAutoSyncFilters(_buildFilterableFields(issue, lookups), filters);
+  });
+  if (!unlinkedMatches.length) return [];
+
+  console.log(`[auto-sync] "${project.name}": ${unlinkedMatches.length} unlinked issue(s) match the auto-sync filter — linking now.`);
+  return _pushIssueList(userId, project, unlinkedMatches);
 }
 
 /**
@@ -1045,6 +1137,7 @@ module.exports = {
   pushAllOpenIssues,
   pushSelectedIssues,
   pushLinkedIssues,
+  autoLinkMatchingIssues,
   getLinkedIssuePairs,
   getIssuesBoard,
   handleAccWebhook,

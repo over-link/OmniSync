@@ -198,4 +198,27 @@ CREATE TABLE IF NOT EXISTS acc_status_map (
   UNIQUE (project_id, acc_status)
 );
 
+-- Whether auto-sync-by-filter is on for a project (see auto_sync_filters
+-- below). Off by default — this is an opt-in convenience on top of the
+-- existing manual "select issues to link" flow, not a replacement for it.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS auto_sync_enabled BOOLEAN NOT NULL DEFAULT false;
+
+-- Admin-configured auto-sync filter criteria, per project — same fields
+-- as the Issues page's own filters (status, stampCategory, issueType,
+-- stamp, assignee, assigneeCompany, priority, isClash, tags, level, zone,
+-- room). One row per (field, value) pair; multiple values for the same
+-- field are OR'd together, different fields are AND'd together — same
+-- semantics as the Issues page's own filter combination. Every
+-- currently-unlinked issue matching all configured fields gets
+-- automatically linked+pushed on the same 2-minute poll cycle as the
+-- existing auto-resync (see syncService.autoLinkMatchingIssues).
+CREATE TABLE IF NOT EXISTS auto_sync_filters (
+  id          SERIAL PRIMARY KEY,
+  project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  field       TEXT NOT NULL,
+  value       TEXT NOT NULL,
+  UNIQUE (project_id, field, value)
+);
+CREATE INDEX IF NOT EXISTS idx_auto_sync_filters_project ON auto_sync_filters(project_id);
+
 -- connect-pg-simple creates its own "session" table automatically on first run.

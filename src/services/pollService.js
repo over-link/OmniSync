@@ -1,9 +1,12 @@
 /**
  * services/pollService.js
  * Automatic re-sync of already-LINKED issues, every 2 minutes by default.
- * This does NOT push new/unlinked issues — that stays a manual, explicit
- * choice (the "Select issues to sync" flow). Once an issue is linked,
- * this keeps it in sync going forward without further clicks, matching
+ * By default this does NOT push new/unlinked issues — that stays a
+ * manual, explicit choice (the "Select issues to sync" flow). The one
+ * opt-in exception is auto-sync-by-filter (Setup page,
+ * project.auto_sync_enabled): if a project has that turned on with real
+ * filter criteria configured, matching unlinked issues get swept in here
+ * too (see syncService.autoLinkMatchingIssues) — everything else keeps
  * the "manual to link, automatic after" design.
  */
 const cron = require('node-cron');
@@ -19,6 +22,14 @@ async function pollAllProjects() {
       if (results.length) {
         const errors = results.filter((r) => r.action === 'error');
         console.log(`[poll] "${project.name}": ${results.length} linked issue(s) re-synced, ${errors.length} errors`);
+      }
+
+      // Opt-in: only does anything if the admin turned on auto-sync-by-
+      // filter for this project (see fieldMapping.getAutoSyncFilters).
+      const autoLinkResults = await syncService.autoLinkMatchingIssues(project.owner_user_id, project);
+      if (autoLinkResults.length) {
+        const errors = autoLinkResults.filter((r) => r.action === 'error');
+        console.log(`[poll] "${project.name}": ${autoLinkResults.length} issue(s) auto-linked by filter, ${errors.length} errors`);
       }
 
       // No webhook event exists for ACC comments (or is confirmed for

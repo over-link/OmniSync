@@ -9,6 +9,37 @@ async function api(url, options = {}) {
   return data;
 }
 
+// ─── Accordion (Setup page modules, and Field mapping's own sub-tiers) ──
+// Only one item open at a time within a given accordion — clicking a
+// closed header opens it and closes its siblings; clicking the
+// already-open one just collapses it. Shared by the top-level accordion
+// and the Field mapping sub-accordion, each wired independently so
+// opening a sub-tier doesn't affect which top-level module is open.
+function wireAccordion(containerId, itemClass, headerClass) {
+  document.querySelectorAll(`#${containerId} .${headerClass}`).forEach((header) => {
+    header.addEventListener('click', () => {
+      const item = header.closest(`.${itemClass}`);
+      const wasOpen = item.classList.contains('open');
+      document.querySelectorAll(`#${containerId} .${itemClass}`).forEach((i) => i.classList.remove('open'));
+      if (!wasOpen) item.classList.add('open');
+    });
+  });
+}
+wireAccordion('setup-accordion', 'accordion-item', 'accordion-header');
+wireAccordion('field-mapping-subaccordion', 'subaccordion-item', 'subaccordion-header');
+
+/** Opens the top-level "Field mapping" module and its "Mapping warnings"
+ * sub-tab — used by the page-top warning banner so clicking it jumps
+ * straight to the relevant place instead of just describing where to go. */
+function openMappingWarningsTab() {
+  document.querySelectorAll('#setup-accordion .accordion-item').forEach((i) => i.classList.remove('open'));
+  document.querySelector('#setup-accordion .accordion-item[data-step="field-mapping"]').classList.add('open');
+  document.querySelectorAll('#field-mapping-subaccordion .subaccordion-item').forEach((i) => i.classList.remove('open'));
+  document.querySelector('#field-mapping-subaccordion .subaccordion-item[data-substep="warnings"]').classList.add('open');
+  document.getElementById('setup-top-warning').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+document.getElementById('setup-top-warning').addEventListener('click', openMappingWarningsTab);
+
 window.addEventListener('app:ready', async (e) => {
   // nav.js already redirects non-admins away from this page — if we get
   // here, the user is an admin. Still guard against the brief moment
@@ -40,15 +71,21 @@ async function loadActiveProjectOptions() {
 async function onActiveProjectChange(projectId) {
   const warningsEl = document.getElementById('setup-warnings');
   const mappingPanels = document.getElementById('mapping-panels');
+  const autoSyncPanels = document.getElementById('auto-sync-panels');
   if (!projectId) {
     warningsEl.classList.add('hidden');
     mappingPanels.classList.add('hidden');
+    autoSyncPanels.classList.add('hidden');
+    document.getElementById('mapping-warnings-caution').classList.add('hidden');
+    document.getElementById('setup-top-warning').classList.add('hidden');
     return;
   }
   warningsEl.classList.remove('hidden');
   mappingPanels.classList.remove('hidden');
+  autoSyncPanels.classList.remove('hidden');
   await loadMappingWarnings(projectId);
   await loadFieldMapping(projectId);
+  await loadAutoSyncSettings(projectId);
 }
 
 document.getElementById('active-project-select').addEventListener('change', async (e) => {
@@ -60,6 +97,9 @@ document.getElementById('active-project-select').addEventListener('change', asyn
 
 async function loadMappingWarnings(projectId) {
   const warningsEl = document.getElementById('setup-warnings');
+  const cautionIcon = document.getElementById('mapping-warnings-caution');
+  const topWarning = document.getElementById('setup-top-warning');
+  const topWarningText = document.getElementById('setup-top-warning-text');
   warningsEl.textContent = 'Loading...';
   try {
     const { unmappedStatuses, unmappedStamps } = await api(`/api/projects/${projectId}/mapping-warnings`);
@@ -73,8 +113,17 @@ async function loadMappingWarnings(projectId) {
     warningsEl.innerHTML = warnings.length
       ? warnings.map((w) => `<div class="dashboard-warning">${w}</div>`).join('')
       : '<div class="hint">All in-use statuses and stamps are mapped.</div>';
+
+    const totalUnmapped = unmappedStatuses.length + unmappedStamps.length;
+    cautionIcon.classList.toggle('hidden', totalUnmapped === 0);
+    topWarning.classList.toggle('hidden', totalUnmapped === 0);
+    if (totalUnmapped > 0) {
+      topWarningText.textContent = `${totalUnmapped} unmapped field${totalUnmapped === 1 ? '' : 's'} for this project`;
+    }
   } catch (err) {
     warningsEl.textContent = err.data?.reason ? `${err.message}: ${err.data.reason}` : err.message;
+    cautionIcon.classList.add('hidden');
+    topWarning.classList.add('hidden');
   }
 }
 
@@ -495,5 +544,105 @@ document.getElementById('project-form').addEventListener('submit', async (e) => 
     await loadProjects();
   } catch (err) {
     alert(err.message);
+  }
+});
+
+// ─── Auto-sync by filter ────────────────────────────────────────────
+// Same field split as the Issues page's own filters (public/js/issues.js)
+// — kept in sync manually since one's this page's script and one's that
+// page's, but the option-building/matching semantics are identical.
+const AUTO_SYNC_SCALAR_FIELDS = ['status', 'stampCategory', 'issueType', 'stamp', 'assignee', 'assigneeCompany', 'priority', 'isClash'];
+const AUTO_SYNC_ARRAY_FIELDS = ['tags', 'level', 'zone', 'room'];
+const AUTO_SYNC_ALL_FIELDS = [...AUTO_SYNC_SCALAR_FIELDS, ...AUTO_SYNC_ARRAY_FIELDS];
+let autoSyncFilters = Object.fromEntries(AUTO_SYNC_ALL_FIELDS.map((f) => [f, []]));
+let autoSyncBoard = [];
+
+// Mirrors syncService.js's _matchesAutoSyncFilters exactly (AND across
+// fields, OR within a field's selected values) — kept in sync manually
+// since one's server-side and one's client-side, same as the field lists
+// above. Only counts currently-unlinked issues, since linked ones are
+// never touched by auto-sync.
+function updateAutoSyncCount() {
+  const countEl = document.getElementById('auto-sync-issue-count');
+  const matching = autoSyncBoard.filter((i) => {
+    if (i.linked) return false;
+    return AUTO_SYNC_ALL_FIELDS.every((field) => {
+      const selected = autoSyncFilters[field];
+      if (!selected.length) return true;
+      if (AUTO_SYNC_ARRAY_FIELDS.includes(field)) return (i[field] || []).some((v) => selected.includes(v));
+      return selected.includes(i[field]);
+    });
+  });
+  countEl.textContent = `${matching.length} unlinked issue${matching.length === 1 ? '' : 's'} would be auto-linked`;
+}
+
+// Renders (or re-renders) a single auto-sync filter field's dropdown from
+// the currently-loaded autoSyncBoard — shared by the initial load and the
+// reset button, so there's one place that builds options from board data.
+function renderAutoSyncField(field) {
+  const container = document.getElementById(`auto-sync-filter-${field}`);
+  const values = AUTO_SYNC_ARRAY_FIELDS.includes(field)
+    ? [...new Set(autoSyncBoard.flatMap((i) => i[field] || []))].sort()
+    : [...new Set(autoSyncBoard.map((i) => i[field]).filter(Boolean))].sort();
+  // Drop selections for values no longer present in the board.
+  autoSyncFilters[field] = autoSyncFilters[field].filter((v) => values.includes(v));
+  renderMultiSelect(container, values, autoSyncFilters[field], (updated) => {
+    autoSyncFilters[field] = updated;
+    updateAutoSyncCount();
+  });
+}
+
+// Filters are greyed out and non-interactive until the toggle is on —
+// explicit request, so it's visually obvious the criteria below don't do
+// anything while auto-sync itself is off.
+function updateAutoSyncLockState() {
+  const enabled = document.getElementById('auto-sync-enabled-toggle').checked;
+  document.getElementById('auto-sync-filters-card').classList.toggle('filters-locked', !enabled);
+}
+document.getElementById('auto-sync-enabled-toggle').addEventListener('change', updateAutoSyncLockState);
+
+document.getElementById('reset-auto-sync-filters-btn').addEventListener('click', () => {
+  for (const field of AUTO_SYNC_ALL_FIELDS) {
+    autoSyncFilters[field] = [];
+    renderAutoSyncField(field);
+  }
+  updateAutoSyncCount();
+});
+
+async function loadAutoSyncSettings(projectId) {
+  const resultEl = document.getElementById('auto-sync-result');
+  resultEl.textContent = '';
+  try {
+    // Filter option VALUES come from the same board data the Issues page
+    // itself filters on — real values currently in the project, not a
+    // separate options endpoint.
+    const [{ board }, saved] = await Promise.all([
+      api(`/api/projects/${projectId}/issues-board`),
+      api(`/api/projects/${projectId}/auto-sync-filters`),
+    ]);
+    autoSyncBoard = board;
+    document.getElementById('auto-sync-enabled-toggle').checked = !!saved.enabled;
+    updateAutoSyncLockState();
+    autoSyncFilters = Object.fromEntries(AUTO_SYNC_ALL_FIELDS.map((f) => [f, saved.filters?.[f] || []]));
+
+    for (const field of AUTO_SYNC_ALL_FIELDS) renderAutoSyncField(field);
+    updateAutoSyncCount();
+  } catch (err) {
+    resultEl.textContent = err.data?.reason ? `${err.message}: ${err.data.reason}` : err.message;
+  }
+}
+
+document.getElementById('save-auto-sync-btn').addEventListener('click', async () => {
+  const projectId = document.getElementById('active-project-select').value;
+  const resultEl = document.getElementById('auto-sync-result');
+  const enabled = document.getElementById('auto-sync-enabled-toggle').checked;
+  try {
+    await api(`/api/projects/${projectId}/auto-sync-filters`, {
+      method: 'POST',
+      body: JSON.stringify({ enabled, filters: autoSyncFilters }),
+    });
+    resultEl.textContent = 'Saved ✓';
+  } catch (err) {
+    resultEl.textContent = err.message;
   }
 });

@@ -17,17 +17,24 @@
       <p class="app-sub">Map Revizto projects to ACC projects. Mistakes here affect the whole team — that's why it's admin-only.</p>
     </header>
 
-    <section class="card" id="warnings-card">
-      <h2>Mapping warnings</h2>
+    <button type="button" id="setup-top-warning" class="setup-top-warning hidden">
+      ⚠️&nbsp;<span id="setup-top-warning-text"></span> — see Field mapping → Mapping warnings
+    </button>
+
+    <div class="card setup-context-bar">
       <label for="active-project-select">Project:</label>
       <select id="active-project-select"><option value="">Select a project</option></select>
-      <div id="setup-warnings" class="hidden"></div>
-    </section>
+    </div>
 
-    <div class="setup-columns">
-      <div class="setup-col">
-        <section class="card">
-          <h2>Your Revizto license</h2>
+    <div class="accordion" id="setup-accordion">
+      <section class="accordion-item open" data-step="license-project">
+        <button type="button" class="accordion-header">
+          <span class="accordion-step">1</span>
+          <span>Map license &amp; project</span>
+          <span class="accordion-caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="accordion-panel">
+          <h3>Your Revizto license</h3>
           <p class="hint">Needed to browse your Revizto projects below when adding a pairing. Connect Revizto first on <a href="/account">My Connections</a> if this is empty.</p>
           <div class="conn-row">
             <span class="conn-label">License</span>
@@ -37,10 +44,8 @@
             </select>
             <button id="license-save-btn" class="btn">Save</button>
           </div>
-        </section>
 
-        <section class="card">
-          <h2>Projects</h2>
+          <h3>Projects</h3>
           <div id="projects-list"></div>
 
           <details>
@@ -78,32 +83,139 @@
             <button type="button" id="register-test-webhook-btn" class="btn secondary">Register test webhook</button>
             <div id="test-webhook-result" class="result-text"></div>
           </details>
-        </section>
-      </div>
+        </div>
+      </section>
 
-      <div class="setup-col">
-        <section class="card">
-          <h2>Field mapping</h2>
+      <section class="accordion-item" data-step="field-mapping">
+        <button type="button" class="accordion-header">
+          <span class="accordion-step">2</span>
+          <span>Field mapping</span>
+          <span class="accordion-caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="accordion-panel">
           <p class="hint">Revizto and ACC use different status/type vocabularies — configure how they map for each project. Unconfigured statuses/types fall back to built-in defaults. Uses the project selected above.</p>
 
           <div id="mapping-panels" class="hidden">
-            <h3>Status mapping (Revizto → ACC)</h3>
-            <p class="hint">The 4 common Revizto statuses — Open, In progress, Solved, Closed — always auto-map to their ACC equivalent (grey rows below, nothing to do). <strong>1)</strong> Every other custom status belonging to a workflow currently governing an issue is listed below as required — as soon as any issue starts using that workflow, all of its statuses need a mapping, since the issue could reach any of them. <strong>2)</strong> Only if unmapped does it default to ACC "Draft" as a safeguard — and flags a warning here plus a sync error on the Issues page until you map it. <strong>3)</strong> Custom statuses whose workflow isn't in use by any issue yet are also listed, marked "Optional mapping" — set one ahead of time if you like, but they're never flagged as a warning until a real issue actually starts using that workflow. (ACC → Revizto status has no admin mapping — it always auto-maps the same 4 statuses and falls back to a built-in guess for the rest.)</p>
-            <div id="status-map-rows"></div>
-            <button id="save-status-map-btn" class="btn secondary">Save status mapping</button>
-            <span id="status-map-result" class="result-text"></span>
+            <div class="subaccordion" id="field-mapping-subaccordion">
+              <section class="subaccordion-item open" data-substep="status">
+                <button type="button" class="subaccordion-header">
+                  <span>Status mapping</span>
+                  <span class="accordion-caret" aria-hidden="true">▾</span>
+                </button>
+                <div class="subaccordion-panel">
+                  <p class="hint">The 4 common Revizto statuses — Open, In progress, Solved, Closed — always auto-map to their ACC equivalent (grey rows below, nothing to do). <strong>1)</strong> Every other custom status belonging to a workflow currently governing an issue is listed below as required — as soon as any issue starts using that workflow, all of its statuses need a mapping, since the issue could reach any of them. <strong>2)</strong> Only if unmapped does it default to ACC "Draft" as a safeguard — and flags a warning (see Mapping warnings tab) plus a sync error on the Issues page until you map it. <strong>3)</strong> Custom statuses whose workflow isn't in use by any issue yet are also listed, marked "Optional mapping" — set one ahead of time if you like, but they're never flagged as a warning until a real issue actually starts using that workflow. (ACC → Revizto status has no admin mapping — it always auto-maps the same 4 statuses and falls back to a built-in guess for the rest.)</p>
+                  <div id="status-map-rows"></div>
+                  <button id="save-status-map-btn" class="btn secondary">Save status mapping</button>
+                  <span id="status-map-result" class="result-text"></span>
+                </div>
+              </section>
 
-            <h3>Issue type mapping</h3>
-            <p class="hint">Every Revizto stamp currently in use is listed below. <strong>1)</strong> Your mapping below is used if you've set one. <strong>2)</strong> Otherwise it falls back to this project's <strong>Default ACC issue type</strong> (set per project in the list below — "General" is a good choice). <strong>3)</strong> If that's not set either, a title-keyword guess, then an auto-detected "General" subtype, then whatever's available — this can never fail to sync, but an unmapped stamp is highlighted red and flags a warning here plus a sync error on the Issues page until you map it.</p>
-            <div id="type-map-rows"></div>
-            <button id="save-type-map-btn" class="btn secondary">Save type mapping</button>
-            <span id="type-map-result" class="result-text"></span>
+              <section class="subaccordion-item" data-substep="type">
+                <button type="button" class="subaccordion-header">
+                  <span>Issue type mapping</span>
+                  <span class="accordion-caret" aria-hidden="true">▾</span>
+                </button>
+                <div class="subaccordion-panel">
+                  <p class="hint">Every Revizto stamp currently in use is listed below. <strong>1)</strong> Your mapping below is used if you've set one. <strong>2)</strong> Otherwise it falls back to this project's <strong>Default ACC issue type</strong> (set per project in the list below — "General" is a good choice). <strong>3)</strong> If that's not set either, a title-keyword guess, then an auto-detected "General" subtype, then whatever's available — this can never fail to sync, but an unmapped stamp is highlighted red and flags a warning (see Mapping warnings tab) plus a sync error on the Issues page until you map it.</p>
+                  <div id="type-map-rows"></div>
+                  <button id="save-type-map-btn" class="btn secondary">Save type mapping</button>
+                  <span id="type-map-result" class="result-text"></span>
+                </div>
+              </section>
+
+              <section class="subaccordion-item" data-substep="warnings">
+                <button type="button" class="subaccordion-header">
+                  <span>Mapping warnings</span>
+                  <span id="mapping-warnings-caution" class="warning-icon hidden" title="This project has unmapped fields">⚠️</span>
+                  <span class="accordion-caret" aria-hidden="true">▾</span>
+                </button>
+                <div class="subaccordion-panel">
+                  <p class="hint">In-use statuses and stamps with no configured mapping yet (see Status/Issue type mapping above) — the same information also shows as a sync error on the Issues page until resolved.</p>
+                  <div id="setup-warnings" class="hidden"></div>
+                </div>
+              </section>
+            </div>
           </div>
-        </section>
-      </div>
+        </div>
+      </section>
+
+      <section class="accordion-item" data-step="auto-sync">
+        <button type="button" class="accordion-header">
+          <span class="accordion-step">3</span>
+          <span>Auto sync</span>
+          <span class="accordion-caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="accordion-panel">
+          <p class="hint">Optional, off by default. When enabled, any currently-unlinked issue matching every filter below gets automatically linked &amp; pushed — on the same 2-minute cycle as the existing auto-resync, so this also sweeps up any matching backlog the first time it runs, not just new issues going forward. Same fields and combination rules as the Issues page filters: multiple values within one filter are OR'd together, different filters are AND'd together. Uses the project selected above. Leaving every filter empty means nothing gets auto-linked, even with the toggle on — there's no "auto-link everything" switch here by design.</p>
+          <div id="auto-sync-panels" class="hidden">
+            <label class="ios-toggle">
+              <input type="checkbox" id="auto-sync-enabled-toggle" />
+              <span class="ios-toggle-track"><span class="ios-toggle-thumb"></span></span>
+              <span>Auto-sync issues matching these filters</span>
+            </label>
+            <div class="filters-card filters-locked" id="auto-sync-filters-card">
+              <div class="filters-header">
+                <span id="auto-sync-issue-count" class="filter-count"></span>
+                <button type="button" id="reset-auto-sync-filters-btn" class="btn secondary">Reset filters</button>
+              </div>
+              <div class="filter-group">
+                <label>Status</label>
+                <div class="ms" id="auto-sync-filter-status"></div>
+              </div>
+              <div class="filter-group">
+                <label>Stamp category</label>
+                <div class="ms" id="auto-sync-filter-stampCategory"></div>
+              </div>
+              <div class="filter-group">
+                <label>Issue type</label>
+                <div class="ms" id="auto-sync-filter-issueType"></div>
+              </div>
+              <div class="filter-group">
+                <label>Stamp</label>
+                <div class="ms" id="auto-sync-filter-stamp"></div>
+              </div>
+              <div class="filter-group">
+                <label>Assignee</label>
+                <div class="ms" id="auto-sync-filter-assignee"></div>
+              </div>
+              <div class="filter-group">
+                <label>Assignee company</label>
+                <div class="ms" id="auto-sync-filter-assigneeCompany"></div>
+              </div>
+              <div class="filter-group">
+                <label>Tag</label>
+                <div class="ms" id="auto-sync-filter-tags"></div>
+              </div>
+              <div class="filter-group">
+                <label>Priority</label>
+                <div class="ms" id="auto-sync-filter-priority"></div>
+              </div>
+              <div class="filter-group">
+                <label>Level</label>
+                <div class="ms" id="auto-sync-filter-level"></div>
+              </div>
+              <div class="filter-group">
+                <label>Zone</label>
+                <div class="ms" id="auto-sync-filter-zone"></div>
+              </div>
+              <div class="filter-group">
+                <label>Room</label>
+                <div class="ms" id="auto-sync-filter-room"></div>
+              </div>
+              <div class="filter-group">
+                <label>Is a clash?</label>
+                <div class="ms" id="auto-sync-filter-isClash"></div>
+              </div>
+            </div>
+            <button id="save-auto-sync-btn" class="btn secondary">Save auto-sync settings</button>
+            <span id="auto-sync-result" class="result-text"></span>
+          </div>
+        </div>
+      </section>
     </div>
   </div>
   <script src="/js/nav.js"></script>
+  <script src="/js/multiselect.js"></script>
   <script src="/js/setup.js"></script>
 </body>
 </html>

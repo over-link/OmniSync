@@ -89,69 +89,17 @@ async function loadStats(projectId) {
   }
 }
 
-// Same canonical order as the Setup page's mapping dropdown — keeps the
-// two consistent. Casing note: only "In progress" is confirmed from real
-// data; the others are reasonable guesses.
-const CANONICAL_STATUS_ORDER = ['Open', 'In progress', 'Solved', 'Closed'];
+// Matches the board's own toSentenceCase output (syncService.js), which
+// title-cases every word — NOT the same casing as the raw status name
+// used by the actual Revizto/ACC push logic elsewhere (that stays
+// "In progress", lowercase "p", confirmed from real data — this constant
+// is purely for sorting this page's already-display-cased filter values).
+const CANONICAL_STATUS_ORDER = ['Open', 'In Progress', 'Solved', 'Closed'];
 
 function sortStatusValues(values) {
   const canonical = CANONICAL_STATUS_ORDER.filter((s) => values.includes(s));
   const extra = values.filter((s) => !CANONICAL_STATUS_ORDER.includes(s)).sort();
   return [...canonical, ...extra];
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
-
-function multiSelectLabel(selected) {
-  if (!selected.length) return 'All';
-  if (selected.length <= 2) return selected.join(', ');
-  return `${selected.length} selected`;
-}
-
-function closeAllMultiSelects() {
-  document.querySelectorAll('.ms-panel').forEach((p) => p.classList.add('hidden'));
-}
-// Close open filter panels when clicking anywhere outside a filter
-// dropdown (but not for clicks inside one, e.g. checking an option).
-document.addEventListener('click', (e) => {
-  if (!e.target.closest('.ms')) closeAllMultiSelects();
-});
-
-function renderMultiSelect(container, field, values) {
-  container.innerHTML = `
-    <button type="button" class="ms-toggle">${escapeHtml(multiSelectLabel(activeFilters[field]))}</button>
-    <div class="ms-panel hidden">${
-      values.length
-        ? values
-            .map(
-              (v) =>
-                `<label class="ms-option"><input type="checkbox" value="${escapeHtml(v)}" ${
-                  activeFilters[field].includes(v) ? 'checked' : ''
-                } /> ${escapeHtml(v)}</label>`
-            )
-            .join('')
-        : '<div class="ms-empty">No options</div>'
-    }</div>`;
-  const toggle = container.querySelector('.ms-toggle');
-  const panel = container.querySelector('.ms-panel');
-  toggle.classList.toggle('active', activeFilters[field].length > 0);
-  toggle.addEventListener('click', () => {
-    const isOpen = !panel.classList.contains('hidden');
-    closeAllMultiSelects();
-    if (!isOpen) panel.classList.remove('hidden');
-  });
-  panel.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
-    cb.addEventListener('change', () => {
-      activeFilters[field] = cb.checked
-        ? [...activeFilters[field], cb.value]
-        : activeFilters[field].filter((v) => v !== cb.value);
-      toggle.textContent = multiSelectLabel(activeFilters[field]);
-      toggle.classList.toggle('active', activeFilters[field].length > 0);
-      renderBoard();
-    });
-  });
 }
 
 function populateFilterOptions() {
@@ -163,7 +111,10 @@ function populateFilterOptions() {
     if (field === 'status') values = sortStatusValues(values);
     // Drop selections for values no longer present in the board.
     activeFilters[field] = activeFilters[field].filter((v) => values.includes(v));
-    renderMultiSelect(container, field, values);
+    renderMultiSelect(container, values, activeFilters[field], (updated) => {
+      activeFilters[field] = updated;
+      renderBoard();
+    });
   }
 }
 

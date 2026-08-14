@@ -117,6 +117,44 @@ body {
   padding: 1rem 1.25rem;
 }
 .filters-header { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; margin-bottom: -0.3rem; }
+/* Setup page's auto-sync filter grid is nested inside a .card already, so
+   it skips .filters-card's own card-level padding to avoid double-indent. */
+#auto-sync-filters-card { padding: 0; margin-bottom: 0.9rem; transition: opacity 0.15s ease; }
+/* Greyed out and non-interactive until the toggle above it is on. */
+#auto-sync-filters-card.filters-locked { opacity: 0.45; pointer-events: none; }
+
+/* ── iOS-style oval toggle switch ────────────────────────────────── */
+.ios-toggle { display: flex; align-items: center; gap: 0.6rem; font-size: 0.9rem; font-weight: 600; margin: 0.75rem 0; cursor: pointer; }
+.ios-toggle input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.ios-toggle-track {
+  position: relative;
+  width: 2.6rem;
+  height: 1.5rem;
+  flex: none;
+  background: var(--line);
+  border-radius: 999px;
+  transition: background 0.15s ease;
+}
+.ios-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 1.25rem;
+  height: 1.25rem;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform 0.15s ease;
+}
+.ios-toggle input:checked + .ios-toggle-track { background: var(--success); }
+.ios-toggle input:checked + .ios-toggle-track .ios-toggle-thumb { transform: translateX(1.1rem); }
+.ios-toggle input:focus-visible + .ios-toggle-track { outline: 2px solid var(--blueprint); outline-offset: 2px; }
 .filter-count { font-family: var(--font-mono); font-size: 0.8rem; color: var(--muted); }
 .filter-group { display: flex; flex-direction: column; gap: 0.25rem; }
 .filter-group label {
@@ -148,7 +186,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.ms-toggle::after { content: "\25BE"; font-size: 0.7rem; color: var(--muted); flex: none; }
+.ms-toggle::after { content: "\25BE"; font-size: 1rem; line-height: 1; color: var(--muted); flex: none; }
 .ms-toggle:hover { background: var(--blueprint-dim); }
 .ms-toggle.active { border-color: var(--blueprint); color: var(--blueprint); }
 .ms-panel {
@@ -439,19 +477,109 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
   opacity: 0.7;
 }
 
-/* ── Setup page: two-column layout ──────────────────────────────── */
-.setup-columns {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1.25rem;
-  align-items: start;
+/* ── Setup page: shared project context bar ─────────────────────── */
+.setup-context-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.9rem 1.25rem;
+  margin-bottom: 1.25rem;
 }
-.setup-col .card { margin-bottom: 1.25rem; }
-.setup-col .card:last-child { margin-bottom: 0; }
+.setup-context-bar label { font-weight: 600; font-size: 0.9rem; }
 
-@media (max-width: 860px) {
-  .setup-columns { grid-template-columns: 1fr; }
+/* ── Setup page: accordion (one module open at a time) ──────────── */
+.accordion-item {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: 0.9rem;
+  overflow: hidden;
 }
+.accordion-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--surface);
+  border: none;
+  padding: 1.1rem 1.25rem;
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.accordion-header:hover { background: var(--paper); }
+.accordion-step {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  width: 1.6rem;
+  height: 1.6rem;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.accordion-item.open .accordion-step { color: #fff; background: var(--blueprint); border-color: var(--blueprint); }
+.accordion-item.open .accordion-header { color: var(--blueprint); border-bottom: 1px solid var(--line); }
+.accordion-caret { margin-left: auto; color: var(--muted); font-size: 1rem; line-height: 1; transition: transform 0.15s ease; }
+.accordion-item.open .accordion-caret { transform: rotate(180deg); color: var(--blueprint); }
+.accordion-panel { padding: 1.25rem; }
+.accordion-item:not(.open) .accordion-panel { display: none; }
+.accordion-panel h3:first-child { margin-top: 0; }
+
+/* ── Setup page: sub-accordion (Field mapping's own tiers) ──────── */
+.subaccordion-item {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin-bottom: 0.6rem;
+  overflow: hidden;
+}
+.subaccordion-item:last-child { margin-bottom: 0; }
+.subaccordion-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: var(--paper);
+  border: none;
+  padding: 0.75rem 1rem;
+  font-family: var(--font-sans);
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.subaccordion-header:hover { background: var(--blueprint-dim); }
+.subaccordion-item.open .subaccordion-header { color: var(--blueprint); border-bottom: 1px solid var(--line); }
+.subaccordion-panel { padding: 1rem; }
+.subaccordion-item:not(.open) .subaccordion-panel { display: none; }
+.warning-icon { font-size: 0.9rem; }
+
+/* ── Setup page: top-of-page warning banner ─────────────────────── */
+.setup-top-warning {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  background: var(--warning-dim);
+  color: var(--warning);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius);
+  padding: 0.9rem 1.25rem;
+  margin-bottom: 1.25rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.setup-top-warning:hover { background: var(--warning-dim); filter: brightness(0.97); }
 
 /* ── Setup page: mapping warnings ───────────────────────────────── */
 .dashboard-warning {

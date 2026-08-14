@@ -208,6 +208,42 @@ async function saveStatusMap(projectId, mappings) {
   }
 }
 
+// ─── Auto-sync filter CRUD ────────────────────────────────────────────
+
+/**
+ * { field: [values] } — one row per (field, value) pair, grouped back
+ * into arrays. Empty object if nothing configured yet.
+ */
+async function getAutoSyncFilters(projectId) {
+  const { rows } = await pool.query('SELECT field, value FROM auto_sync_filters WHERE project_id = $1', [projectId]);
+  const filters = {};
+  for (const r of rows) {
+    (filters[r.field] = filters[r.field] || []).push(r.value);
+  }
+  return filters;
+}
+
+async function saveAutoSyncFilters(projectId, filters) {
+  // filters: { field: [values] }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM auto_sync_filters WHERE project_id = $1', [projectId]);
+    for (const [field, values] of Object.entries(filters || {})) {
+      for (const value of values || []) {
+        if (!value) continue;
+        await client.query('INSERT INTO auto_sync_filters (project_id, field, value) VALUES ($1, $2, $3)', [projectId, field, value]);
+      }
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 // ─── Type map CRUD ───────────────────────────────────────────────────
 
 async function getTypeMap(projectId) {
@@ -267,5 +303,7 @@ module.exports = {
   saveStatusMap,
   getTypeMap,
   saveTypeMap,
+  getAutoSyncFilters,
+  saveAutoSyncFilters,
   getUnmappedFields,
 };

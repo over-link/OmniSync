@@ -361,6 +361,27 @@ router.post('/api/projects/:id/type-map', requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Auto-sync-by-filter (Setup page) — opt-in per project, off by default.
+// Filter option VALUES reuse the existing /issues-board endpoint (same
+// data the Issues page's own filters already draw from), so there's no
+// separate options endpoint here.
+router.get('/api/projects/:id/auto-sync-filters', requireAdmin, async (req, res) => {
+  const project = await _getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  const filters = await fieldMapping.getAutoSyncFilters(req.params.id);
+  res.json({ enabled: project.auto_sync_enabled, filters });
+});
+
+router.post('/api/projects/:id/auto-sync-filters', requireAdmin, async (req, res) => {
+  const { enabled, filters } = req.body;
+  if (typeof filters !== 'object' || filters === null || Array.isArray(filters)) {
+    return res.status(400).json({ error: 'filters object required' });
+  }
+  await pool.query('UPDATE projects SET auto_sync_enabled = $2 WHERE id = $1', [req.params.id, !!enabled]);
+  await fieldMapping.saveAutoSyncFilters(req.params.id, filters);
+  res.json({ ok: true });
+});
+
 // ─── Sync (on-demand) ────────────────────────────────────────────────
 
 router.get('/api/projects/:id/revizto-issues', requireLogin, async (req, res) => {
