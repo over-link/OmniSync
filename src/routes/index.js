@@ -349,18 +349,6 @@ router.post('/api/projects/:id/status-map', requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 
-router.get('/api/projects/:id/acc-status-map', requireAdmin, async (req, res) => {
-  const map = await fieldMapping.getAccStatusMap(req.params.id);
-  res.json({ map });
-});
-
-router.post('/api/projects/:id/acc-status-map', requireAdmin, async (req, res) => {
-  const { mappings } = req.body;
-  if (!Array.isArray(mappings)) return res.status(400).json({ error: 'mappings array required' });
-  await fieldMapping.saveAccStatusMap(req.params.id, mappings);
-  res.json({ ok: true });
-});
-
 router.get('/api/projects/:id/type-map', requireAdmin, async (req, res) => {
   const map = await fieldMapping.getTypeMap(req.params.id);
   res.json({ map });

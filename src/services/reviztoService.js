@@ -121,26 +121,6 @@ async function getStatusMap(userId, region, projectUuid) {
 }
 
 /**
- * Resolves an issue's current status CATEGORY — "To do", "Tracking", or
- * "Completed", confirmed from real docs (GET .../issue-workflow/settings'
- * statuses[].category). Matches by the issue's customStatus UUID first
- * (precise — respects the same multi-workflow same-name-different-UUID
- * caveat as _resolveStatusUuidForIssue), falling back to matching by
- * customStatusName if the UUID lookup doesn't resolve (e.g. issue has no
- * customType/workflow context). Returns null if neither resolves, so
- * callers can fall back to pre-category behavior rather than guessing.
- */
-async function getStatusCategory(userId, region, projectUuid, issue) {
-  const settings = await getWorkflowSettings(userId, region, projectUuid);
-  const statuses = settings.statuses || [];
-  const statusUuid = issue.customStatus?.value || null;
-  const statusName = unwrap(issue.customStatusName) || null;
-  const byUuid = statusUuid ? statuses.find((s) => s.uuid === statusUuid && !s.deletedAt) : null;
-  const byName = !byUuid && statusName ? statuses.find((s) => s.name === statusName && !s.deletedAt) : null;
-  return (byUuid || byName)?.category || null;
-}
-
-/**
  * Resolves a target status NAME to the correct UUID for a SPECIFIC
  * issue, respecting which workflow actually governs it. An issue's
  * workflow is determined by its issue TYPE (customType), not the issue
@@ -698,7 +678,7 @@ function _addCustomAttribute(list, definition, rawValue) {
  * accepting the safeguard.
  * assigneeResolver: async (email) => autodeskId | null
  */
-async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, assigneeResolver, locationResolver, customAttributeResolver, customStatusMap = null, customTypeMap = null, reviztoStatusName = null, statusCategory = null } = {}) {
+async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, assigneeResolver, locationResolver, customAttributeResolver, customStatusMap = null, customTypeMap = null, reviztoStatusName = null, autoMappedStatuses = null } = {}) {
   const title = unwrap(reviztoIssue.title) || '(no title)';
   // Revizto issues have no description field of their own — this is a
   // fixed marker instead, so users can filter/identify synced issues in
@@ -729,24 +709,22 @@ async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, 
   // project's workflow settings) — NOT `status`, which Revizto's own docs
   // mark deprecated and doesn't reliably exist on real responses.
   //
-  // Category-based auto-routing, confirmed from real docs (statuses[].
-  // category = "To do" | "Tracking" | "Completed"): "To do" and
-  // "Completed" always map to a fixed ACC status with no admin config
-  // needed. Every other case — "Tracking" (Revizto's own description:
-  // "in-progress issues... being worked on or investigated"), or a
-  // category that couldn't be resolved at all (e.g. issue has no workflow
-  // match) — needs an explicit admin decision, since ACC has several
-  // statuses that could reasonably apply (in_progress, in_review, etc.).
-  // If not configured, default to "draft" (a safeguard, not a real
-  // answer — deliberately distinct from any real status so an unmapped
-  // issue can't be mistaken for one that's genuinely open/in-progress)
-  // and flag it via statusNeedsMapping rather than silently guessing.
+  // Name-based auto-routing (reverted from an earlier category-based
+  // design, explicit request): the 4 canonical Revizto status names
+  // (Open/In progress/Solved/Closed — same 4 the ACC->Revizto direction
+  // auto-maps) always map to a fixed ACC status with no admin config
+  // needed. Every other custom status needs an explicit admin decision,
+  // since ACC has several statuses that could reasonably apply (in_
+  // progress, in_review, etc.). If not configured, default to "draft" (a
+  // safeguard, not a real answer — deliberately distinct from any real
+  // status so an unmapped issue can't be mistaken for one that's
+  // genuinely open/in-progress) and flag it via statusNeedsMapping rather
+  // than silently guessing.
   let status;
   let statusNeedsMapping = false;
-  if (statusCategory === 'To do') {
-    status = 'open';
-  } else if (statusCategory === 'Completed') {
-    status = 'completed';
+  const autoMapped = autoMappedStatuses && autoMappedStatuses[reviztoStatusName];
+  if (autoMapped) {
+    status = autoMapped;
   } else {
     const configured = customStatusMap && customStatusMap[reviztoStatusName];
     if (configured) {
@@ -869,7 +847,6 @@ module.exports = {
   buildMemberNameLookup,
   buildMemberCompanyLookup,
   getStatusMap,
-  getStatusCategory,
   getStampPresets,
   buildStampCategoryLookup,
   buildStampTitleLookup,

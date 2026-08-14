@@ -246,20 +246,6 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
   // issue response. No UUID resolution needed for this.
   const reviztoStatusName = reviztoService.unwrap(reviztoIssue.customStatusName) ?? null;
 
-  // Drives the category-based auto status routing in toAccIssue (To
-  // do/Completed auto-map, Tracking needs admin config) — resolved here
-  // since it needs project/region context toAccIssue doesn't have. This
-  // is a live workflow-settings lookup that pushIssueToAcc never made
-  // before category-based routing existed — caught so a transient
-  // failure here degrades to the pre-category fallback behavior (see
-  // toAccIssue's status block) rather than failing the whole push.
-  let statusCategory = null;
-  try {
-    statusCategory = await reviztoService.getStatusCategory(userId, project.revizto_region, project.revizto_project_uuid, reviztoIssue);
-  } catch (err) {
-    console.warn(`[sync] Could not resolve status category for issue ${reviztoIssue.id} (falling back to pre-category status mapping):`, err.message);
-  }
-
   // Resolves email -> Autodesk user ID for both assignee and watchers.
   // Was disabled for a while after an earlier bug where a failure here
   // (Construction Admin API access, separate from Issues API access)
@@ -289,7 +275,7 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
     customStatusMap,
     customTypeMap,
     reviztoStatusName,
-    statusCategory,
+    autoMappedStatuses: fieldMapping.REVIZTO_AUTO_MAPPED_STATUSES,
     assigneeResolver,
     locationResolver,
     customAttributeResolver,
@@ -312,7 +298,7 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
   // sync_map.last_error column as genuine push failures.
   const mappingWarnings = [];
   if (statusNeedsMapping) {
-    mappingWarnings.push(`Status "${reviztoStatusName}" (Tracking category) has no ACC mapping configured — defaulted to Draft.`);
+    mappingWarnings.push(`Status "${reviztoStatusName}" has no ACC mapping configured — defaulted to Draft.`);
   }
   if (typeNeedsMapping) {
     mappingWarnings.push('Issue type/stamp has no ACC mapping configured — defaulted to the project\'s default ACC issue type.');
@@ -594,20 +580,12 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
   }
 
   // Four ACC statuses have an unambiguous Revizto equivalent and always
-  // auto-map, no admin config possible (explicit request, mirrors the
-  // forward direction's "To do"/"Completed" auto-mapping) — checked
-  // first, takes priority over everything else. For the rest,
-  // admin-configured ACC->Revizto status mapping (the reverse of
-  // status_map) takes priority; falls back to the hardcoded guess in
-  // mapStatusFromAcc only if that specific ACC status hasn't been mapped
-  // — confirmed by real report that the guess (e.g. "pending" -> "Open")
-  // isn't always what an admin actually wants, with no way to override it
-  // before this existed.
-  const accStatusMap = await fieldMapping.getAccStatusMap(project.id);
-  const newStatus =
-    fieldMapping.ACC_AUTO_MAPPED_STATUSES[accIssue.status] ||
-    accStatusMap[accIssue.status] ||
-    reviztoService.mapStatusFromAcc(accIssue.status);
+  // auto-map (mirrors the forward direction's canonical-name auto-
+  // mapping) — checked first. Every other ACC status falls back to a
+  // hardcoded guess (mapStatusFromAcc) — there's no admin override for
+  // this direction (explicit request to keep it simple, unlike the
+  // forward direction which stays admin-configurable).
+  const newStatus = fieldMapping.ACC_AUTO_MAPPED_STATUSES[accIssue.status] || reviztoService.mapStatusFromAcc(accIssue.status);
   await reviztoService.updateIssueStatus(
     userId,
     project.revizto_region,

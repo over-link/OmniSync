@@ -62,16 +62,13 @@ async function loadMappingWarnings(projectId) {
   const warningsEl = document.getElementById('setup-warnings');
   warningsEl.textContent = 'Loading...';
   try {
-    const { unmappedStatuses, unmappedStamps, unmappedAccStatuses } = await api(`/api/projects/${projectId}/mapping-warnings`);
+    const { unmappedStatuses, unmappedStamps } = await api(`/api/projects/${projectId}/mapping-warnings`);
     const warnings = [];
     if (unmappedStatuses.length) {
       warnings.push(`⚠️ ${unmappedStatuses.length} status${unmappedStatuses.length === 1 ? '' : 'es'} in use but not mapped: ${unmappedStatuses.join(', ')}`);
     }
     if (unmappedStamps.length) {
       warnings.push(`⚠️ ${unmappedStamps.length} stamp${unmappedStamps.length === 1 ? '' : 's'} in use but not mapped: ${unmappedStamps.join(', ')}`);
-    }
-    if (unmappedAccStatuses && unmappedAccStatuses.length) {
-      warnings.push(`⚠️ ${unmappedAccStatuses.length} ACC status${unmappedAccStatuses.length === 1 ? '' : 'es'} not mapped back to Revizto (using a built-in guess): ${unmappedAccStatuses.map(prettyStatus).join(', ')}`);
     }
     warningsEl.innerHTML = warnings.length
       ? warnings.map((w) => `<div class="dashboard-warning">${w}</div>`).join('')
@@ -122,26 +119,21 @@ let mappingOptions = null;
 async function loadFieldMapping(projectId) {
   const statusRows = document.getElementById('status-map-rows');
   const typeRows = document.getElementById('type-map-rows');
-  const accStatusRows = document.getElementById('acc-status-map-rows');
   statusRows.textContent = 'Loading...';
   typeRows.textContent = 'Loading...';
-  accStatusRows.textContent = 'Loading...';
   try {
-    const [options, statusMapRes, typeMapRes, accStatusMapRes] = await Promise.all([
+    const [options, statusMapRes, typeMapRes] = await Promise.all([
       api(`/api/projects/${projectId}/mapping-options`),
       api(`/api/projects/${projectId}/status-map`),
       api(`/api/projects/${projectId}/type-map`),
-      api(`/api/projects/${projectId}/acc-status-map`),
     ]);
     mappingOptions = options;
     renderStatusMapRows(options, statusMapRes.map);
     renderTypeMapRows(options, typeMapRes.map);
-    renderAccStatusMapRows(options, accStatusMapRes.map);
   } catch (err) {
     const msg = err.data?.reason ? `${err.message}: ${err.data.reason}` : err.message;
     statusRows.textContent = msg;
     typeRows.textContent = msg;
-    accStatusRows.textContent = msg;
   }
 }
 
@@ -150,24 +142,49 @@ function prettyStatus(s) {
   return withSpaces.charAt(0).toUpperCase() + withSpaces.slice(1);
 }
 
+// One row per mappable status name — shared by both the required (in-use)
+// and optional (defined but unused) tiers below. Optional rows never get
+// the red "unmapped" treatment and show "Optional mapping" as their
+// placeholder instead of "-Select ACC Status-", since nothing real is
+// waiting on them yet.
+function statusMapRowHtml(s, currentMap, accStatuses, { optional }) {
+  const mapped = currentMap[s];
+  const cls = !mapped && !optional ? ' mapping-select-unmapped' : '';
+  const title = optional
+    ? 'Optional — no issue uses this status yet'
+    : mapped
+      ? ''
+      : 'Not mapped — defaults to ACC \'Draft\' until configured';
+  const placeholder = optional ? 'Optional mapping' : '-Select ACC Status-';
+  return `<div class="mapping-row" data-revizto-status="${s}">
+    <span>${s}</span>
+    <span class="bridge-connector" aria-hidden="true">→</span>
+    <select class="status-select${cls}" title="${title}">
+      <option value="">${placeholder}</option>
+      ${accStatuses.map((a) => `<option value="${a}" ${mapped === a ? 'selected' : ''}>${prettyStatus(a)}</option>`).join('')}
+    </select>
+  </div>`;
+}
+
 function renderStatusMapRows(options, currentMap) {
   const container = document.getElementById('status-map-rows');
   const autoMapped = options.autoMappedStatuses || [];
   const mappable = options.reviztoStatuses || [];
+  const optional = options.optionalStatuses || [];
 
-  if (!autoMapped.length && !mappable.length) {
-    container.textContent = 'No Revizto statuses found yet — statuses appear here once an issue with that status exists.';
+  if (!autoMapped.length && !mappable.length && !optional.length) {
+    container.textContent = 'No Revizto statuses found yet — statuses appear here once an issue with that status exists, or once a workflow defines one.';
     return;
   }
 
-  // Read-only: "To do"/"Completed" category statuses always auto-map to a
-  // fixed ACC status, no admin config needed — shown greyed out so it's
-  // clear they're already handled, using a distinct class (not
-  // .mapping-row) so the save button's row query below doesn't pick these
-  // up and choke on the missing .status-select.
+  // Read-only: the 4 canonical status names always auto-map to a fixed
+  // ACC status, no admin config needed — shown greyed out so it's clear
+  // they're already handled, using a distinct class (not .mapping-row) so
+  // the save button's row query below doesn't pick these up and choke on
+  // the missing .status-select.
   const autoRowsHtml = autoMapped
     .map(
-      (s) => `<div class="status-auto-row" title="Auto-mapped by status category (${s.category}) — no configuration needed">
+      (s) => `<div class="status-auto-row" title="Auto-mapped — no configuration needed">
         <span>${s.name}</span>
         <span class="bridge-connector" aria-hidden="true">→</span>
         <span class="badge badge-neutral">${prettyStatus(s.accStatus)} · auto</span>
@@ -175,29 +192,22 @@ function renderStatusMapRows(options, currentMap) {
     )
     .join('');
 
-  // Editable: "Tracking" category statuses (the ones needing a judgment
-  // call between ACC statuses like in_progress/in_review/etc.), shown for
-  // every current issue so an admin can configure the project correctly
-  // from the start. Unmapped ones are highlighted red — they still sync
-  // (defaulting to ACC "Draft" as a safeguard, see toAccIssue), but
-  // should be mapped explicitly.
+  // Required: every other custom status currently in use on an issue.
+  // Unmapped ones are highlighted red — they still sync (defaulting to
+  // ACC "Draft" as a safeguard, see toAccIssue), but should be mapped.
   const editableRowsHtml = mappable.length
-    ? mappable
-        .map((s) => {
-          const mapped = currentMap[s];
-          return `<div class="mapping-row" data-revizto-status="${s}">
-            <span>${s}</span>
-            <span class="bridge-connector" aria-hidden="true">→</span>
-            <select class="status-select${mapped ? '' : ' mapping-select-unmapped'}" title="${mapped ? '' : 'Not mapped — defaults to ACC \'Draft\' until configured'}">
-              <option value="">-Select ACC Status-</option>
-              ${options.accStatuses.map((a) => `<option value="${a}" ${mapped === a ? 'selected' : ''}>${prettyStatus(a)}</option>`).join('')}
-            </select>
-          </div>`;
-        })
-        .join('')
-    : '<div class="hint">No "Tracking" category statuses in use yet.</div>';
+    ? mappable.map((s) => statusMapRowHtml(s, currentMap, options.accStatuses, { optional: false })).join('')
+    : '<div class="hint">No other custom statuses in use yet.</div>';
 
-  container.innerHTML = autoRowsHtml + editableRowsHtml;
+  // Optional: statuses defined in a workflow but not used by any issue
+  // yet — never highlighted red, purely a head start for admins who want
+  // to configure a project before real issues start using it.
+  const optionalRowsHtml = optional.length
+    ? `<div class="hint" style="margin-top:0.6rem;">Optional — defined in a workflow, not used by any issue yet:</div>` +
+      optional.map((s) => statusMapRowHtml(s, currentMap, options.accStatuses, { optional: true })).join('')
+    : '';
+
+  container.innerHTML = autoRowsHtml + editableRowsHtml + optionalRowsHtml;
 }
 
 document.getElementById('save-status-map-btn').addEventListener('click', async () => {
@@ -256,69 +266,6 @@ document.getElementById('save-type-map-btn').addEventListener('click', async () 
     await api(`/api/projects/${projectId}/type-map`, { method: 'POST', body: JSON.stringify({ mappings }) });
     resultEl.textContent = 'Saved ✓';
     await loadFieldMapping(projectId); // re-render so the red highlight clears for newly-mapped stamps
-  } catch (err) {
-    resultEl.textContent = err.message;
-  }
-});
-
-// The reverse direction: one row per ACC status (a fixed 9-value enum,
-// not "in use" filtered — an admin should see all of them up front).
-// 4 unambiguous ACC statuses (open/in_progress/completed/closed) always
-// auto-map — read-only grey rows, same treatment as the forward
-// direction's "To do"/"Completed". The remaining 5 are editable; unmapped
-// ones are red-highlighted and fall back to a built-in guess
-// (reviztoService.mapStatusFromAcc) server-side, so this doesn't block
-// the ACC->Revizto pull, just flags that it's using a guess.
-function renderAccStatusMapRows(options, currentMap) {
-  const container = document.getElementById('acc-status-map-rows');
-  const autoMapped = options.autoMappedAccStatuses || [];
-  const mappable = options.mappableAccStatuses || [];
-  if (!autoMapped.length && !mappable.length) {
-    container.textContent = 'Could not load ACC statuses.';
-    return;
-  }
-
-  const autoRowsHtml = autoMapped
-    .map(
-      (s) => `<div class="status-auto-row" title="Auto-mapped — no configuration needed">
-        <span>${prettyStatus(s.accStatus)}</span>
-        <span class="bridge-connector" aria-hidden="true">→</span>
-        <span class="badge badge-neutral">${s.reviztoStatus} · auto</span>
-      </div>`
-    )
-    .join('');
-
-  const editableRowsHtml = mappable
-    .map((accStatus) => {
-      const mapped = currentMap[accStatus];
-      return `<div class="mapping-row" data-acc-status="${accStatus}">
-        <span>${prettyStatus(accStatus)}</span>
-        <span class="bridge-connector" aria-hidden="true">→</span>
-        <select class="revizto-status-select${mapped ? '' : ' mapping-select-unmapped'}" title="${mapped ? '' : 'Not mapped — falls back to a built-in guess until configured'}">
-          <option value="">-Select Revizto Status-</option>
-          ${(options.reviztoStatusChoicesForAccMapping || []).map((s) => `<option value="${s}" ${s === mapped ? 'selected' : ''}>${s}</option>`).join('')}
-        </select>
-      </div>`;
-    })
-    .join('');
-
-  container.innerHTML = autoRowsHtml + editableRowsHtml;
-}
-
-document.getElementById('save-acc-status-map-btn').addEventListener('click', async () => {
-  const projectId = document.getElementById('active-project-select').value;
-  const resultEl = document.getElementById('acc-status-map-result');
-  const mappings = [...document.querySelectorAll('#acc-status-map-rows .mapping-row')]
-    .map((row) => ({
-      accStatus: row.dataset.accStatus,
-      reviztoStatus: row.querySelector('.revizto-status-select').value,
-    }))
-    .filter((m) => m.accStatus && m.reviztoStatus);
-  try {
-    await api(`/api/projects/${projectId}/acc-status-map`, { method: 'POST', body: JSON.stringify({ mappings }) });
-    resultEl.textContent = 'Saved ✓';
-    await loadFieldMapping(projectId);
-    await loadMappingWarnings(projectId);
   } catch (err) {
     resultEl.textContent = err.message;
   }
