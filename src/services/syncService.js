@@ -897,14 +897,7 @@ async function _resolveAccAuthorName(userId, project, autodeskId) {
   try {
     const members = await accService.getProjectMembers(userId, project);
     const member = members.find((m) => m.autodeskId === autodeskId);
-    if (!member) {
-      // TEMP DEBUG: pins down whether attribution silently fails because
-      // this specific autodeskId just isn't in the project members list
-      // (e.g. deactivated, removed, or a mismatch in ID format) vs. some
-      // other cause. Remove once the real reason is confirmed.
-      console.warn(`[poll] No project member found for autodeskId "${autodeskId}" among ${members.length} member(s) — skipping attribution.`);
-      return null;
-    }
+    if (!member) return null;
     return member.name || [member.firstName, member.lastName].filter(Boolean).join(' ') || member.email || null;
   } catch (err) {
     console.warn(`[poll] Could not resolve ACC author name for ${autodeskId} (skipping attribution):`, err.message);
