@@ -787,8 +787,16 @@ async function _resolveReviztoStatusFromAcc(userId, project, accIssue, reviztoIs
       .filter(([, v]) => v.accStatus === accIssue.status)
       .map(([name]) => name)
   );
-  if (fieldMapping.ACC_AUTO_MAPPED_STATUSES[accIssue.status]) {
-    candidates.add(fieldMapping.ACC_AUTO_MAPPED_STATUSES[accIssue.status]);
+  // Only add the canonical auto-mapped name (e.g. "Open") as a candidate
+  // when it's actually a real status in THIS workflow — a fully custom
+  // workflow (e.g. "Revise"/"Field Fix"/"Verified", no canonical names at
+  // all) shouldn't get a phantom "Open" candidate just because an admin
+  // separately mapped one of its real custom statuses to ACC `open`; that
+  // false conflict was making an otherwise-unambiguous explicit mapping
+  // incorrectly default to Draft instead of applying it.
+  const canonicalName = fieldMapping.ACC_AUTO_MAPPED_STATUSES[accIssue.status];
+  if (canonicalName && reviztoService.getWorkflowStatusNames(workflowUuid, workflowSettings).includes(canonicalName)) {
+    candidates.add(canonicalName);
   }
   if (candidates.size === 1) return { targetStatusName: [...candidates][0] };
   if (candidates.size > 1) {
