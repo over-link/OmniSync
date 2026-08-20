@@ -417,6 +417,20 @@ workflow), that's treated as unresolved the same way an ambiguous primary
 status is, rather than silently falling back and possibly masking a real
 mistake.
 
+**The secondary field is authoritative, including over ACC's own primary
+status field.** If an ACC user changes the secondary field directly
+without touching the primary dropdown, `handleAccWebhook` also corrects
+ACC's primary status to whatever's configured for that resolved Revizto
+status (explicit `status_map` row, or the canonical auto-map), once the
+Revizto side has been updated successfully — so the two ACC fields don't
+end up visibly disagreeing with each other. Only applies when the
+secondary field is actually what drove the resolution; never applied to
+the primary-status-only or guess-fallback paths, since "correcting" a
+guess could wrongly overwrite a legitimate ACC status (e.g. `pending`,
+`draft`) that has no clean Revizto equivalent. Guarded against a
+redundant self-triggered webhook loop by only writing when the primary
+status doesn't already match.
+
 ### Issue type mapping — guaranteed to resolve to something
 
 **Revizto stamp** (dropdown, "Category > Stamp Title", value stored is

@@ -724,10 +724,14 @@ async function getLinkedIssuePairs(userId, project) {
  * produce, respecting the issue's own workflow (a project can have
  * several, and different workflows can map the same ACC primary status
  * to different Revizto statuses — see the Setup page's per-workflow
- * Status mapping panel). Returns either { targetStatusName } — apply this
- * to Revizto — or { ambiguous: true, reason } when nothing resolves it
- * precisely enough to trust; the caller then defaults ACC's primary
- * status back to "draft" rather than guessing.
+ * Status mapping panel). Returns either { targetStatusName, expectedAccStatus }
+ * — apply targetStatusName to Revizto, and if expectedAccStatus is set and
+ * differs from ACC's current primary status, the caller corrects ACC's
+ * primary status field to match (the secondary field is authoritative
+ * when it's what drove the resolution, so ACC's own primary dropdown
+ * should reflect it too, not just Revizto) — or { ambiguous: true, reason }
+ * when nothing resolves it precisely enough to trust; the caller then
+ * defaults ACC's primary status back to "draft" rather than guessing.
  *
  * Resolution order:
  *  1. ACC's "Revizto Status" custom list field (admin-mapped 1:1 to an
@@ -765,7 +769,19 @@ async function _resolveReviztoStatusFromAcc(userId, project, accIssue, reviztoIs
   const secondaryOptionId = secondaryAttr && secondaryAttr.value != null && secondaryAttr.value !== '' ? secondaryAttr.value : null;
   if (secondaryOptionId) {
     const match = Object.entries(workflowMap).find(([, v]) => v.accCustomStatusOptionId === secondaryOptionId);
-    if (match) return { targetStatusName: match[0] };
+    if (match) {
+      const [targetStatusName, mapping] = match;
+      // The secondary field is the authority when it's what drove this
+      // resolution — expectedAccStatus tells the caller to correct ACC's
+      // OWN primary status field to match, if it doesn't already (e.g. an
+      // ACC user changed the secondary field directly without touching
+      // the primary dropdown). Only set here, not for the primary-status-
+      // based candidate branch below (already consistent by construction)
+      // or the final guess fallback (correcting a guess would risk
+      // overwriting a legitimate ACC status like "pending"/"draft" that
+      // has no clean Revizto equivalent).
+      return { targetStatusName, expectedAccStatus: mapping.accStatus };
+    }
 
     const attributeDefs = await accService.getIssueAttributeDefinitions(userId, project);
     const statusFieldDefs = attributeDefs.filter((d) => d.dataType === 'list' && fieldMapping.isReviztoStatusFieldTitle(d.title));
@@ -776,7 +792,16 @@ async function _resolveReviztoStatusFromAcc(userId, project, accIssue, reviztoIs
       const nameMatch = reviztoService
         .getWorkflowStatusNames(workflowUuid, workflowSettings)
         .find((n) => n.trim().toLowerCase() === selectedLabel);
-      if (nameMatch) return { targetStatusName: nameMatch };
+      if (nameMatch) {
+        // Auto-matched by name (no explicit status_map row) — still has a
+        // configured primary status if one exists for this name (either
+        // an explicit row, or the canonical auto-map — REVIZTO_AUTO_
+        // MAPPED_STATUSES is keyed by Revizto name, the inverse of
+        // ACC_AUTO_MAPPED_STATUSES), so still correct ACC's primary field
+        // when we actually know what it should be.
+        const expectedAccStatus = workflowMap[nameMatch]?.accStatus || fieldMapping.REVIZTO_AUTO_MAPPED_STATUSES[nameMatch] || null;
+        return { targetStatusName: nameMatch, expectedAccStatus };
+      }
     }
 
     return { ambiguous: true, reason: `ACC "${secondaryAttr.title}" selection doesn't match any mapped status for this issue's workflow.` };
@@ -855,6 +880,16 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
       await recordSyncError(project.id, reviztoIssueId, `${statusResult.reason} Configure a status mapping on the Setup page.`);
     } else {
       await clearSyncError(project.id, reviztoIssueId);
+      // The secondary "Revizto Status" field is authoritative when it's
+      // what drove this resolution (expectedAccStatus only gets set in
+      // that case, never for the guess fallback) — keep ACC's own primary
+      // status field consistent with it, in case an ACC user changed the
+      // secondary field directly without touching the primary dropdown.
+      // Guarded on an actual mismatch to avoid a redundant self-triggered
+      // webhook once they already match.
+      if (resolution.expectedAccStatus && accIssue.status !== resolution.expectedAccStatus) {
+        await accService.updateIssue(userId, project, accIssueId, { status: resolution.expectedAccStatus });
+      }
     }
   }
 
