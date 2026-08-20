@@ -147,6 +147,16 @@ ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_pulled_acc_comment_id TEXT;
 -- polling approach already proven out for comments, not the webhook).
 ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_pulled_acc_attachment_id TEXT;
 
+-- Tracks the ACC "Revizto Status" secondary field's option ID as of the
+-- last webhook delivery we processed for this issue — lets
+-- syncService._resolveReviztoStatusFromAcc tell WHICH ACC field actually
+-- just changed (the webhook payload itself carries no field-level diff),
+-- since an unambiguous primary-status change should win outright, but
+-- only when the secondary field itself DIDN'T also just change — without
+-- this, an unambiguous-but-unrelated current primary status was
+-- incorrectly short-circuiting a genuine secondary-field change.
+ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_acc_secondary_option_id TEXT;
+
 -- Tracks whether the Revizto markup preview image has already been
 -- attached to the linked ACC issue, so it doesn't re-upload the same
 -- image every 2-minute cycle.

@@ -720,6 +720,41 @@ async function getLinkedIssuePairs(userId, project) {
 // ─── Pull: ACC webhook event -> Revizto ───────────────────────────────
 
 /**
+ * Resolves the target Revizto status name from ACC's current secondary
+ * "Revizto Status" field selection, or null if it doesn't resolve to
+ * anything valid for this workflow. Shared by both call sites in
+ * _resolveReviztoStatusFromAcc below (secondary-just-changed, and
+ * secondary-as-disambiguator-for-an-ambiguous-primary) so the explicit-
+ * row-match-then-name-match-fallback logic isn't duplicated.
+ */
+function _resolveViaSecondaryField(secondaryOptionId, statusFieldDef, workflowMap, workflowUuid, workflowSettings) {
+  const match = Object.entries(workflowMap).find(([, v]) => v.accCustomStatusOptionId === secondaryOptionId);
+  if (match) {
+    const [targetStatusName, mapping] = match;
+    return { targetStatusName, expectedAccStatus: mapping.accStatus };
+  }
+
+  const selectedOption = statusFieldDef?.metadata?.list?.options?.find((o) => o.id === secondaryOptionId);
+  const selectedLabel = selectedOption ? String(selectedOption.value ?? selectedOption.label ?? '').trim().toLowerCase() : null;
+  if (selectedLabel) {
+    const nameMatch = reviztoService
+      .getWorkflowStatusNames(workflowUuid, workflowSettings)
+      .find((n) => n.trim().toLowerCase() === selectedLabel);
+    if (nameMatch) {
+      // Auto-matched by name (no explicit status_map row) — still has a
+      // configured primary status if one exists for this name (either an
+      // explicit row, or the canonical auto-map — REVIZTO_AUTO_MAPPED_
+      // STATUSES is keyed by Revizto name, the inverse of ACC_AUTO_
+      // MAPPED_STATUSES), so still correct ACC's primary field when we
+      // actually know what it should be.
+      const expectedAccStatus = workflowMap[nameMatch]?.accStatus || fieldMapping.REVIZTO_AUTO_MAPPED_STATUSES[nameMatch] || null;
+      return { targetStatusName: nameMatch, expectedAccStatus };
+    }
+  }
+  return null;
+}
+
+/**
  * Resolves what Revizto status an ACC status/custom-field change should
  * produce, respecting the issue's own workflow (a project can have
  * several, and different workflows can map the same ACC primary status
@@ -736,40 +771,43 @@ async function getLinkedIssuePairs(userId, project) {
  * enough to trust; the caller then defaults ACC's primary status back to
  * "draft" rather than guessing.
  *
- * Resolution order — the primary status decides UNLESS it's genuinely
- * ambiguous on its own; the secondary field's job is only to disambiguate
- * that case, not to override an already-unambiguous primary status
- * change (explicit request: changing the primary status to a value with
- * a clean one-to-one mapping should win outright, even if the secondary
- * field is still sitting on a stale/different selection from before):
- *  1. If exactly ONE status in this workflow maps to the current primary
- *     ACC status (including the canonical auto-map, when the canonical
- *     name is actually a real status in this workflow), that's the
- *     answer — full stop. If that status also has a configured secondary
- *     option and the ACC secondary field doesn't already show it,
- *     expectedSecondaryField corrects it to match.
- *  2. Otherwise (primary status matches zero or multiple candidates —
- *     the actually-ambiguous case), defer to the secondary field, if
- *     set: an explicit status_map row match wins, else an exact name
+ * ACC's webhook payload carries no field-level diff, so which field
+ * actually just changed has to be inferred by comparing against
+ * sync_map.last_acc_secondary_option_id (the secondary value as of the
+ * last webhook we processed) — without this, "an unambiguous primary
+ * status always wins" and "the secondary field always wins" are flatly
+ * contradictory whenever the CURRENT primary status happens to already
+ * be unambiguous (very likely right after a previous primary-status
+ * change): the secondary field's own current value would get silently
+ * ignored, even when IT is what just changed. Resolution order:
+ *  1. Secondary field JUST changed (differs from last time) → it wins
+ *     outright: an explicit status_map row match, else an exact name
  *     match against this workflow's own status names (same zero-config
- *     idea as the 4 canonical statuses). Either way, expectedAccStatus
- *     corrects ACC's primary field to match. Set but unresolvable (wrong
- *     option, stale from a different workflow) is treated as ambiguous
- *     rather than silently falling through and masking a real mistake.
- *  3. No secondary field, primary still ambiguous (multiple candidates):
- *     ambiguous — caller defaults to Draft rather than guessing. Zero
- *     candidates and no secondary field: falls back to the pre-existing
- *     hardcoded guess (mapStatusFromAcc), unchanged — never corrects
- *     either ACC field, since "correcting" a guess could wrongly
- *     overwrite a legitimate ACC status (e.g. `pending`, `draft`) that
- *     has no clean Revizto equivalent.
+ *     idea as the 4 canonical statuses). expectedAccStatus corrects
+ *     ACC's primary field to match.
+ *  2. Otherwise, if exactly ONE status in this workflow maps to the
+ *     current primary ACC status (canonical auto-map included, only when
+ *     that name is actually a real status in this workflow) — that's the
+ *     answer. expectedSecondaryField corrects the secondary field to
+ *     match, if it doesn't already.
+ *  3. Otherwise (primary ambiguous or unmapped, secondary didn't just
+ *     change) — the secondary field's CURRENT value, even though it
+ *     didn't just change, is still used as a disambiguator if set (same
+ *     resolution as step 1). Set but unresolvable, or primary ambiguous
+ *     with nothing to disambiguate it: ambiguous — caller defaults ACC's
+ *     primary status to Draft rather than guessing. Primary unmapped with
+ *     no secondary set: falls back to the pre-existing hardcoded guess
+ *     (mapStatusFromAcc), unchanged — never corrects either ACC field,
+ *     since "correcting" a guess could wrongly overwrite a legitimate ACC
+ *     status (e.g. `pending`, `draft`) with no clean Revizto equivalent.
  */
 async function _resolveReviztoStatusFromAcc(userId, project, accIssue, reviztoIssueId) {
-  const [reviztoIssue, workflowSettings, statusMap, attributeDefs] = await Promise.all([
+  const [reviztoIssue, workflowSettings, statusMap, attributeDefs, lastSecondaryRows] = await Promise.all([
     reviztoService.getIssue(userId, project.revizto_region, project.revizto_project_uuid, reviztoIssueId),
     reviztoService.getWorkflowSettings(userId, project.revizto_region, project.revizto_project_uuid),
     fieldMapping.getStatusMap(project.id),
     accService.getIssueAttributeDefinitions(userId, project),
+    pool.query('SELECT last_acc_secondary_option_id FROM sync_map WHERE project_id = $1 AND revizto_issue_id = $2', [project.id, String(reviztoIssueId)]),
   ]);
   const workflowUuid = reviztoService.resolveIssueWorkflowUuid(reviztoIssue, workflowSettings);
   const workflowLabel = workflowUuid ? reviztoService.getWorkflowLabel(workflowUuid, workflowSettings) : null;
@@ -784,6 +822,24 @@ async function _resolveReviztoStatusFromAcc(userId, project, accIssue, reviztoIs
   const statusAttrs = (accIssue.customAttributes || []).filter((a) => fieldMapping.isReviztoStatusFieldTitle(a.title));
   const secondaryAttr = fieldMapping.pickReviztoStatusField(statusAttrs, workflowLabel);
   const secondaryOptionId = secondaryAttr && secondaryAttr.value != null && secondaryAttr.value !== '' ? secondaryAttr.value : null;
+
+  const lastSecondaryOptionId = lastSecondaryRows.rows[0]?.last_acc_secondary_option_id ?? null;
+  const secondaryJustChanged = secondaryOptionId !== lastSecondaryOptionId;
+  // Persist now (not at the end) so it's recorded even if this delivery
+  // ends up ambiguous/unresolved below — next delivery's diff should
+  // always compare against what ACC actually showed this time, not
+  // whatever we last successfully resolved.
+  await pool.query('UPDATE sync_map SET last_acc_secondary_option_id = $3 WHERE project_id = $1 AND revizto_issue_id = $2', [
+    project.id,
+    String(reviztoIssueId),
+    secondaryOptionId,
+  ]);
+
+  if (secondaryJustChanged && secondaryOptionId) {
+    const resolved = _resolveViaSecondaryField(secondaryOptionId, statusFieldDef, workflowMap, workflowUuid, workflowSettings);
+    if (resolved) return resolved;
+    return { ambiguous: true, reason: `ACC "${secondaryAttr.title}" selection doesn't match any mapped status for this issue's workflow.` };
+  }
 
   const candidates = new Set(
     Object.entries(workflowMap)
@@ -813,30 +869,8 @@ async function _resolveReviztoStatusFromAcc(userId, project, accIssue, reviztoIs
   }
 
   if (secondaryOptionId) {
-    const match = Object.entries(workflowMap).find(([, v]) => v.accCustomStatusOptionId === secondaryOptionId);
-    if (match) {
-      const [targetStatusName, mapping] = match;
-      return { targetStatusName, expectedAccStatus: mapping.accStatus };
-    }
-
-    const selectedOption = statusFieldDef?.metadata?.list?.options?.find((o) => o.id === secondaryOptionId);
-    const selectedLabel = selectedOption ? String(selectedOption.value ?? selectedOption.label ?? '').trim().toLowerCase() : null;
-    if (selectedLabel) {
-      const nameMatch = reviztoService
-        .getWorkflowStatusNames(workflowUuid, workflowSettings)
-        .find((n) => n.trim().toLowerCase() === selectedLabel);
-      if (nameMatch) {
-        // Auto-matched by name (no explicit status_map row) — still has a
-        // configured primary status if one exists for this name (either
-        // an explicit row, or the canonical auto-map — REVIZTO_AUTO_
-        // MAPPED_STATUSES is keyed by Revizto name, the inverse of
-        // ACC_AUTO_MAPPED_STATUSES), so still correct ACC's primary field
-        // when we actually know what it should be.
-        const expectedAccStatus = workflowMap[nameMatch]?.accStatus || fieldMapping.REVIZTO_AUTO_MAPPED_STATUSES[nameMatch] || null;
-        return { targetStatusName: nameMatch, expectedAccStatus };
-      }
-    }
-
+    const resolved = _resolveViaSecondaryField(secondaryOptionId, statusFieldDef, workflowMap, workflowUuid, workflowSettings);
+    if (resolved) return resolved;
     return {
       ambiguous: true,
       reason:

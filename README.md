@@ -408,40 +408,45 @@ fields" warning — the primary mapping alone already has a safe fallback).
 On a Revizto → ACC push, this field is set alongside the primary status
 whenever a mapping (explicit or auto-matched) resolves it.
 
-**On the ACC → Revizto pull, the primary status decides UNLESS it's
-genuinely ambiguous on its own — the secondary field's job is only to
-disambiguate that case, not to override an already-unambiguous primary
-status change.** Explicit request, confirmed by real testing: changing
-the primary status to a value with a clean one-to-one mapping (e.g.
-`closed` → "Install Complete", the only status in that workflow mapped to
-`closed`) should win outright and update Revizto, even if the secondary
-field is still sitting on a stale/different selection from earlier —
-checking the secondary field unconditionally first was overriding an
-unambiguous primary-status change with whatever the secondary field
-happened to still say. `_resolveReviztoStatusFromAcc`'s actual order:
-1. **Primary status unambiguous** (exactly one status in this workflow
-   maps to it, canonical auto-map included when the canonical name is a
-   real status in that workflow) → that status wins outright. If it also
-   has a configured secondary option and ACC's secondary field doesn't
-   already show it, the secondary field is corrected to match.
-2. **Primary status ambiguous** (zero or multiple matches) → defer to the
-   secondary field, if set: an explicit `status_map` row match wins, else
-   an exact name match against the workflow's own status names. Either
-   way, ACC's primary status field is corrected to match if it doesn't
-   already (e.g. an ACC user changed the secondary field directly without
-   touching the primary dropdown). Set but unresolvable for this
-   workflow (wrong option, stale from a different workflow) is treated as
-   unresolved rather than silently falling back and possibly masking a
-   real mistake.
-3. **No secondary field, primary still ambiguous** → genuinely ambiguous,
-   handled below (Draft default + warning). **Zero matches, no secondary
-   field** → falls back to the pre-existing hardcoded guess
+**On the ACC → Revizto pull, whichever field actually just changed wins —
+the other one gets corrected to match.** ACC's webhook payload carries no
+field-level diff (just the issue's current state), so "which field just
+changed" can't be inferred from a single snapshot alone: an early version
+of this checked the secondary field unconditionally first, which broke
+unambiguous primary-status changes (a stale secondary selection overrode
+them); the next version made an unambiguous primary status always win,
+which broke genuine secondary-field changes whenever the *current* primary
+status happened to already be unambiguous (very likely right after a
+previous primary-status change). The fix: `sync_map.
+last_acc_secondary_option_id` tracks the secondary field's value as of the
+last webhook processed for that issue, so `_resolveReviztoStatusFromAcc`
+can tell whether the secondary field's current value is actually new.
+Actual order:
+1. **Secondary field just changed** (differs from last time) → it wins
+   outright: an explicit `status_map` row match, else an exact name match
+   against the workflow's own status names (same zero-config idea as the
+   4 canonical statuses). Corrects ACC's primary status field to match.
+2. **Otherwise, primary status unambiguous** (exactly one status in this
+   workflow maps to it, canonical auto-map included when the canonical
+   name is a real status in that workflow) → that status wins. Corrects
+   the secondary field to match, if it doesn't already.
+3. **Otherwise** (primary ambiguous or unmapped, secondary didn't just
+   change) — the secondary field's *current* value, even though it didn't
+   just change, is still used as a disambiguator if set (same resolution
+   as step 1, no correction needed either way since neither just moved).
+   Set but unresolvable, or primary ambiguous with nothing to
+   disambiguate it: ambiguous — caller defaults ACC's primary status to
+   `Draft` rather than guessing, and flags a warning. Primary unmapped
+   with no secondary set: falls back to the pre-existing hardcoded guess
    (`mapStatusFromAcc`), unchanged — never corrects either ACC field,
    since "correcting" a guess could wrongly overwrite a legitimate ACC
-   status (e.g. `pending`, `draft`) that has no clean Revizto equivalent.
+   status (e.g. `pending`, `draft`) with no clean Revizto equivalent.
 
 Either correction direction is guarded against a redundant self-triggered
 webhook loop by only writing when the field doesn't already match.
+
+**Migration needed**: `sync_map.last_acc_secondary_option_id`. Run
+`npm run migrate`.
 
 ### Issue type mapping — guaranteed to resolve to something
 
