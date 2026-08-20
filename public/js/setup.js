@@ -86,6 +86,7 @@ async function onActiveProjectChange(projectId) {
   await loadMappingWarnings(projectId);
   await loadFieldMapping(projectId);
   await loadAutoSyncSettings(projectId);
+  await loadManualUnlinkSetting(projectId);
 }
 
 document.getElementById('active-project-select').addEventListener('change', async (e) => {
@@ -195,9 +196,15 @@ function prettyStatus(s) {
 // and optional (defined but unused) tiers below. Optional rows never get
 // the red "unmapped" treatment and show "Optional mapping" as their
 // placeholder instead of "-Select ACC Status-", since nothing real is
-// waiting on them yet.
-function statusMapRowHtml(s, currentMap, accStatuses, { optional }) {
-  const mapped = currentMap[s];
+// waiting on them yet. `workflowMap` is this ONE workflow's saved
+// mappings (with the '' legacy bucket already folded in by the caller),
+// so the same status name in a different workflow can show/save a
+// different ACC target. `secondaryOptions` is ACC's "Revizto Status"
+// list field's own options (or null if that field doesn't exist in ACC
+// yet) — used to disambiguate the ACC->Revizto direction when several
+// statuses in this workflow share the same primary ACC status.
+function statusMapRowHtml(s, workflowUuid, workflowMap, accStatuses, secondaryOptions, { optional }) {
+  const mapped = workflowMap[s];
   const cls = !mapped && !optional ? ' mapping-select-unmapped' : '';
   const title = optional
     ? 'Optional — no issue uses this status yet'
@@ -205,69 +212,135 @@ function statusMapRowHtml(s, currentMap, accStatuses, { optional }) {
       ? ''
       : 'Not mapped — defaults to ACC \'Draft\' until configured';
   const placeholder = optional ? 'Optional mapping' : '-Select ACC Status-';
-  return `<div class="mapping-row" data-revizto-status="${s}">
+
+  // Exact-name auto-match against ACC's "Revizto Status" options — same
+  // zero-config idea as the 4 canonical statuses, extended to any custom
+  // status whose name already matches an ACC option. An explicit saved
+  // mapping (mapped.accCustomStatusOptionId) always takes precedence over
+  // this, even if it happens to equal the auto-match.
+  const autoSecondaryMatch = secondaryOptions?.find((o) => o.label.trim().toLowerCase() === s.trim().toLowerCase()) || null;
+
+  let secondaryHtml;
+  if (secondaryOptions === null) {
+    secondaryHtml = `<select class="acc-custom-status-select" disabled title="Create a 'Revizto Status' list field in ACC to enable this">
+      <option value="">Not available</option>
+    </select>`;
+  } else if (!mapped?.accCustomStatusOptionId && autoSecondaryMatch) {
+    secondaryHtml = `<span class="badge badge-neutral" title="Auto-mapped — the Revizto status name matches an ACC \"Revizto Status\" option exactly">${autoSecondaryMatch.label} · auto</span>`;
+  } else {
+    const secondaryMapped = mapped?.accCustomStatusOptionId || '';
+    const secondaryCls = !optional && !secondaryMapped ? ' mapping-select-unmapped' : '';
+    secondaryHtml = `<select class="acc-custom-status-select${secondaryCls}">
+      <option value="">${optional ? 'Optional' : '-Select-'}</option>
+      ${secondaryOptions.map((o) => `<option value="${o.id}" ${secondaryMapped === o.id ? 'selected' : ''}>${o.label}</option>`).join('')}
+    </select>`;
+  }
+
+  return `<div class="mapping-row" data-revizto-status="${s}" data-workflow-uuid="${workflowUuid}">
     <span>${s}</span>
-    <span class="bridge-connector" aria-hidden="true">→</span>
     <select class="status-select${cls}" title="${title}">
       <option value="">${placeholder}</option>
-      ${accStatuses.map((a) => `<option value="${a}" ${mapped === a ? 'selected' : ''}>${prettyStatus(a)}</option>`).join('')}
+      ${accStatuses.map((a) => `<option value="${a}" ${mapped?.accStatus === a ? 'selected' : ''}>${prettyStatus(a)}</option>`).join('')}
     </select>
+    ${secondaryHtml}
   </div>`;
 }
 
 function renderStatusMapRows(options, currentMap) {
   const container = document.getElementById('status-map-rows');
   const autoMapped = options.autoMappedStatuses || [];
-  const mappable = options.reviztoStatuses || [];
-  const optional = options.optionalStatuses || [];
+  const workflows = options.workflows || [];
 
-  if (!autoMapped.length && !mappable.length && !optional.length) {
+  if (!autoMapped.length && !workflows.length) {
     container.textContent = 'No Revizto statuses found yet — statuses appear here once an issue with that status exists, or once a workflow defines one.';
     return;
   }
 
+  // Column headers, once at the top — the same 3-column grid as every row
+  // below, so the three headers line up directly over their column.
+  const columnHeadersHtml = `<div class="status-map-column-headers">
+    <span>Revizto Status</span>
+    <span>ACC Primary Status</span>
+    <span>ACC Secondary Status</span>
+  </div>`;
+
   // Read-only: the 4 canonical status names always auto-map to a fixed
-  // ACC status, no admin config needed — shown greyed out so it's clear
-  // they're already handled, using a distinct class (not .mapping-row) so
-  // the save button's row query below doesn't pick these up and choke on
-  // the missing .status-select.
-  const autoRowsHtml = autoMapped
-    .map(
-      (s) => `<div class="status-auto-row" title="Auto-mapped — no configuration needed">
-        <span>${s.name}</span>
-        <span class="bridge-connector" aria-hidden="true">→</span>
-        <span class="badge badge-neutral">${prettyStatus(s.accStatus)} · auto</span>
+  // ACC status, no admin config needed, in any workflow — grouped under
+  // "Standard Workflow" (same visual treatment as a real custom workflow
+  // group) so it's clear they're already handled, using a distinct class
+  // (not .mapping-row) so the save button's row query below doesn't pick
+  // these up and choke on the missing .status-select. No secondary column
+  // here — canonical statuses aren't ambiguous by definition, so the
+  // "Revizto Status" disambiguation field doesn't apply to them.
+  const autoRowsHtml = autoMapped.length
+    ? `<div class="workflow-group">
+        <div class="workflow-group-header">Standard Workflow</div>
+        ${autoMapped
+          .map(
+            (s) => `<div class="status-auto-row" title="Auto-mapped — no configuration needed, in any workflow">
+              <span>${s.name}</span>
+              <span class="badge badge-neutral status-auto-badge">${prettyStatus(s.accStatus)} · auto</span>
+            </div>`
+          )
+          .join('')}
       </div>`
-    )
-    .join('');
-
-  // Required: every other custom status currently in use on an issue.
-  // Unmapped ones are highlighted red — they still sync (defaulting to
-  // ACC "Draft" as a safeguard, see toAccIssue), but should be mapped.
-  const editableRowsHtml = mappable.length
-    ? mappable.map((s) => statusMapRowHtml(s, currentMap, options.accStatuses, { optional: false })).join('')
-    : '<div class="hint">No other custom statuses in use yet.</div>';
-
-  // Optional: statuses defined in a workflow but not used by any issue
-  // yet — never highlighted red, purely a head start for admins who want
-  // to configure a project before real issues start using it.
-  const optionalRowsHtml = optional.length
-    ? `<div class="hint" style="margin-top:0.6rem;">Optional — defined in a workflow, not used by any issue yet:</div>` +
-      optional.map((s) => statusMapRowHtml(s, currentMap, options.accStatuses, { optional: true })).join('')
     : '';
 
-  container.innerHTML = autoRowsHtml + editableRowsHtml + optionalRowsHtml;
+  // One group per custom workflow currently in use — a same-named status
+  // in two different workflows is mapped independently (data-workflow-uuid
+  // on each row disambiguates them for the save handler below). The ''
+  // legacy bucket (mappings saved before workflow scoping existed) is
+  // folded in as a fallback so those keep showing as mapped.
+  const workflowGroupsHtml = workflows.length
+    ? workflows
+        .map((w) => {
+          const workflowMap = { ...(currentMap[''] || {}), ...(currentMap[w.uuid] || {}) };
+          const requiredHtml = w.required.length
+            ? w.required.map((s) => statusMapRowHtml(s, w.uuid, workflowMap, options.accStatuses, w.customStatusOptions, { optional: false })).join('')
+            : '';
+          const optionalHtml = w.optional.length
+            ? `<div class="hint" style="margin-top:0.4rem;">Optional — not used by any issue yet:</div>` +
+              w.optional.map((s) => statusMapRowHtml(s, w.uuid, workflowMap, options.accStatuses, w.customStatusOptions, { optional: true })).join('')
+            : '';
+          // Each workflow can have its own dedicated ACC field (e.g.
+          // "Revizto Status - Pre Pour Checklist") — flag it per group,
+          // not once globally, since one workflow's field can exist while
+          // another's doesn't.
+          const noFieldHint =
+            w.customStatusOptions === null
+              ? `<div class="hint" style="margin-top:0.4rem;">ACC Secondary Status is disabled for this workflow — create a list-type custom field in ACC named "Revizto Status" or "Revizto Status - ${w.label}" to enable it.</div>`
+              : '';
+          return `<div class="workflow-group">
+            <div class="workflow-group-header">${w.label}</div>
+            ${requiredHtml}${optionalHtml}${noFieldHint}
+          </div>`;
+        })
+        .join('')
+    : '<div class="hint">No other custom statuses in use yet.</div>';
+
+  container.innerHTML = columnHeadersHtml + autoRowsHtml + workflowGroupsHtml;
 }
 
 document.getElementById('save-status-map-btn').addEventListener('click', async () => {
   const projectId = document.getElementById('active-project-select').value;
   const resultEl = document.getElementById('status-map-result');
   const mappings = [...document.querySelectorAll('#status-map-rows .mapping-row')]
-    .map((row) => ({ reviztoStatus: row.dataset.reviztoStatus, accStatus: row.querySelector('.status-select').value }))
+    .map((row) => ({
+      workflowUuid: row.dataset.workflowUuid,
+      reviztoStatus: row.dataset.reviztoStatus,
+      accStatus: row.querySelector('.status-select').value,
+      accCustomStatusOptionId: row.querySelector('.acc-custom-status-select:not(:disabled)')?.value || null,
+    }))
     .filter((m) => m.accStatus);
   try {
     await api(`/api/projects/${projectId}/status-map`, { method: 'POST', body: JSON.stringify({ mappings }) });
     resultEl.textContent = 'Saved ✓';
+    // Re-render from the just-saved data so the red "unmapped" highlight
+    // (primary and secondary) clears immediately — the rows were built
+    // from the state at page-load time, which the save above just made
+    // stale, and nothing was re-rendering them after a save before this.
+    const statusMapRes = await api(`/api/projects/${projectId}/status-map`);
+    renderStatusMapRows(mappingOptions, statusMapRes.map);
   } catch (err) {
     resultEl.textContent = err.message;
   }
@@ -643,6 +716,39 @@ document.getElementById('save-auto-sync-btn').addEventListener('click', async ()
     });
     resultEl.textContent = 'Saved ✓';
   } catch (err) {
+    resultEl.textContent = err.message;
+  }
+});
+
+// ─── Issue linking (manual unlink toggle) ────────────────────────────
+
+async function loadManualUnlinkSetting(projectId) {
+  const resultEl = document.getElementById('allow-manual-unlink-result');
+  resultEl.textContent = '';
+  try {
+    const { projects } = await api('/api/projects');
+    const project = projects.find((p) => String(p.id) === String(projectId));
+    document.getElementById('allow-manual-unlink-toggle').checked = !!project?.allow_manual_unlink;
+  } catch (err) {
+    resultEl.textContent = err.message;
+  }
+}
+
+document.getElementById('allow-manual-unlink-toggle').addEventListener('change', async (e) => {
+  const projectId = document.getElementById('active-project-select').value;
+  const resultEl = document.getElementById('allow-manual-unlink-result');
+  if (!projectId) {
+    e.target.checked = false;
+    return;
+  }
+  try {
+    await api(`/api/projects/${projectId}/allow-manual-unlink`, {
+      method: 'POST',
+      body: JSON.stringify({ enabled: e.target.checked }),
+    });
+    resultEl.textContent = 'Saved ✓';
+  } catch (err) {
+    e.target.checked = !e.target.checked; // revert the toggle, the save didn't actually take
     resultEl.textContent = err.message;
   }
 });

@@ -382,6 +382,33 @@ router.post('/api/projects/:id/auto-sync-filters', requireAdmin, async (req, res
   res.json({ ok: true });
 });
 
+// Whether any signed-in user (not just admins) can manually unlink an
+// issue from the Issues page — admin-only to toggle, off by default.
+router.post('/api/projects/:id/allow-manual-unlink', requireAdmin, async (req, res) => {
+  const { enabled } = req.body;
+  const { rows } = await pool.query('UPDATE projects SET allow_manual_unlink = $2 WHERE id = $1 RETURNING *', [
+    req.params.id,
+    !!enabled,
+  ]);
+  if (!rows[0]) return res.status(404).json({ error: 'Project not found' });
+  res.json({ project: rows[0] });
+});
+
+// Manual unlink (Issues page) — only removes this app's own sync_map
+// bookkeeping row, never the actual issue in Revizto or ACC. Gated on the
+// project's own allow_manual_unlink flag server-side too, not just by
+// hiding the button client-side — so toggling it off actually revokes
+// the capability rather than just hiding it from someone who already has
+// the page open. requireLogin (not requireAdmin): once an admin has
+// turned this on, any signed-in user can use it, per the feature's intent.
+router.post('/api/projects/:id/issues/:reviztoIssueId/unlink', requireLogin, async (req, res) => {
+  const project = await _getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  if (!project.allow_manual_unlink) return res.status(403).json({ error: 'Manual unlinking is not enabled for this project' });
+  await syncService.unlinkIssue(req.session.userId, project, req.params.reviztoIssueId, req.session.userEmail);
+  res.json({ ok: true });
+});
+
 // ─── Sync (on-demand) ────────────────────────────────────────────────
 
 router.get('/api/projects/:id/revizto-issues', requireLogin, async (req, res) => {

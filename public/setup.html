@@ -103,7 +103,7 @@
                   <span class="accordion-caret" aria-hidden="true">▾</span>
                 </button>
                 <div class="subaccordion-panel">
-                  <p class="hint">The 4 common Revizto statuses — Open, In progress, Solved, Closed — always auto-map to their ACC equivalent (grey rows below, nothing to do). <strong>1)</strong> Every other custom status belonging to a workflow currently governing an issue is listed below as required — as soon as any issue starts using that workflow, all of its statuses need a mapping, since the issue could reach any of them. <strong>2)</strong> Only if unmapped does it default to ACC "Draft" as a safeguard — and flags a warning (see Mapping warnings tab) plus a sync error on the Issues page until you map it. <strong>3)</strong> Custom statuses whose workflow isn't in use by any issue yet are also listed, marked "Optional mapping" — set one ahead of time if you like, but they're never flagged as a warning until a real issue actually starts using that workflow. (ACC → Revizto status has no admin mapping — it always auto-maps the same 4 statuses and falls back to a built-in guess for the rest.)</p>
+                  <p class="hint">The 4 common Revizto statuses — Open, In progress, Solved, Closed — always auto-map to their ACC equivalent (grey rows above, nothing to do), <strong>in any workflow</strong>. <strong>1)</strong> Every other custom status is grouped below by the specific workflow it belongs to — a project can have multiple workflows, and two workflows can each define a status with the same name that needs a different ACC mapping, so each workflow's custom statuses are configured independently. <strong>2)</strong> A workflow's group is shown as required once any issue is currently using that workflow — every one of its statuses needs a mapping, since the issue could reach any of them. Only if unmapped does it default to ACC "Draft" as a safeguard — and flags a warning (see Mapping warnings tab) plus a sync error on the Issues page until you map it. <strong>3)</strong> A workflow not yet used by any issue is also listed, marked "Optional mapping" — set it up ahead of time if you like, but it's never flagged as a warning until a real issue starts using it. <strong>4)</strong> The "ACC Secondary Status" column is optional and only matters when two statuses in the same workflow share the same ACC Primary Status — set it to a specific option from an ACC list field you create, requires an ACC admin to create it first (the column shows "Not available" until one exists for that workflow). You can create one shared field named exactly "Revizto Status", or — recommended once you have several workflows, so each dropdown only shows that workflow's own statuses instead of one long combined list — a separate field per workflow named "Revizto Status - &lt;workflow name&gt;" (e.g. "Revizto Status - Pre Pour Checklist"), matched by that exact suffix. If a status's name exactly matches one of its field's options, it auto-maps with nothing to configure (greyed out, marked "auto" — same idea as the standard statuses above). When an ACC user changes that field directly, the app updates Revizto to that exact status. If the primary ACC status alone is ambiguous (matches more than one status in the workflow) and this field isn't set to a value that resolves it, the app can't tell which one was meant — it defaults ACC's status back to "Draft" and flags a warning rather than guessing, and leaves Revizto's status untouched.</p>
                   <div id="status-map-rows"></div>
                   <button id="save-status-map-btn" class="btn secondary">Save status mapping</button>
                   <span id="status-map-result" class="result-text"></span>
@@ -210,6 +210,23 @@
             <button id="save-auto-sync-btn" class="btn secondary">Save auto-sync settings</button>
             <span id="auto-sync-result" class="result-text"></span>
           </div>
+        </div>
+      </section>
+
+      <section class="accordion-item" data-step="issue-linking">
+        <button type="button" class="accordion-header">
+          <span class="accordion-step">4</span>
+          <span>Issue linking</span>
+          <span class="accordion-caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="accordion-panel">
+          <p class="hint">Off by default. When enabled, any signed-in user (not just admins) can manually unlink an issue from the Issues page — this only removes the link this app tracks between the Revizto and ACC issue, it never deletes the issue itself in either system. Mainly useful for recovering from a broken link (e.g. the ACC issue was deleted directly in ACC) — a broken link to a deleted ACC issue also now self-heals automatically on its own during the next push/resync, so this toggle is for anything that needs a manual fix. Uses the project selected above.</p>
+          <label class="ios-toggle">
+            <input type="checkbox" id="allow-manual-unlink-toggle" />
+            <span class="ios-toggle-track"><span class="ios-toggle-thumb"></span></span>
+            <span>Allow manual unlinking on the Issues page</span>
+          </label>
+          <span id="allow-manual-unlink-result" class="result-text"></span>
         </div>
       </section>
     </div>

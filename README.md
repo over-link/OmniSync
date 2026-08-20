@@ -192,6 +192,17 @@ a status name within that set. Falls back to a project-wide name match
 if the type/workflow lookup doesn't resolve (e.g. issue has no type set),
 rather than refusing outright.
 
+**Later hardened further** (`reviztoService._resolveStatusUuidForIssue`):
+that project-wide fallback was still a latent risk once a workflow *is*
+successfully resolved but the target name isn't one of its own statuses —
+it could match a same-named status belonging to an unrelated workflow.
+Now the project-wide fallback only runs when the workflow itself couldn't
+be resolved at all; once a workflow is known, only a status that actually
+belongs to it is accepted, full stop. Same underlying gap is what the
+"Status mapping — per workflow, both directions" section below is about,
+one layer up (the *admin-configured mapping*, not just this UUID
+resolution).
+
 ## Markup image upload (Revizto → ACC) — confirmed working
 
 Uploads the actual **markup image with drawings** as a file attachment on
@@ -303,7 +314,7 @@ Two different mechanisms, don't confuse them:
 |---|---|---|---|
 | `title` | `title` | Revizto → ACC | Automatic — direct copy |
 | *(none — Revizto has no description field)* | `description` | Revizto → ACC | Automatic — fixed marker `"Synced from Revizto"`, so issues are filterable in ACC by description |
-| `customStatusName` category | `status` | Both, admin-configurable both ways | Push: **category-based** — "To do"/"Completed" auto-map, "Tracking" (or unresolved) is admin-configurable, falls back to ACC `Draft` + a flagged error if unmapped. Pull: admin-configurable `acc_status_map`, falls back to a hardcoded guess + a flagged warning if unmapped |
+| `customStatusName` | `status` (+ an optional "Revizto Status" ACC custom field for precision) | Both, admin-configurable both ways, scoped per Revizto workflow | See "Status mapping — per workflow, both directions" below |
 | `stampAbbr` (shown as "Category > Stamp Title") | `issueSubtypeId` (issue type) | Revizto → ACC | **Admin-configurable** (Setup page) — falls back through: project's default subtype → title-keyword guess → auto-detected "General" subtype → first available, so a push can never fail from a missing subtype. Unmapped flags a sync error |
 | `clashAndLocationFields.level` | `locationId` | Revizto → ACC | Automatic — matched by name against the ACC project's own Location Breakdown Structure (live lookup, nothing stored); no match just leaves it unset |
 | `clashAndLocationFields.zone` | `locationDetails` | Revizto → ACC | Automatic — free text, always written when a zone is set (kept separate from level so it isn't used as a location fallback) |
@@ -315,42 +326,96 @@ Two different mechanisms, don't confuse them:
 | markup preview image (with drawings) | attachment | Revizto → ACC | Automatic — only the latest markup version, uploaded once per version |
 | *(reverse: ACC attachments)* | photo/PDF attachment | ACC → Revizto | Automatic, polling-based — see "Attachment sync" below |
 
-### Status mapping — category-based, only "Tracking" needs config
+### Status mapping — per workflow, both directions
 
-Revizto statuses each belong to a **category**, confirmed from real docs
-(`GET /project/{uuid}/issue-workflow/settings`, `statuses[].category`):
-`"To do"`, `"Tracking"`, or `"Completed"`.
+The 4 canonical Revizto status names — `Open`, `In progress`, `Solved`,
+`Closed` — always auto-map to a fixed ACC status, in **any** workflow, no
+admin config needed (`fieldMapping.REVIZTO_AUTO_MAPPED_STATUSES`/
+`ACC_AUTO_MAPPED_STATUSES`, inverses of each other so the two directions
+can't drift out of sync). Shown greyed out on the Setup page as a
+read-only "already handled" row, labeled "Standard Workflow".
 
-- **"To do"** → always ACC `open`. **"Completed"** → always ACC
-  `completed`. No config, no exceptions — shown greyed out on the Setup
-  page as a read-only "already handled" row.
-- **"Tracking"** (and any status whose category can't be resolved) checks
-  the admin-configured mapping (`status_map`, Setup page) **first** — if
-  you've mapped it, your choice wins, every time. **Only if unmapped**
-  does it fall back to ACC `Draft` (a deliberate safeguard value, distinct
-  from any real status) and flag a sync error/warning until you map it.
-- The Setup page lists **every** Tracking-category status currently in
-  use on any issue (not just linked ones) — so you can configure a
-  project fully before syncing starts, "so things don't slip through the
-  cracks." Unmapped ones are highlighted red.
+*(An earlier version of this mapping was category-based — Revizto's
+`statuses[].category`: "To do"/"Tracking"/"Completed", confirmed from real
+docs — deliberately reverted back to name-based auto-routing on explicit
+request; category isn't read anywhere in the current code.)*
 
-### ACC → Revizto status mapping — the reverse direction
+Every other **custom** status needs an explicit admin mapping — and since
+a project can have multiple workflows, and two workflows can each define
+a same-named custom status that should map differently, this mapping is
+scoped **per workflow**, not just by name (`status_map.workflow_uuid`,
+`''` for rows saved before this scoping existed, used as a fallback
+bucket so old mappings keep applying rather than silently disappearing).
+The Setup page groups custom statuses by the workflow they belong to,
+labeled with Revizto's own confirmed `workflow.name` field (falls back to
+a numbered "Custom workflow N" if that's ever missing). A workflow
+currently governing at least one real issue has all of its statuses
+listed as required — unmapped ones highlighted red, defaulting to ACC
+`Draft` as a safeguard and flagging a sync error/warning until mapped; a
+workflow not yet in use lists its statuses as optional, for
+pre-configuring ahead of time without a false warning.
 
-The pull direction previously had **no admin override at all** — just a
-hardcoded guess (`mapStatusFromAcc`, e.g. ACC `pending` → Revizto
-`"Open"`), confirmed by real report to not always be what's wanted, with
-no way to change it. 4 unambiguous ACC statuses (`open`/`in_progress`/
-`completed`/`closed`) always auto-map (`Open`/`In progress`/`Solved`/
-`Closed`), same "no config needed" treatment as the forward direction's
-"To do"/"Completed" — no admin override possible for these 4, by design.
-For the other 5 (`in_review`/`not_approved`/`in_dispute`/`draft`/
-`pending`), the new `acc_status_map` table (admin-configurable target
-Revizto status) is checked first; only falls back to the hardcoded guess
-— highlighted red on the Setup page — if unmapped. Shown side by side
-with the forward status mapping on the Setup page, since they're the two
-halves of the same concept.
+**Reverse direction (ACC → Revizto)**, `syncService.
+_resolveReviztoStatusFromAcc`: the same 4 canonical ACC statuses always
+auto-map back, no admin config. Every other ACC status is resolved in
+order:
+1. The secondary "Revizto Status" ACC field, if set for this issue's
+   workflow — see below — always wins outright, since it's precise by
+   construction.
+2. Otherwise, the primary ACC status is checked against this workflow's
+   own `status_map` rows, reversed — used only when **exactly one**
+   status in the workflow maps to it. Multiple matches means the primary
+   status alone is genuinely ambiguous (several custom statuses share the
+   same coarse ACC status), so rather than guess, ACC's primary status is
+   defaulted back to `Draft` and a warning is flagged (`recordSyncError`,
+   same mechanism as every other mapping warning) — Revizto's own status
+   is left untouched, since the app doesn't know which one was meant.
+   Zero matches falls back to the pre-existing hardcoded guess
+   (`mapStatusFromAcc`), unchanged from before this feature.
 
-**Migration needed**: new `acc_status_map` table. Run `npm run migrate`.
+**Migration needed**: `status_map.workflow_uuid`,
+`status_map.acc_custom_status_option_id`. Run `npm run migrate`.
+
+### Secondary ACC "Revizto Status" field — precise reverse mapping
+
+ACC's primary status is a fixed 9-value enum, coarser than a custom
+workflow's real status set — several custom statuses in one workflow can
+legitimately share the same primary ACC status (e.g. "Revise" and "Field
+Fix" both → `open`). Fine for the forward push, but it makes the reverse
+direction ambiguous on its own: an ACC user changing the primary status
+to `open` doesn't say which of several possible Revizto statuses was
+meant — see step 2 above.
+
+The fix: an admin creates a **list-type custom field in ACC** to hold the
+precise target. Either one shared field titled exactly "Revizto Status",
+or — recommended once a project has several workflows, so each dropdown
+only shows that workflow's own statuses instead of one long combined list
+— one field per workflow, titled "Revizto Status - &lt;workflow name&gt;"
+(e.g. "Revizto Status - Pre Pour Checklist"), matched by that exact name
+suffix against the workflow's own name — case-insensitive, but **not**
+fuzzy, so a naming mismatch (typo, singular/plural, extra word) is the
+first thing to check if a workflow's dropdown unexpectedly shows "Not
+available". `fieldMapping.isReviztoStatusFieldTitle`/
+`pickReviztoStatusField` do the discovery and per-workflow matching,
+shared by both directions (`syncService.makeReviztoStatusFieldResolver`
+for the push, `_resolveReviztoStatusFromAcc` for the pull).
+
+A custom status whose name **exactly matches** one of that field's
+options auto-maps with nothing to configure — greyed out with an "auto"
+badge on the Setup page, same idea as the 4 canonical statuses. Otherwise
+it's admin-configurable, same red-highlight-when-unmapped treatment as
+the primary status column (though unlike the primary column, an unmapped
+secondary field is a display-only nudge, not counted in the "N unmapped
+fields" warning — the primary mapping alone already has a safe fallback).
+
+On a Revizto → ACC push, this field is set alongside the primary status
+whenever a mapping (explicit or auto-matched) resolves it. On an ACC →
+Revizto pull, an explicit selection here always wins outright over the
+primary status; if it's set but doesn't resolve to anything valid for the
+issue's specific workflow (wrong option, stale from a different
+workflow), that's treated as unresolved the same way an ambiguous primary
+status is, rather than silently falling back and possibly masking a real
+mistake.
 
 ### Issue type mapping — guaranteed to resolve to something
 
@@ -417,6 +482,11 @@ custom field in the project) and only written if ACC's own
 issue's subtype (checked at the subtype, issue-type, *or* project-wide
 level — confirmed by real testing that a field correctly enabled in ACC
 still showed as "unmapped" until the issue-type-level case was added).
+The "Revizto Status" field(s) covered above use this exact same
+subtype-applicability check, but their own dedicated resolver
+(`makeReviztoStatusFieldResolver`) rather than this fixed managed list —
+a project can have several of them (one per workflow), unlike every field
+here which is always exactly one fixed title.
 
 **Issue Priority** is the one bidirectional field here: Revizto → ACC
 resolves the raw priority string to the matching **dropdown option ID**
@@ -495,6 +565,36 @@ pushed the other direction (matched by the `"Revizto Issue "` naming
 assignee/watchers, priority, due date, the latest comment, and attachments
 — just not **title** yet. Everything else uses the same status-via-
 diff-comment mechanism, extended field by field.
+
+### Broken links: self-heal and manual unlink
+
+If the ACC issue behind a linked Revizto issue is deleted directly in ACC
+(outside this app), ACC's API returns **403 Forbidden** for it — not 404
+as would normally be expected, confirmed by real testing (ACC's
+Construction Issues API apparently reports a nonexistent issue ID as an
+access error, not a not-found one — see `syncService.
+_isAccIssueGoneError`). Both places that read/write that ACC issue treat
+this the same way: `pushIssueToAcc` (the 2-minute auto-resync and manual
+pushes) and `getIssuesBoard` (the Issues page's own read) both clear the
+stale `sync_map` row rather than erroring on it forever. Deliberately does
+**not** silently recreate a replacement issue in ACC on its own — an
+admin who intentionally deleted issues in ACC wants them to show up as
+unlinked and ready to review/relink deliberately, not have this app
+recreate them automatically on the next poll cycle. The issue just
+reverts to "unlinked" and becomes available to relink normally (manually,
+or via auto-sync-by-filter).
+
+**Manual unlink** — an admin-gated opt-in (`projects.allow_manual_unlink`,
+off by default, toggled on the Setup page's "Issue linking" section) that
+lets any signed-in user manually clear a link from the Issues page, for
+anything that doesn't self-heal on its own. Only removes this app's own
+tracked link — never deletes the issue in either system. Posts a
+best-effort notification comment on both sides when used
+(`syncService.unlinkIssue`), same idea as the existing deadline-change/
+markup-upload comments; a failed comment post (e.g. the ACC issue is
+already gone) never blocks the unlink itself.
+
+**Migration needed**: `projects.allow_manual_unlink`. Run `npm run migrate`.
 
 ### Auto-sync by filter — opt-in exception to "linking is manual"
 

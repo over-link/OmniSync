@@ -38,6 +38,64 @@ async function recordLink(projectId, reviztoIssueId, accIssueId) {
   );
 }
 
+/**
+ * True when an ACC API error means "this issue no longer exists" —
+ * confirmed by real testing that a deleted-in-ACC issue's GET/PATCH
+ * returns 403 Forbidden, NOT 404 Not Found as would normally be expected
+ * (ACC's Construction Issues API apparently reports a nonexistent issue
+ * ID as an access error rather than a not-found one). Checked in both
+ * places that self-heal a missing ACC issue by clearing the stale link —
+ * pushIssueToAcc and getIssuesBoard — rather than erroring on it forever.
+ */
+function _isAccIssueGoneError(err) {
+  const status = err.response?.status;
+  return status === 404 || status === 403;
+}
+
+/**
+ * Removes the link between a Revizto issue and its ACC counterpart —
+ * this app's own bookkeeping row only, never the actual issue in either
+ * system. Used by the automatic self-heal in pushIssueToAcc/getIssuesBoard
+ * (the ACC issue was deleted outside this app — see _isAccIssueGoneError)
+ * and by the admin-gated manual "Unlink" action on the Issues page (see
+ * projects.allow_manual_unlink).
+ */
+async function clearLink(projectId, reviztoIssueId) {
+  await pool.query('DELETE FROM sync_map WHERE project_id = $1 AND revizto_issue_id = $2', [projectId, String(reviztoIssueId)]);
+}
+
+/**
+ * The user-facing manual unlink action (see routes: POST /api/projects/
+ * :id/issues/:reviztoIssueId/unlink) — clears the link, then posts a
+ * best-effort notification comment on BOTH sides so neither side is left
+ * silently wondering why sync stopped, same idea as the existing
+ * deadline-change/markup-upload comments. Comment failures never block
+ * the unlink itself — the link is already gone at that point regardless.
+ */
+async function unlinkIssue(userId, project, reviztoIssueId, reporterEmail) {
+  const accIssueId = await getAccIdForRevizto(project.id, reviztoIssueId);
+  await clearLink(project.id, reviztoIssueId);
+  if (!accIssueId) return; // wasn't actually linked — nothing to notify
+
+  try {
+    await accService.addComment(userId, project, accIssueId, `Unlinked from Revizto issue #${reviztoIssueId} in Revizto ⇄ ACC Sync${reporterEmail ? ` by ${reporterEmail}` : ''}.`);
+  } catch (err) {
+    console.warn(`[sync] Could not post unlink notice to ACC issue ${accIssueId} (skipping):`, err.response?.data || err.message);
+  }
+  try {
+    await reviztoService.addComment(
+      userId,
+      project.revizto_region,
+      project.revizto_project_uuid,
+      reviztoIssueId,
+      `Unlinked from ACC issue #${accIssueId} in Revizto ⇄ ACC Sync${reporterEmail ? ` by ${reporterEmail}` : ''}.`,
+      reporterEmail
+    );
+  } catch (err) {
+    console.warn(`[sync] Could not post unlink notice to Revizto issue ${reviztoIssueId} (skipping):`, err.response?.data || err.message);
+  }
+}
+
 async function clearSyncError(projectId, reviztoIssueId) {
   await pool.query(
     'UPDATE sync_map SET last_error = NULL, last_error_at = NULL, last_synced_at = now() WHERE project_id = $1 AND revizto_issue_id = $2',
@@ -128,6 +186,9 @@ async function makeLocationResolver(userId, project) {
 // Only these ACC custom fields are touched by this sync — deliberately
 // not looking up every custom field in the project, both to avoid noise
 // and to avoid the sync reaching into fields it has no business managing.
+// "Revizto Status" is handled separately by makeReviztoStatusFieldResolver
+// below, not through this exact-title list — a project can have several
+// such fields (one per workflow), not just one fixed title.
 const MANAGED_CUSTOM_FIELDS = ['Grid Intersection', 'Room', 'Tags', 'Revizto ID', 'Issue Priority'];
 
 // Revizto returns many categorical fields (status, stamp, tags, etc.) in
@@ -237,6 +298,66 @@ async function makeCustomAttributeResolver(userId, project, issueContext = {}) {
   };
 }
 
+/**
+ * Resolves the ACC "Revizto Status" list field for a SPECIFIC workflow —
+ * unlike the other managed custom fields above (Grid/Room/Tags/etc,
+ * always exactly one field, matched by an exact fixed title), a project
+ * can now have SEVERAL of these fields, one per workflow (e.g. "Revizto
+ * Status - Pre Pour Checklist"), so each workflow's dropdown only shows
+ * that workflow's own statuses instead of one huge project-wide list —
+ * see fieldMapping.pickReviztoStatusField for the matching rule. Kept
+ * separate from makeCustomAttributeResolver (whose contract is "one
+ * field per exact title") rather than overloading it. Same lazy-fetch-
+ * once and subtype-applicability check as that function, since ACC scopes
+ * each custom field to specific issue subtypes.
+ */
+async function makeReviztoStatusFieldResolver(userId, project) {
+  let statusFieldDefs = null;
+  let mappingsByAttrId = null;
+  let issueTypeIdBySubtypeId = null;
+  return async (workflowLabel, subtypeId) => {
+    if (!statusFieldDefs) {
+      try {
+        const [defs, mappings, subtypes] = await Promise.all([
+          accService.getIssueAttributeDefinitions(userId, project),
+          accService.getIssueAttributeMappings(userId, project),
+          accService.getIssueSubtypes(userId, project),
+        ]);
+        issueTypeIdBySubtypeId = Object.fromEntries(subtypes.map((s) => [s.id, s.issueTypeId]));
+        statusFieldDefs = defs.filter((d) => d.dataType === 'list' && fieldMapping.isReviztoStatusFieldTitle(d.title));
+        mappingsByAttrId = {};
+        for (const m of mappings) {
+          if (!mappingsByAttrId[m.attributeDefinitionId]) mappingsByAttrId[m.attributeDefinitionId] = [];
+          mappingsByAttrId[m.attributeDefinitionId].push(m);
+        }
+        console.log(`[sync] ACC "Revizto Status" field(s) for project "${project.name}": ${statusFieldDefs.length ? statusFieldDefs.map((d) => d.title).join(', ') : 'none found'}`);
+      } catch (err) {
+        console.warn('[sync] Could not look up ACC "Revizto Status" field definitions (skipping secondary status mapping):', err.response?.data?.detail || err.message);
+        statusFieldDefs = [];
+        mappingsByAttrId = {};
+        issueTypeIdBySubtypeId = {};
+      }
+    }
+
+    const def = fieldMapping.pickReviztoStatusField(statusFieldDefs, workflowLabel);
+    if (!def) return null;
+
+    const attrMappings = mappingsByAttrId[def.id] || [];
+    const issueTypeId = issueTypeIdBySubtypeId[subtypeId] || null;
+    const applicable = attrMappings.some(
+      (m) =>
+        m.mappedItemType === 'container' ||
+        (m.mappedItemType === 'issueSubtype' && m.mappedItemId === subtypeId) ||
+        (m.mappedItemType === 'issueType' && issueTypeId && m.mappedItemId === issueTypeId)
+    );
+    if (!applicable) {
+      console.warn(`[sync] ACC field "${def.title}" exists but isn't mapped to this issue's subtype — skipping secondary status for this push.`);
+      return null;
+    }
+    return def;
+  };
+}
+
 // ─── Push: Revizto issue -> ACC (create or update) ────────────────────
 
 async function pushIssueToAcc(userId, project, reviztoIssue) {
@@ -245,15 +366,22 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
   const subtypes = await accService.getIssueSubtypes(userId, project);
   const subtypeLookup = Object.fromEntries(subtypes.map((s) => [`${s.issueTypeTitle} > ${s.title}`, s.id]));
 
-  const [customStatusMap, customTypeMap] = await Promise.all([
+  const [customStatusMap, customTypeMap, workflowSettings] = await Promise.all([
     fieldMapping.getStatusMap(project.id),
     fieldMapping.getTypeMap(project.id),
+    reviztoService.getWorkflowSettings(userId, project.revizto_region, project.revizto_project_uuid),
   ]);
 
   // customStatusName is a plain, ready-to-use string Revizto returns
   // alongside the UUID version (customStatus) — confirmed from a real raw
   // issue response. No UUID resolution needed for this.
   const reviztoStatusName = reviztoService.unwrap(reviztoIssue.customStatusName) ?? null;
+
+  // Which workflow governs THIS issue (via its type), so the status
+  // mapping lookup below can be scoped to it — two different workflows
+  // can define a same-named custom status that should map differently.
+  const workflowUuid = reviztoService.resolveIssueWorkflowUuid(reviztoIssue, workflowSettings);
+  const workflowLabel = workflowUuid ? reviztoService.getWorkflowLabel(workflowUuid, workflowSettings) : null;
 
   // Resolves email -> Autodesk user ID for both assignee and watchers.
   // Was disabled for a while after an earlier bug where a failure here
@@ -278,22 +406,46 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
     accIssueId: existingAccId,
   });
 
+  // Separate resolver for the "Revizto Status" field family (see
+  // makeReviztoStatusFieldResolver) — a project can have several of
+  // these, one per workflow, unlike customAttributeResolver's other
+  // fields which are always exactly one fixed title.
+  const reviztoStatusFieldResolver = await makeReviztoStatusFieldResolver(userId, project);
+
   const { payload, statusNeedsMapping, typeNeedsMapping } = await reviztoService.toAccIssue(reviztoIssue, {
     subtypeLookup,
     defaultSubtypeId: project.acc_default_subtype_id,
     customStatusMap,
     customTypeMap,
     reviztoStatusName,
+    workflowUuid,
+    workflowLabel,
     autoMappedStatuses: fieldMapping.REVIZTO_AUTO_MAPPED_STATUSES,
     assigneeResolver,
     locationResolver,
     customAttributeResolver,
+    reviztoStatusFieldResolver,
   });
 
   let accIssueId;
   if (existingAccId) {
-    const updated = await accService.updateIssue(userId, project, existingAccId, payload);
-    accIssueId = existingAccId;
+    try {
+      await accService.updateIssue(userId, project, existingAccId, payload);
+      accIssueId = existingAccId;
+    } catch (err) {
+      if (!_isAccIssueGoneError(err)) throw err;
+      // The linked ACC issue no longer exists (e.g. deleted directly in
+      // ACC, outside this app) — self-heal by clearing the stale link
+      // (same treatment as getIssuesBoard's read-path handling of the
+      // same error) rather than silently re-creating a replacement issue
+      // in ACC on the app's own initiative — explicit request: an admin
+      // who deliberately deleted issues in ACC wants them to show up as
+      // unlinked and ready to review/relink deliberately, not have this
+      // app recreate them automatically on the next poll cycle.
+      console.warn(`[sync] ACC issue ${existingAccId} no longer exists (${err.response?.status}) — auto-unlinking Revizto issue ${reviztoIssue.id}.`);
+      await clearLink(project.id, reviztoIssue.id);
+      return { action: 'unlinked', reason: `ACC issue ${existingAccId} no longer exists` };
+    }
   } else {
     const created = await accService.createIssue(userId, project, payload);
     await recordLink(project.id, reviztoIssue.id, created.id);
@@ -567,6 +719,87 @@ async function getLinkedIssuePairs(userId, project) {
 
 // ─── Pull: ACC webhook event -> Revizto ───────────────────────────────
 
+/**
+ * Resolves what Revizto status an ACC status/custom-field change should
+ * produce, respecting the issue's own workflow (a project can have
+ * several, and different workflows can map the same ACC primary status
+ * to different Revizto statuses — see the Setup page's per-workflow
+ * Status mapping panel). Returns either { targetStatusName } — apply this
+ * to Revizto — or { ambiguous: true, reason } when nothing resolves it
+ * precisely enough to trust; the caller then defaults ACC's primary
+ * status back to "draft" rather than guessing.
+ *
+ * Resolution order:
+ *  1. ACC's "Revizto Status" custom list field (admin-mapped 1:1 to an
+ *     exact Revizto status per workflow) — always wins outright when set,
+ *     since it's precise by construction. If no explicit status_map row
+ *     covers the selected option, falls back to an exact name match
+ *     against this workflow's own status names (same zero-config idea as
+ *     the 4 canonical statuses — a custom status whose name already
+ *     matches an ACC option needs no admin mapping at all). Only when
+ *     NEITHER resolves it is it treated as ambiguous, so a real mistake
+ *     (wrong option, stale from a different workflow) doesn't get masked
+ *     by a primary-status guess.
+ *  2. No secondary selection: the primary ACC status, but only trusted
+ *     when exactly one of this workflow's mapped statuses targets it —
+ *     multiple matches is exactly the scenario the secondary field exists
+ *     to disambiguate, so that's ambiguous too. Zero matches falls back
+ *     to the pre-existing hardcoded guess (mapStatusFromAcc), unchanged.
+ */
+async function _resolveReviztoStatusFromAcc(userId, project, accIssue, reviztoIssueId) {
+  const [reviztoIssue, workflowSettings, statusMap] = await Promise.all([
+    reviztoService.getIssue(userId, project.revizto_region, project.revizto_project_uuid, reviztoIssueId),
+    reviztoService.getWorkflowSettings(userId, project.revizto_region, project.revizto_project_uuid),
+    fieldMapping.getStatusMap(project.id),
+  ]);
+  const workflowUuid = reviztoService.resolveIssueWorkflowUuid(reviztoIssue, workflowSettings);
+  const workflowLabel = workflowUuid ? reviztoService.getWorkflowLabel(workflowUuid, workflowSettings) : null;
+  const workflowMap = { ...(statusMap[''] || {}), ...(statusMap[workflowUuid] || {}) };
+
+  // A project can have several "Revizto Status*" fields on the issue, one
+  // per workflow (e.g. "Revizto Status - Pre Pour Checklist") — pick the
+  // one that belongs to THIS issue's workflow, same matching rule as the
+  // push direction (fieldMapping.pickReviztoStatusField).
+  const statusAttrs = (accIssue.customAttributes || []).filter((a) => fieldMapping.isReviztoStatusFieldTitle(a.title));
+  const secondaryAttr = fieldMapping.pickReviztoStatusField(statusAttrs, workflowLabel);
+  const secondaryOptionId = secondaryAttr && secondaryAttr.value != null && secondaryAttr.value !== '' ? secondaryAttr.value : null;
+  if (secondaryOptionId) {
+    const match = Object.entries(workflowMap).find(([, v]) => v.accCustomStatusOptionId === secondaryOptionId);
+    if (match) return { targetStatusName: match[0] };
+
+    const attributeDefs = await accService.getIssueAttributeDefinitions(userId, project);
+    const statusFieldDefs = attributeDefs.filter((d) => d.dataType === 'list' && fieldMapping.isReviztoStatusFieldTitle(d.title));
+    const statusFieldDef = fieldMapping.pickReviztoStatusField(statusFieldDefs, workflowLabel);
+    const selectedOption = statusFieldDef?.metadata?.list?.options?.find((o) => o.id === secondaryOptionId);
+    const selectedLabel = selectedOption ? String(selectedOption.value ?? selectedOption.label ?? '').trim().toLowerCase() : null;
+    if (selectedLabel) {
+      const nameMatch = reviztoService
+        .getWorkflowStatusNames(workflowUuid, workflowSettings)
+        .find((n) => n.trim().toLowerCase() === selectedLabel);
+      if (nameMatch) return { targetStatusName: nameMatch };
+    }
+
+    return { ambiguous: true, reason: `ACC "${secondaryAttr.title}" selection doesn't match any mapped status for this issue's workflow.` };
+  }
+
+  const candidates = new Set(
+    Object.entries(workflowMap)
+      .filter(([, v]) => v.accStatus === accIssue.status)
+      .map(([name]) => name)
+  );
+  if (fieldMapping.ACC_AUTO_MAPPED_STATUSES[accIssue.status]) {
+    candidates.add(fieldMapping.ACC_AUTO_MAPPED_STATUSES[accIssue.status]);
+  }
+  if (candidates.size === 1) return { targetStatusName: [...candidates][0] };
+  if (candidates.size > 1) {
+    return {
+      ambiguous: true,
+      reason: `ACC status "${accIssue.status}" is mapped from multiple Revizto statuses in this issue's workflow (${[...candidates].join(', ')}) — set ACC's "Revizto Status" field to the correct one.`,
+    };
+  }
+  return { targetStatusName: reviztoService.mapStatusFromAcc(accIssue.status) };
+}
+
 async function handleAccWebhook(userId, project, payload, reporterEmail) {
   // Confirmed from a real webhook delivery: payload.id is the clean ACC
   // issue ID directly. The old fallback (parsing resourceUrn by splitting
@@ -588,21 +821,34 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
     return { action: 'skipped', reason: 'no linked Revizto issue' };
   }
 
-  // Four ACC statuses have an unambiguous Revizto equivalent and always
-  // auto-map (mirrors the forward direction's canonical-name auto-
-  // mapping) — checked first. Every other ACC status falls back to a
-  // hardcoded guess (mapStatusFromAcc) — there's no admin override for
-  // this direction (explicit request to keep it simple, unlike the
-  // forward direction which stays admin-configurable).
-  const newStatus = fieldMapping.ACC_AUTO_MAPPED_STATUSES[accIssue.status] || reviztoService.mapStatusFromAcc(accIssue.status);
-  await reviztoService.updateIssueStatus(
-    userId,
-    project.revizto_region,
-    project.revizto_project_uuid,
-    reviztoIssueId,
-    newStatus,
-    reporterEmail
-  );
+  // See _resolveReviztoStatusFromAcc for the full resolution order
+  // (secondary "Revizto Status" field, then per-workflow primary-status
+  // reverse lookup, then the hardcoded guess). Ambiguous/unresolvable
+  // cases don't guess — they default ACC's primary status back to
+  // "draft" (skip if already there, to avoid a redundant self-triggered
+  // webhook) and leave Revizto's own status untouched, since the app
+  // doesn't know which one was actually intended.
+  const resolution = await _resolveReviztoStatusFromAcc(userId, project, accIssue, reviztoIssueId);
+  if (resolution.ambiguous) {
+    if (accIssue.status !== 'draft') {
+      await accService.updateIssue(userId, project, accIssueId, { status: 'draft' });
+    }
+    await recordSyncError(project.id, reviztoIssueId, `${resolution.reason} Configure it on the Setup page.`);
+  } else {
+    const statusResult = await reviztoService.updateIssueStatus(
+      userId,
+      project.revizto_region,
+      project.revizto_project_uuid,
+      reviztoIssueId,
+      resolution.targetStatusName,
+      reporterEmail
+    );
+    if (statusResult && statusResult.ok === false) {
+      await recordSyncError(project.id, reviztoIssueId, `${statusResult.reason} Configure a status mapping on the Setup page.`);
+    } else {
+      await clearSyncError(project.id, reviztoIssueId);
+    }
+  }
 
   // Assignee/watchers: ACC gives us Autodesk user IDs, Revizto needs
   // emails — resolve via the same project members list already used for
@@ -841,6 +1087,7 @@ async function getIssuesBoard(userId, project) {
   for (const issue of issues) {
     const accIssueId = linkMap.get(String(issue.id)) || null;
     let acc = null;
+    let linked = !!accIssueId;
     if (accIssueId) {
       try {
         const accIssue = await accService.getIssue(userId, project, accIssueId);
@@ -850,14 +1097,25 @@ async function getIssuesBoard(userId, project) {
         // the UUID if displayId is ever missing rather than showing blank.
         acc = { id: accIssueId, displayId: accIssue.displayId ?? accIssueId, title: accIssue.title, status: accIssue.status };
       } catch (err) {
-        acc = { id: accIssueId, error: err.response?.data?.detail || err.message };
+        if (_isAccIssueGoneError(err)) {
+          // Clear the stale link instead of showing a permanent error
+          // row — this is a read-only display query, so unlike
+          // pushIssueToAcc there's no push happening to re-create the ACC
+          // issue from; it just reverts to "unlinked" so the Issues page
+          // offers it up to be relinked normally (manually, or by
+          // auto-sync-by-filter on the next poll).
+          await clearLink(project.id, issue.id);
+          linked = false;
+        } else {
+          acc = { id: accIssueId, error: err.response?.data?.detail || err.message };
+        }
       }
     }
     board.push({
       id: issue.id,
       title: reviztoService.unwrap(issue.title) || '(no title)',
       ..._buildFilterableFields(issue, lookups),
-      linked: !!accIssueId,
+      linked,
       acc,
     });
   }
@@ -1144,6 +1402,8 @@ module.exports = {
   getAccIdForRevizto,
   getReviztoIdForAcc,
   recordLink,
+  clearLink,
+  unlinkIssue,
   getSyncStats,
   pollAccCommentsForProject,
   pollAccAttachmentsForProject,

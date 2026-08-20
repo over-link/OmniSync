@@ -10,6 +10,7 @@ async function api(url, options = {}) {
 }
 
 let currentBoard = [];
+let currentProjects = [];
 const SCALAR_FILTER_FIELDS = ['status', 'stampCategory', 'issueType', 'stamp', 'assignee', 'assigneeCompany', 'priority', 'isClash'];
 const ARRAY_FILTER_FIELDS = ['tags', 'level', 'zone', 'room']; // fields where board items hold an array, not a single value
 const ALL_FILTER_FIELDS = [...SCALAR_FILTER_FIELDS, ...ARRAY_FILTER_FIELDS];
@@ -29,6 +30,7 @@ window.addEventListener('app:ready', async (e) => {
 async function loadProjectOptions() {
   const select = document.getElementById('project-select');
   const { projects } = await api('/api/projects');
+  currentProjects = projects;
   if (!projects.length) {
     select.innerHTML = '<option value="">No projects set up yet — see Setup</option>';
     return;
@@ -156,6 +158,9 @@ function renderBoard() {
   const hasUnlinked = filtered.some((i) => !i.linked);
   actionsEl.classList.toggle('hidden', !hasUnlinked);
 
+  const projectId = document.getElementById('project-select').value;
+  const allowManualUnlink = !!currentProjects.find((p) => String(p.id) === String(projectId))?.allow_manual_unlink;
+
   rowsEl.innerHTML = filtered
     .map((i) => {
       const rowClass = i.linked ? 'board-row row-synced' : 'board-row';
@@ -165,14 +170,37 @@ function renderBoard() {
           ? `<span class="hint">${i.acc.error}</span>`
           : `#${i.acc.displayId ?? i.acc.id} — ${i.acc.title} <em>(${prettyStatus(i.acc.status)})</em>`
         : `<label class="link-checkbox"><input type="checkbox" value="${i.id}" /> Select to link</label>`;
+      // Unlink only clears this app's own tracked link (never deletes
+      // the issue in either system) — see the Setup page's Issue linking
+      // toggle, which an admin has to turn on before this button appears.
+      const unlinkBtn = i.linked && allowManualUnlink ? `<button type="button" class="btn secondary unlink-btn" data-id="${i.id}" title="Unlink — removes the tracked link only, doesn't delete either issue">Unlink</button>` : '';
       return `<div class="${rowClass}">
         <span>${leftMeta}</span>
         <span class="bridge-connector" aria-hidden="true">${i.linked ? '⇄' : ''}</span>
         <span>${rightMeta}</span>
+        ${unlinkBtn}
       </div>`;
     })
     .join('');
 }
+
+document.getElementById('board-rows').addEventListener('click', async (e) => {
+  const btn = e.target.closest('.unlink-btn');
+  if (!btn) return;
+  const reviztoId = btn.dataset.id;
+  if (!confirm(`Unlink Revizto issue #${reviztoId} from its ACC issue? This only removes the tracked link — neither issue is deleted.`)) return;
+  const projectId = document.getElementById('project-select').value;
+  btn.disabled = true;
+  btn.textContent = 'Unlinking...';
+  try {
+    await api(`/api/projects/${projectId}/issues/${reviztoId}/unlink`, { method: 'POST' });
+    await loadBoard();
+  } catch (err) {
+    alert(err.data?.error || err.message);
+    btn.disabled = false;
+    btn.textContent = 'Unlink';
+  }
+});
 
 document.getElementById('link-selected-btn').addEventListener('click', async () => {
   const projectId = document.getElementById('project-select').value;

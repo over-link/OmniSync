@@ -170,6 +170,39 @@ CREATE TABLE IF NOT EXISTS status_map (
   UNIQUE (project_id, revizto_status)
 );
 
+-- Workflow-scoped status mapping: a project can have multiple Revizto
+-- workflows, and two different workflows can each define a status with
+-- the same NAME but a different UUID — the original UNIQUE(project_id,
+-- revizto_status) above collapsed those into one shared mapping, which is
+-- wrong whenever workflows disagree on what a same-named status should
+-- become in ACC. workflow_uuid defaults to '' for every row inserted
+-- before this column existed, and lookups check the issue's real workflow
+-- UUID first, falling back to the '' bucket — so pre-migration mappings
+-- keep working instead of silently disappearing (see fieldMapping.
+-- getStatusMap/reviztoService.toAccIssue).
+ALTER TABLE status_map ADD COLUMN IF NOT EXISTS workflow_uuid TEXT NOT NULL DEFAULT '';
+ALTER TABLE status_map DROP CONSTRAINT IF EXISTS status_map_project_id_revizto_status_key;
+-- Explicit pg_constraint check, not "EXCEPTION WHEN duplicate_object" —
+-- an already-existing constraint from a prior migrate run raises
+-- duplicate_table (42P07), not duplicate_object, so that exception class
+-- didn't actually catch a re-run (confirmed by a real "already exists"
+-- failure on a second `npm run migrate`). Checking pg_constraint directly
+-- sidesteps the SQLSTATE class question entirely.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'status_map_project_workflow_status_key') THEN
+    ALTER TABLE status_map ADD CONSTRAINT status_map_project_workflow_status_key UNIQUE (project_id, workflow_uuid, revizto_status);
+  END IF;
+END $$;
+
+-- Secondary ACC mapping: an admin-created ACC list/custom-field ("Revizto
+-- Status", discovered by title the same way Grid Intersection/Room/Issue
+-- Priority already are) whose option this Revizto status maps to. Lets
+-- the ACC->Revizto direction resolve precisely even when several custom
+-- statuses in one workflow share the same coarse primary ACC status (see
+-- syncService.handleAccWebhook) — nullable, since most statuses don't
+-- need this precision and can rely on the primary mapping alone.
+ALTER TABLE status_map ADD COLUMN IF NOT EXISTS acc_custom_status_option_id TEXT;
+
 -- Admin-configured issue-type mapping, per project. `revizto_type` is
 -- matched against whatever field ends up confirmed as Revizto's actual
 -- type/stamp-category field (see getIssuesBoard's unwrap attempts —
@@ -220,5 +253,16 @@ CREATE TABLE IF NOT EXISTS auto_sync_filters (
   UNIQUE (project_id, field, value)
 );
 CREATE INDEX IF NOT EXISTS idx_auto_sync_filters_project ON auto_sync_filters(project_id);
+
+-- Whether any signed-in user (not just admins) can manually unlink an
+-- issue from the Issues page — admin-controlled opt-in, off by default.
+-- "Unlink" only deletes the sync_map row (this app's own bookkeeping of
+-- which Revizto issue corresponds to which ACC issue); it never deletes
+-- the actual issue in either Revizto or ACC. Exists mainly for recovering
+-- from a broken link (e.g. the ACC issue was deleted outside this app)
+-- without needing direct DB access — see syncService.pushIssueToAcc's
+-- own automatic 404 self-heal for the common case; this is the manual
+-- escape hatch for anything that doesn't self-heal.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS allow_manual_unlink BOOLEAN NOT NULL DEFAULT false;
 
 -- connect-pg-simple creates its own "session" table automatically on first run.

@@ -121,28 +121,73 @@ async function getStatusMap(userId, region, projectUuid) {
 }
 
 /**
+ * An issue's workflow is determined by its issue TYPE (customType), not
+ * the issue directly — each type has one workflowUuid. Returns null if
+ * the issue has no customType set or it doesn't resolve to a known type.
+ */
+function resolveIssueWorkflowUuid(issue, settings) {
+  const typeUuid = issue.customType?.value || null;
+  const type = (settings.types || []).find((t) => t.uuid === typeUuid);
+  return type?.workflowUuid || null;
+}
+
+/**
+ * Human label for a workflow — confirmed from real Revizto docs: each
+ * workflow object has its own required `name` field (e.g. "My workflow").
+ * Returns null only if the workflow can't be found at all, so the caller
+ * can apply its own numbered fallback rather than showing a blank label.
+ */
+function getWorkflowLabel(workflowUuid, settings) {
+  const workflow = (settings.workflows || []).find((w) => w.uuid === workflowUuid);
+  return workflow?.name || null;
+}
+
+/**
+ * Every non-deleted status name that actually belongs to a given
+ * workflow (cross-referencing the workflow's own status UUID list
+ * against the project-wide status list for names, same pattern as
+ * _resolveStatusUuidForIssue). Used to auto-map a custom Revizto status
+ * to an ACC "Revizto Status" option when their names match exactly — the
+ * same zero-config idea as the 4 canonical statuses, extended to any
+ * custom status whose name happens to already match an ACC option.
+ */
+function getWorkflowStatusNames(workflowUuid, settings) {
+  const workflow = (settings.workflows || []).find((w) => w.uuid === workflowUuid);
+  if (!workflow) return [];
+  const statusNameByUuid = new Map((settings.statuses || []).filter((s) => !s.deletedAt).map((s) => [s.uuid, s.name]));
+  return [
+    ...new Set(
+      (workflow.statuses || []).filter((s) => !s.deletedAt).map((s) => statusNameByUuid.get(s.uuid)).filter(Boolean)
+    ),
+  ];
+}
+
+/**
  * Resolves a target status NAME to the correct UUID for a SPECIFIC
- * issue, respecting which workflow actually governs it. An issue's
- * workflow is determined by its issue TYPE (customType), not the issue
- * directly — each type has one workflowUuid, and each workflow only
- * recognizes a subset of the project's overall status list. Falls back
- * to any project-wide match by name if the type/workflow lookup fails,
- * rather than refusing outright.
+ * issue, respecting which workflow actually governs it. Each workflow
+ * only recognizes a subset of the project's overall status list, and two
+ * different workflows can define a same-named status with different
+ * UUIDs — so once the workflow IS known, a match must belong to it; we
+ * never fall through to a random project-wide match by name; that risks
+ * silently resolving to a status from an unrelated workflow, which
+ * Revizto's API rejects with "workflow does not connect to status" (or
+ * worse, could point the issue at the wrong entity if a name happens to
+ * be shared). The project-wide fallback only kicks in when the workflow
+ * itself couldn't be resolved at all (e.g. issue has no customType set).
  */
 async function _resolveStatusUuidForIssue(userId, region, projectUuid, issue, statusName) {
   const settings = await getWorkflowSettings(userId, region, projectUuid);
-  const typeUuid = issue.customType?.value || null;
-  const type = (settings.types || []).find((t) => t.uuid === typeUuid);
-  const workflow = type ? (settings.workflows || []).find((w) => w.uuid === type.workflowUuid) : null;
+  const workflowUuid = resolveIssueWorkflowUuid(issue, settings);
+  const workflow = workflowUuid ? (settings.workflows || []).find((w) => w.uuid === workflowUuid) : null;
 
   if (workflow) {
     const validUuids = new Set((workflow.statuses || []).filter((s) => !s.deletedAt).map((s) => s.uuid));
     const match = (settings.statuses || []).find((s) => s.name === statusName && validUuids.has(s.uuid));
-    if (match) return match.uuid;
+    return match?.uuid || null;
   }
 
-  // Fallback: any project-wide match by name, in case type/workflow
-  // lookup didn't resolve (e.g. issue has no customType set).
+  // Workflow couldn't be resolved at all — fall back to any project-wide
+  // match by name, better than refusing outright.
   const fallback = (settings.statuses || []).find((s) => s.name === statusName && !s.deletedAt);
   return fallback?.uuid || null;
 }
@@ -177,18 +222,27 @@ async function _postDiffComment(userId, region, projectUuid, issueUuid, diff, re
   return data;
 }
 
+/**
+ * Returns { ok: true } on a successful write, { ok: true, noop: true }
+ * when the issue is already on that status, or { ok: false, reason }
+ * when newStatusName doesn't resolve to a status belonging to this
+ * issue's own workflow — callers should surface `reason` as a visible
+ * sync warning rather than treat it the same as a silent no-op.
+ */
 async function updateIssueStatus(userId, region, projectUuid, issueId, newStatusName, reporterEmail) {
   const issue = await getIssue(userId, region, projectUuid, issueId);
   const oldStatusUuid = issue.customStatus?.value || null;
 
   const newStatusUuid = await _resolveStatusUuidForIssue(userId, region, projectUuid, issue, newStatusName);
   if (!newStatusUuid) {
-    console.warn('[revizto] Status not found for this issue\'s workflow:', newStatusName);
-    return null;
+    const reason = `Revizto status "${newStatusName}" isn't part of this issue's workflow — skipped.`;
+    console.warn('[revizto]', reason);
+    return { ok: false, reason };
   }
-  if (oldStatusUuid === newStatusUuid) return null; // no-op, avoid empty-diff rejection
+  if (oldStatusUuid === newStatusUuid) return { ok: true, noop: true }; // avoid empty-diff rejection
 
-  return _postDiffComment(userId, region, projectUuid, issue.uuid, { customStatus: { old: oldStatusUuid, new: newStatusUuid } }, reporterEmail);
+  await _postDiffComment(userId, region, projectUuid, issue.uuid, { customStatus: { old: oldStatusUuid, new: newStatusUuid } }, reporterEmail);
+  return { ok: true };
 }
 
 /**
@@ -678,7 +732,7 @@ function _addCustomAttribute(list, definition, rawValue) {
  * accepting the safeguard.
  * assigneeResolver: async (email) => autodeskId | null
  */
-async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, assigneeResolver, locationResolver, customAttributeResolver, customStatusMap = null, customTypeMap = null, reviztoStatusName = null, autoMappedStatuses = null } = {}) {
+async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, assigneeResolver, locationResolver, customAttributeResolver, reviztoStatusFieldResolver, customStatusMap = null, customTypeMap = null, reviztoStatusName = null, autoMappedStatuses = null, workflowUuid = null, workflowLabel = null } = {}) {
   const title = unwrap(reviztoIssue.title) || '(no title)';
   // Revizto issues have no description field of their own — this is a
   // fixed marker instead, so users can filter/identify synced issues in
@@ -713,22 +767,30 @@ async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, 
   // design, explicit request): the 4 canonical Revizto status names
   // (Open/In progress/Solved/Closed — same 4 the ACC->Revizto direction
   // auto-maps) always map to a fixed ACC status with no admin config
-  // needed. Every other custom status needs an explicit admin decision,
-  // since ACC has several statuses that could reasonably apply (in_
-  // progress, in_review, etc.). If not configured, default to "draft" (a
-  // safeguard, not a real answer — deliberately distinct from any real
-  // status so an unmapped issue can't be mistaken for one that's
+  // needed, in ANY workflow. Every other custom status needs an explicit
+  // admin decision, since ACC has several statuses that could reasonably
+  // apply (in_progress, in_review, etc.) — and since two different
+  // workflows can define a same-named custom status that should map
+  // differently, customStatusMap is keyed by workflow first:
+  // { [workflowUuid]: { [statusName]: {accStatus, accCustomStatusOptionId} } },
+  // with a '' bucket for mappings saved before workflow scoping existed
+  // (see fieldMapping.getStatusMap). If not configured, default to
+  // "draft" (a safeguard, not a real answer — deliberately distinct from
+  // any real status so an unmapped issue can't be mistaken for one that's
   // genuinely open/in-progress) and flag it via statusNeedsMapping rather
   // than silently guessing.
   let status;
   let statusNeedsMapping = false;
+  let secondaryStatusOptionId = null;
   const autoMapped = autoMappedStatuses && autoMappedStatuses[reviztoStatusName];
   if (autoMapped) {
     status = autoMapped;
   } else {
-    const configured = customStatusMap && customStatusMap[reviztoStatusName];
+    const configured =
+      customStatusMap?.[workflowUuid]?.[reviztoStatusName] ?? customStatusMap?.['']?.[reviztoStatusName] ?? null;
     if (configured) {
-      status = configured;
+      status = configured.accStatus;
+      secondaryStatusOptionId = configured.accCustomStatusOptionId || null;
     } else {
       status = 'draft';
       statusNeedsMapping = true;
@@ -799,6 +861,35 @@ async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, 
     // priority string to the matching dropdown option's ID.
     if (priority) _addCustomAttribute(customAttributes, await customAttributeResolver('Issue Priority', subtypeId), priority);
   }
+
+  // Revizto Status: the secondary, precise status target (see status
+  // resolution above). A project can have several of these ACC fields,
+  // one per workflow (e.g. "Revizto Status - Pre Pour Checklist"), so
+  // this uses its own resolver (workflow-aware) instead of
+  // customAttributeResolver's single-fixed-title lookup — see
+  // syncService.makeReviztoStatusFieldResolver. An explicit admin-
+  // configured option ID (already known, from Setup) wins outright —
+  // pushed directly rather than through _addCustomAttribute's name-
+  // matching, since it's already the exact option, not a raw Revizto
+  // string. Otherwise, auto-map by exact name: same zero-config
+  // philosophy as the 4 canonical statuses, extended to any custom status
+  // whose name already matches an ACC "Revizto Status" option exactly.
+  if (reviztoStatusFieldResolver && (reviztoStatusName || secondaryStatusOptionId)) {
+    const statusFieldDef = await reviztoStatusFieldResolver(workflowLabel, subtypeId);
+    if (statusFieldDef) {
+      let optionId = secondaryStatusOptionId;
+      if (!optionId) {
+        const fieldOptions = statusFieldDef.metadata?.list?.options || [];
+        const nameMatch = fieldOptions.find(
+          (o) => String(o.value ?? o.label ?? '').trim().toLowerCase() === String(reviztoStatusName).trim().toLowerCase()
+        );
+        optionId = nameMatch?.id || null;
+      }
+      if (optionId) customAttributes.push({ attributeDefinitionId: statusFieldDef.id, value: optionId });
+    } else if (secondaryStatusOptionId) {
+      console.warn('[revizto] No matching "Revizto Status" custom field found/mapped in ACC for this issue\'s workflow/subtype — skipping secondary status sync.');
+    }
+  }
   if (customAttributes.length) payload.customAttributes = customAttributes;
 
   // assigneeResolver is really a generic (email) -> Autodesk user ID
@@ -839,6 +930,9 @@ module.exports = {
   updateIssuePriority,
   updateIssueDeadline,
   getWorkflowSettings,
+  resolveIssueWorkflowUuid,
+  getWorkflowLabel,
+  getWorkflowStatusNames,
   addComment,
   addAttachment,
   getProjects,

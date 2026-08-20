@@ -1,15 +1,19 @@
 /**
  * services/fieldMapping.js
  * Lets admins configure the Revizto -> ACC status and issue-type mappings
- * per project (ACC -> Revizto status has no admin UI — see
- * ACC_AUTO_MAPPED_STATUSES/mapStatusFromAcc). Status: the 4 canonical
- * Revizto status names (Open/In progress/Solved/Closed) auto-map with no
- * config needed; every other custom status falls back to ACC "Draft" (a
- * deliberate safeguard, not a guess) until explicitly mapped. Type: an
- * unmapped stamp falls back to the project's configured default subtype,
- * then reviztoService's STAMP_SUBTYPE_MAP title-keyword matching as a
- * last resort. Configured mappings always take priority over either
- * fallback.
+ * per project, scoped per Revizto workflow (see reviztoService.
+ * resolveIssueWorkflowUuid). Status: the 4 canonical Revizto status names
+ * (Open/In progress/Solved/Closed) auto-map with no config needed, in any
+ * workflow; every other custom status falls back to ACC "Draft" (a
+ * deliberate safeguard, not a guess) until explicitly mapped. Each
+ * mapping can optionally also target an ACC "Revizto Status" custom list
+ * field's specific option (acc_custom_status_option_id) — the ACC->
+ * Revizto direction uses that to resolve precisely when several statuses
+ * in one workflow share the same primary ACC status (see syncService.
+ * handleAccWebhook). Type: an unmapped stamp falls back to the project's
+ * configured default subtype, then reviztoService's STAMP_SUBTYPE_MAP
+ * title-keyword matching as a last resort. Configured mappings always
+ * take priority over either fallback.
  */
 const pool = require('../db/pool');
 const reviztoService = require('./reviztoService');
@@ -42,12 +46,14 @@ const CANONICAL_STATUS_ORDER = ['Open', 'In progress', 'Solved', 'Closed'];
 
 // Reverse direction (ACC->Revizto): these 4 ACC statuses have an
 // unambiguous Revizto equivalent, so they always auto-map with no admin
-// config (no UI for this direction at all — see README). Uses the
-// confirmed "In progress" casing (lowercase "p") from CANONICAL_STATUS_
-// ORDER, not "In Progress" — Revizto's real status name is case-sensitive
-// for the diff-write mechanism. Only the remaining 5 ACC statuses
-// (in_review, not_approved, in_dispute, draft, pending) fall back to
-// reviztoService.mapStatusFromAcc's hardcoded guess.
+// config needed, in any workflow. Uses the confirmed "In progress" casing
+// (lowercase "p") from CANONICAL_STATUS_ORDER, not "In Progress" —
+// Revizto's real status name is case-sensitive for the diff-write
+// mechanism. Every other ACC status is resolved per-workflow by
+// syncService.handleAccWebhook (secondary "Revizto Status" field, then
+// the workflow's own status_map rows reversed), falling back to
+// reviztoService.mapStatusFromAcc's hardcoded guess only when nothing
+// else resolves it.
 const ACC_AUTO_MAPPED_STATUSES = {
   open: 'Open',
   in_progress: 'In progress',
@@ -65,31 +71,77 @@ const REVIZTO_AUTO_MAPPED_STATUSES = Object.fromEntries(
   Object.entries(ACC_AUTO_MAPPED_STATUSES).map(([accStatus, reviztoStatus]) => [reviztoStatus, accStatus])
 );
 
+// ─── "Revizto Status" secondary field matching ──────────────────────
+// A project can now have SEVERAL of these ACC list fields, one per
+// workflow (explicit request: one shared field's dropdown grew too long
+// once several workflows' custom statuses were all mixed into it) —
+// e.g. "Revizto Status - Pre Pour Checklist" only shows that workflow's
+// own statuses. A bare field titled exactly "Revizto Status" (no suffix)
+// still works as a fallback for any workflow that doesn't have its own
+// dedicated field yet, preserving this app's original single-field setup.
+
+function isReviztoStatusFieldTitle(title) {
+  return (title || '').trim().toLowerCase().includes('revizto status');
+}
+
+// Strips the "Revizto Status" prefix and a separator (dash/colon/em-dash/
+// en-dash, either side of whitespace) to get just the workflow-name
+// suffix, e.g. "Revizto Status - Pre Pour Checklist" -> "pre pour checklist".
+function _reviztoStatusFieldSuffix(title) {
+  return (title || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^revizto status/, '')
+    .replace(/^[\s\-:–—]+/, '')
+    .trim();
+}
+
+/**
+ * Picks the right "Revizto Status" field/attribute for a specific
+ * workflow out of a list of candidates (each just needs a `.title` —
+ * used for both ACC attribute DEFINITIONS, in getMappingOptions/
+ * syncService's push direction, and an ACC ISSUE's customAttributes
+ * entries, in syncService's pull direction). A workflow-specific match
+ * (suffix equals the workflow's own label) always wins over the bare
+ * "Revizto Status" fallback field.
+ */
+function pickReviztoStatusField(items, workflowLabel) {
+  const wanted = (workflowLabel || '').trim().toLowerCase();
+  const exact = items.find((it) => {
+    const suffix = _reviztoStatusFieldSuffix(it.title);
+    return suffix && suffix === wanted;
+  });
+  if (exact) return exact;
+  return items.find((it) => _reviztoStatusFieldSuffix(it.title) === '') || null;
+}
+
 async function getMappingOptions(userId, project) {
-  const [issues, subtypes, stampPresets, workflowSettings] = await Promise.all([
+  const [issues, subtypes, stampPresets, workflowSettings, attributeDefs] = await Promise.all([
     reviztoService.getIssues(userId, project.revizto_region, project.revizto_project_uuid),
     accService.getIssueSubtypes(userId, project),
     reviztoService.getStampPresets(userId, project.revizto_region, project.revizto_project_uuid).catch(() => []),
     reviztoService.getWorkflowSettings(userId, project.revizto_region, project.revizto_project_uuid).catch(() => ({ statuses: [] })),
+    accService.getIssueAttributeDefinitions(userId, project).catch(() => []),
   ]);
 
-  // Every status name still valid within some currently-active workflow —
-  // needed for the "optional" tier below, so an admin can pre-configure a
-  // status before any real issue uses it. NOT the flat project-wide
-  // settings.statuses list alone: that can retain status names no longer
-  // attached to any real workflow (confirmed by real testing — a plain
-  // `!deletedAt` filter on the flat list still showed deleted custom
-  // statuses). Cross-references each workflow's own valid-status UUIDs
-  // against the flat list for names, the same pattern already proven in
-  // _resolveStatusUuidForIssue.
-  const validStatusUuids = new Set(
-    (workflowSettings?.workflows || [])
-      .filter((w) => !w.deletedAt)
-      .flatMap((w) => (w.statuses || []).filter((s) => !s.deletedAt).map((s) => s.uuid))
+  // Secondary status mapping targets — every ACC list field whose title
+  // contains "Revizto Status" (there can be several, one per workflow —
+  // see isReviztoStatusFieldTitle above). Each workflow below picks its
+  // own via pickReviztoStatusField, so a workflow's dropdown only shows
+  // that workflow's own field's options, not every field's options mixed
+  // together.
+  const statusFieldDefs = attributeDefs.filter((d) => d.dataType === 'list' && isReviztoStatusFieldTitle(d.title));
+  // Diagnostic: the match between an ACC field's name-suffix and a
+  // workflow's own name is EXACT (case-insensitive, trimmed) — no fuzzy
+  // matching — so a real-world mismatch (extra word, singular/plural,
+  // punctuation) silently falls back to "Not available" instead of
+  // erroring. This is the fastest way to see the exact strings being
+  // compared instead of guessing why a specific workflow didn't match.
+  console.log(
+    `[fieldMapping] ACC "Revizto Status" field(s) discovered for project "${project.name}": ${
+      statusFieldDefs.length ? statusFieldDefs.map((d) => `"${d.title}"`).join(', ') : 'none'
+    }`
   );
-  const allDefinedStatusNames = [
-    ...new Set((workflowSettings?.statuses || []).filter((s) => !s.deletedAt && validStatusUuids.has(s.uuid)).map((s) => s.name)),
-  ];
 
   // In use on any current Revizto issue (by literal current status) —
   // shown from the start so an admin can configure the project correctly
@@ -102,28 +154,12 @@ async function getMappingOptions(userId, project) {
   // issue is flowing through a workflow, every status in it should be
   // required to map, not just whichever one an issue's CURRENT status
   // happens to be sitting in, since the issue could reach any of them.
-  const types = workflowSettings?.types || [];
   const inUseWorkflowUuids = new Set(
     issues
-      .map((i) => i.customType?.value)
-      .filter(Boolean)
-      .map((typeUuid) => types.find((t) => t.uuid === typeUuid)?.workflowUuid)
+      .map((i) => reviztoService.resolveIssueWorkflowUuid(i, workflowSettings))
       .filter(Boolean)
   );
   const statusNameByUuid = new Map((workflowSettings?.statuses || []).filter((s) => !s.deletedAt).map((s) => [s.uuid, s.name]));
-  const requiredFromWorkflows = new Set();
-  for (const w of workflowSettings?.workflows || []) {
-    if (w.deletedAt || !inUseWorkflowUuids.has(w.uuid)) continue;
-    for (const s of w.statuses || []) {
-      if (s.deletedAt) continue;
-      const name = statusNameByUuid.get(s.uuid);
-      if (name) requiredFromWorkflows.add(name);
-    }
-  }
-  // Union with the literal in-use statuses too, as a safety net for any
-  // issue whose type/workflow didn't resolve above (e.g. no customType
-  // set) — same fallback reasoning as _resolveStatusUuidForIssue.
-  const requiredStatusNames = new Set([...requiredFromWorkflows, ...inUseStatuses]);
 
   const sortByCanonicalThenName = (a, b) => {
     const ai = CANONICAL_STATUS_ORDER.indexOf(a);
@@ -143,23 +179,49 @@ async function getMappingOptions(userId, project) {
     .sort()
     .map((s) => ({ name: s, accStatus: REVIZTO_AUTO_MAPPED_STATUSES[s] }));
 
-  // Editable, required rows: every other custom status in requiredStatusNames
-  // (in use directly, or belonging to a workflow that's in use). Unmapped
-  // ones are highlighted red and flagged — they still sync (defaulting to
-  // ACC "Draft" as a safeguard, see toAccIssue).
-  const mappableStatusNames = [...requiredStatusNames].filter((s) => !REVIZTO_AUTO_MAPPED_STATUSES[s]);
-  const reviztoStatuses = mappableStatusNames.sort(sortByCanonicalThenName);
+  // Per-workflow grouping (explicit request: a project with multiple
+  // workflows can define the SAME status name differently in each one, so
+  // the mapping needs to be scoped by workflow, not flattened by name
+  // like autoMappedStatuses above). Only workflows with at least one
+  // non-canonical status get a group — a workflow that's 100% the 4
+  // canonical names needs no admin action at all, it's fully covered by
+  // the auto-mapped section.
+  let workflowCounter = 0;
+  const workflows = (workflowSettings?.workflows || [])
+    .filter((w) => !w.deletedAt)
+    .map((w) => {
+      const statusNames = [...new Set((w.statuses || []).filter((s) => !s.deletedAt).map((s) => statusNameByUuid.get(s.uuid)).filter(Boolean))];
+      const customStatusNames = statusNames.filter((s) => !REVIZTO_AUTO_MAPPED_STATUSES[s]);
+      if (!customStatusNames.length) return null;
 
-  // Editable, optional rows: statuses that exist in a workflow but that
-  // workflow isn't in use by any current issue yet — admins can
-  // pre-configure these, but they're never flagged red/warned since
-  // nothing real depends on them yet. Once a real issue starts using that
-  // workflow, all of its statuses move into reviztoStatuses above on the
-  // next load (same underlying status_map row still applies either way —
-  // this is purely a visibility/urgency distinction, not a different
-  // storage or push mechanism).
-  const optionalStatusNames = allDefinedStatusNames.filter((s) => !requiredStatusNames.has(s) && !REVIZTO_AUTO_MAPPED_STATUSES[s]);
-  const optionalStatuses = optionalStatusNames.sort(sortByCanonicalThenName);
+      // "Required" means: this workflow is in use, so every one of its
+      // own statuses could be reached by some issue — not just whichever
+      // one an issue's current status happens to be sitting in right now.
+      // "Optional" means the workflow isn't in use by any issue yet, so
+      // nothing real depends on these statuses — admins can pre-configure
+      // them, but they're never flagged as a warning.
+      const inUse = inUseWorkflowUuids.has(w.uuid);
+      const requiredNames = inUse ? [...customStatusNames].sort(sortByCanonicalThenName) : [];
+      const optionalNames = inUse ? [] : [...customStatusNames].sort(sortByCanonicalThenName);
+
+      const resolvedLabel = reviztoService.getWorkflowLabel(w.uuid, workflowSettings);
+      const label = resolvedLabel || `Custom workflow ${(workflowCounter += 1)}`;
+
+      // This workflow's own "Revizto Status" field (see pickReviztoStatusField)
+      // — null (not []) when no matching field exists in ACC yet, so the
+      // Setup UI can tell "no options configured" apart from "field not
+      // created" and show a clear hint instead of a silently empty dropdown.
+      const statusFieldDef = pickReviztoStatusField(statusFieldDefs, label);
+      console.log(`[fieldMapping] Workflow "${label}" -> "Revizto Status" field: ${statusFieldDef ? `"${statusFieldDef.title}"` : 'NO MATCH (falls back to "Not available")'}`);
+      const customStatusOptions = statusFieldDef
+        ? (statusFieldDef.metadata?.list?.options || [])
+            .map((o) => ({ id: o.id, label: String(o.value ?? o.label ?? '') }))
+            .sort((a, b) => a.label.localeCompare(b.label))
+        : null;
+
+      return { uuid: w.uuid, label, required: requiredNames, optional: optionalNames, customStatusOptions };
+    })
+    .filter(Boolean);
 
   // Same "in use" filter for stamps — a project can have many stamp
   // templates defined that no current issue actually uses; without this
@@ -169,10 +231,8 @@ async function getMappingOptions(userId, project) {
   const reviztoStamps = reviztoService.buildStampOptions(stampPresets).filter((s) => usedStampAbbrs.has(s.value));
 
   return {
-    reviztoStatuses, // editable/mappable, required — custom statuses in use on any current issue
-    reviztoStatusesInUse: reviztoStatuses, // kept for the unmapped-warning check — same meaning now (mappable statuses actually in use)
-    optionalStatuses, // editable, optional — defined in a workflow but not used by any issue yet; never warned/highlighted
-    autoMappedStatuses, // read-only informational rows for the UI
+    workflows, // [{ uuid, label, required: [...names], optional: [...names], customStatusOptions: [{id,label}]|null }] — one group per in-use custom workflow
+    autoMappedStatuses, // read-only informational rows for the UI — canonical names, same across every workflow
     accStatuses: ACC_STATUS_OPTIONS, // the FULL fixed 9 — dropdown target options for both required and optional rows
     accSubtypes: subtypes.map((s) => ({ id: s.id, label: `${s.issueTypeTitle} > ${s.title}` })),
     reviztoStamps,
@@ -181,13 +241,34 @@ async function getMappingOptions(userId, project) {
 
 // ─── Status map CRUD ───────────────────────────────────────────────
 
+/**
+ * Nested { [workflowUuid]: { [reviztoStatus]: { accStatus,
+ * accCustomStatusOptionId } } } — the '' bucket holds rows saved before
+ * workflow scoping existed (workflow_uuid defaults to '' for those), used
+ * as a fallback so pre-migration mappings keep applying instead of
+ * silently disappearing (see reviztoService.toAccIssue).
+ * accCustomStatusOptionId is the ACC "Revizto Status" list field's option
+ * ID (nullable — most statuses only need the primary accStatus), used by
+ * syncService.handleAccWebhook to resolve the ACC->Revizto direction
+ * precisely when several statuses in one workflow share a primary status.
+ */
 async function getStatusMap(projectId) {
-  const { rows } = await pool.query('SELECT revizto_status, acc_status FROM status_map WHERE project_id = $1', [projectId]);
-  return Object.fromEntries(rows.map((r) => [r.revizto_status, r.acc_status]));
+  const { rows } = await pool.query(
+    'SELECT workflow_uuid, revizto_status, acc_status, acc_custom_status_option_id FROM status_map WHERE project_id = $1',
+    [projectId]
+  );
+  const map = {};
+  for (const r of rows) {
+    (map[r.workflow_uuid] = map[r.workflow_uuid] || {})[r.revizto_status] = {
+      accStatus: r.acc_status,
+      accCustomStatusOptionId: r.acc_custom_status_option_id,
+    };
+  }
+  return map;
 }
 
 async function saveStatusMap(projectId, mappings) {
-  // mappings: [{ reviztoStatus, accStatus }]
+  // mappings: [{ workflowUuid, reviztoStatus, accStatus, accCustomStatusOptionId }]
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -195,8 +276,8 @@ async function saveStatusMap(projectId, mappings) {
     for (const m of mappings) {
       if (!m.reviztoStatus || !m.accStatus) continue;
       await client.query(
-        'INSERT INTO status_map (project_id, revizto_status, acc_status) VALUES ($1, $2, $3)',
-        [projectId, m.reviztoStatus, m.accStatus]
+        'INSERT INTO status_map (project_id, workflow_uuid, revizto_status, acc_status, acc_custom_status_option_id) VALUES ($1, $2, $3, $4, $5)',
+        [projectId, m.workflowUuid || '', m.reviztoStatus, m.accStatus, m.accCustomStatusOptionId || null]
       );
     }
     await client.query('COMMIT');
@@ -285,7 +366,15 @@ async function getUnmappedFields(userId, project) {
     getTypeMap(project.id),
   ]);
 
-  const unmappedStatuses = mappingOptions.reviztoStatusesInUse.filter((s) => !savedStatusMap[s]);
+  // Flatten every in-use workflow's required statuses, checking each
+  // against that SAME workflow's saved mappings (falling back to the ''
+  // legacy bucket) — a status mapped under one workflow doesn't count as
+  // mapped for a different workflow's same-named status.
+  const unmappedStatuses = mappingOptions.workflows.flatMap((w) =>
+    w.required
+      .filter((s) => !(savedStatusMap[w.uuid]?.[s]?.accStatus ?? savedStatusMap['']?.[s]?.accStatus))
+      .map((s) => (mappingOptions.workflows.length > 1 ? `${s} (${w.label})` : s))
+  );
   const mappedStampAbbrs = new Set(Object.keys(savedTypeMap));
   const unmappedStamps = (mappingOptions.reviztoStamps || [])
     .filter((s) => !mappedStampAbbrs.has(s.value))
@@ -298,6 +387,8 @@ module.exports = {
   ACC_STATUS_OPTIONS,
   ACC_AUTO_MAPPED_STATUSES,
   REVIZTO_AUTO_MAPPED_STATUSES,
+  isReviztoStatusFieldTitle,
+  pickReviztoStatusField,
   getMappingOptions,
   getStatusMap,
   saveStatusMap,

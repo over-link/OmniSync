@@ -225,7 +225,7 @@ body {
 .board-card { padding: 1rem 1.25rem; }
 .board-header, .board-row {
   display: grid;
-  grid-template-columns: 1fr 32px 1fr;
+  grid-template-columns: 1fr 32px 1fr 90px;
   gap: 0.75rem;
   align-items: center;
   padding: 0.6rem 0.4rem;
@@ -475,6 +475,55 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
   font-size: 0.88rem;
   color: var(--muted);
   opacity: 0.7;
+}
+
+/* One group per custom Revizto workflow currently in use — separates the
+   status mapping rows so a same-named status in two different workflows
+   is visibly (and independently) configured, instead of one flat list.
+   Generous top margin (rather than just a border) is what actually reads
+   as "separate section" next to a busy list of rows above it. */
+.workflow-group { margin-top: 2rem; }
+.workflow-group-header {
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: var(--blueprint);
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 0.4rem;
+}
+
+/* Status mapping rows as three aligned columns (Revizto status | ACC
+   status | Revizto Status secondary field) rather than a loosely-flexed
+   line. Scoped to #status-map-rows only: .mapping-row is shared with the
+   type mapping section below, which keeps its own flex layout. */
+#status-map-rows .mapping-row,
+#status-map-rows .status-auto-row,
+#status-map-rows .status-map-column-headers {
+  display: grid;
+  grid-template-columns: minmax(200px, 1fr) minmax(220px, 340px) minmax(220px, 340px);
+  align-items: center;
+  gap: 2rem;
+}
+#status-map-rows .status-select,
+#status-map-rows .acc-custom-status-select { width: 100%; }
+
+/* Standard-workflow rows have no secondary column (canonical statuses
+   aren't ambiguous) — the auto-mapped badge spans both remaining columns
+   instead of leaving the third one blank. */
+.status-auto-badge { grid-column: 2 / span 2; justify-self: start; }
+
+/* Secondary "Revizto Status" select when that ACC field doesn't exist
+   yet — visibly inert rather than looking like an ignored red-flagged
+   field. */
+.acc-custom-status-select:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* "Revizto Status" / "ACC Primary Status" / "ACC Secondary Status" column
+   titles, once at the top of the whole list — same grid as every row
+   below so they sit directly over their column. */
+.status-map-column-headers {
+  font-weight: 700;
+  font-size: 1.1rem;
+  padding-bottom: 0.5rem;
 }
 
 /* ── Setup page: shared project context bar ─────────────────────── */
