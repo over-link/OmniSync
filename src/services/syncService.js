@@ -1181,12 +1181,23 @@ function _buildFilterableFields(issue, { stampCategoryByAbbr, stampTitleByAbbr, 
  * plus fields the UI filters on.
  */
 async function getIssuesBoard(userId, project) {
-  const [issues, linkRows, lookups] = await Promise.all([
+  // accIssues: ONE bulk fetch (ACC's Construction Issues API list endpoint,
+  // already trusted elsewhere in this codebase — see getSyncStats' accCount)
+  // instead of one GET per linked issue. That per-issue loop was a real N+1
+  // — every linked issue meant its own sequential round-trip to ACC, which
+  // is what made this page (and the Setup page, which also hits this
+  // endpoint for auto-sync filter values) visibly slower as more issues got
+  // linked. null (not []) on failure, so a transient bulk-fetch error falls
+  // back to the old per-issue GET below instead of wrongly treating every
+  // linked issue as gone.
+  const [issues, linkRows, lookups, accIssues] = await Promise.all([
     reviztoService.getIssues(userId, project.revizto_region, project.revizto_project_uuid),
     pool.query('SELECT revizto_issue_id, acc_issue_id FROM sync_map WHERE project_id = $1', [project.id]).then((r) => r.rows),
     _loadFilterableFieldLookups(userId, project),
+    accService.getIssues(userId, project).catch(() => null),
   ]);
   const linkMap = new Map(linkRows.map((r) => [String(r.revizto_issue_id), r.acc_issue_id]));
+  const accIssueById = accIssues ? new Map(accIssues.map((i) => [i.id, i])) : null;
 
   const board = [];
   for (const issue of issues) {
@@ -1194,25 +1205,35 @@ async function getIssuesBoard(userId, project) {
     let acc = null;
     let linked = !!accIssueId;
     if (accIssueId) {
-      try {
-        const accIssue = await accService.getIssue(userId, project, accIssueId);
-        // displayId is ACC's own human-readable issue number (confirmed
-        // from real docs — distinct from `id`, the internal UUID used for
-        // API calls). Shown in the UI instead of the UUID; falls back to
-        // the UUID if displayId is ever missing rather than showing blank.
-        acc = { id: accIssueId, displayId: accIssue.displayId ?? accIssueId, title: accIssue.title, status: accIssue.status };
-      } catch (err) {
-        if (_isAccIssueGoneError(err)) {
-          // Clear the stale link instead of showing a permanent error
-          // row — this is a read-only display query, so unlike
-          // pushIssueToAcc there's no push happening to re-create the ACC
-          // issue from; it just reverts to "unlinked" so the Issues page
-          // offers it up to be relinked normally (manually, or by
-          // auto-sync-by-filter on the next poll).
+      // displayId is ACC's own human-readable issue number (confirmed from
+      // real docs — distinct from `id`, the internal UUID used for API
+      // calls). Shown in the UI instead of the UUID; falls back to the
+      // UUID if displayId is ever missing rather than showing blank.
+      if (accIssueById) {
+        const accIssue = accIssueById.get(accIssueId);
+        if (accIssue) {
+          acc = { id: accIssueId, displayId: accIssue.displayId ?? accIssueId, title: accIssue.title, status: accIssue.status };
+        } else {
+          // Not in the bulk list — the ACC issue no longer exists. Same
+          // self-heal as pushIssueToAcc's 403/404 handling, just inferred
+          // from absence in the complete list rather than a per-issue
+          // error, since we already have it in hand.
           await clearLink(project.id, issue.id);
           linked = false;
-        } else {
-          acc = { id: accIssueId, error: err.response?.data?.detail || err.message };
+        }
+      } else {
+        // Bulk fetch itself failed — fall back to the old per-issue GET so
+        // one transient ACC error doesn't wrongly unlink every issue.
+        try {
+          const accIssue = await accService.getIssue(userId, project, accIssueId);
+          acc = { id: accIssueId, displayId: accIssue.displayId ?? accIssueId, title: accIssue.title, status: accIssue.status };
+        } catch (err) {
+          if (_isAccIssueGoneError(err)) {
+            await clearLink(project.id, issue.id);
+            linked = false;
+          } else {
+            acc = { id: accIssueId, error: err.response?.data?.detail || err.message };
+          }
         }
       }
     }

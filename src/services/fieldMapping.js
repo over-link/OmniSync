@@ -115,7 +115,32 @@ function pickReviztoStatusField(items, workflowLabel) {
   return items.find((it) => _reviztoStatusFieldSuffix(it.title) === '') || null;
 }
 
+// Short-lived in-flight cache, keyed by project ID — getMappingOptions
+// does 5 real API calls (Revizto issues, ACC subtypes, Revizto stamp
+// presets, Revizto workflow settings, ACC attribute defs), and the Setup
+// page fires it TWICE on every load (once via /mapping-options, once via
+// /mapping-warnings -> getUnmappedFields, which calls this internally) —
+// both requests land within the same page load, so a short TTL is enough
+// to dedupe them into one real fetch without risking meaningfully stale
+// data for anything else (a save action re-fetches explicitly afterward,
+// well outside this window).
+const _mappingOptionsCache = new Map(); // projectId -> { promise, expiresAt }
+const MAPPING_OPTIONS_CACHE_MS = 5000;
+
 async function getMappingOptions(userId, project) {
+  const cached = _mappingOptionsCache.get(project.id);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+
+  const promise = _fetchMappingOptions(userId, project);
+  _mappingOptionsCache.set(project.id, { promise, expiresAt: Date.now() + MAPPING_OPTIONS_CACHE_MS });
+  // Don't keep serving a failed fetch for the rest of the TTL — clear it
+  // immediately so the next call retries instead of re-throwing the same
+  // stale error.
+  promise.catch(() => _mappingOptionsCache.delete(project.id));
+  return promise;
+}
+
+async function _fetchMappingOptions(userId, project) {
   const [issues, subtypes, stampPresets, workflowSettings, attributeDefs] = await Promise.all([
     reviztoService.getIssues(userId, project.revizto_region, project.revizto_project_uuid),
     accService.getIssueSubtypes(userId, project),

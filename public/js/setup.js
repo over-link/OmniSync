@@ -83,10 +83,16 @@ async function onActiveProjectChange(projectId) {
   warningsEl.classList.remove('hidden');
   mappingPanels.classList.remove('hidden');
   autoSyncPanels.classList.remove('hidden');
-  await loadMappingWarnings(projectId);
-  await loadFieldMapping(projectId);
-  await loadAutoSyncSettings(projectId);
-  await loadManualUnlinkSetting(projectId);
+  // These four each populate their own independent section of the page —
+  // no data dependencies between them — so running them in parallel
+  // instead of stacked awaits cuts wall-clock load time roughly to the
+  // slowest one instead of the sum of all four.
+  await Promise.all([
+    loadMappingWarnings(projectId),
+    loadFieldMapping(projectId),
+    loadAutoSyncSettings(projectId),
+    loadManualUnlinkSetting(projectId),
+  ]);
 }
 
 document.getElementById('active-project-select').addEventListener('change', async (e) => {
