@@ -403,7 +403,13 @@ async function addAttachment(userId, region, projectUuid, issueId, fileBuffer, f
   if (commentResult !== undefined && commentResult !== 0) {
     console.warn('[revizto] attachment/markup upload failed:', JSON.stringify(data));
   }
-  return data;
+  // commentUuid is generated client-side above (the same value sent in the
+  // request), surfaced here so callers (see pollAccAttachmentsForProject)
+  // can record which Revizto comment a given ACC->Revizto pull resulted
+  // in — needed for the Revizto->ACC file-attachment push's ping-pong
+  // guard, so it doesn't push a comment this app itself just created
+  // right back to ACC as if it were new.
+  return { ...data, commentUuid };
 }
 
 /**
@@ -490,6 +496,30 @@ async function getIssueComments(userId, region, issueUuid, projectId, date = '20
 function findLatestMarkupComment(comments) {
   for (let i = comments.length - 1; i >= 0; i--) {
     if (comments[i].type === 'markup') return comments[i];
+  }
+  return null;
+}
+
+/**
+ * Returns the single most recent FILE comment (a real attachment — photo,
+ * PDF, etc. — as opposed to a markup update) on an issue, or null if there
+ * isn't one. Same "latest only" pattern as findLatestMarkupComment,
+ * deliberately — not "sync every attachment" — so this stays symmetric
+ * with the already-proven markup/comment sync behavior instead of
+ * introducing a different policy for this one field.
+ *
+ * `preview.original` is what actually gets synced (see
+ * syncService._pushLatestFileAttachmentToAcc) — despite the field name and
+ * its "issue markup picture" description in Revizto's own schema,
+ * confirmed by real testing that for a non-image file (PDF) it's
+ * byte-identical to the real upload (content-type and Content-Length
+ * matched exactly); only large photos get visibly re-compressed by
+ * Revizto's own pipeline. This is the only file content Revizto's API
+ * exposes at all — there is no separate "download the original" endpoint.
+ */
+function findLatestFileComment(comments) {
+  for (let i = comments.length - 1; i >= 0; i--) {
+    if (comments[i].type === 'file') return comments[i];
   }
   return null;
 }
@@ -995,6 +1025,7 @@ module.exports = {
   getIssueComments,
   findLatestTextComment,
   findLatestMarkupComment,
+  findLatestFileComment,
   toAccIssue,
   mapStatusFromAcc,
   unwrap,

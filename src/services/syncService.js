@@ -491,6 +491,7 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
   if (sharedComments) {
     await _pushLatestCommentToAcc(userId, project, reviztoIssue, accIssueId, sharedComments);
     await _pushMarkupImageToAcc(userId, project, reviztoIssue, accIssueId, sharedComments);
+    await _pushLatestFileAttachmentToAcc(userId, project, reviztoIssue, accIssueId, sharedComments);
   }
 
   return existingAccId ? { action: 'updated', accIssue: { id: accIssueId } } : { action: 'created', accIssue: { id: accIssueId } };
@@ -513,11 +514,10 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
  * the linked ACC issue. Only uploads once per issue (tracked via
  * sync_map.markup_uploaded), not on every re-sync.
  *
- * UNCONFIRMED / HIGHER RISK than most of this app: the attachment upload
- * pipeline (accService.attachImageToIssue) is built from an official
- * Autodesk tutorial but has not been tested end-to-end. Wrapped in
- * try/catch so a failure here doesn't take down the rest of the push —
- * check server logs for the real error if this doesn't work on first try.
+ * The attachment upload pipeline (accService.attachFileToIssue) is built
+ * from an official Autodesk tutorial — confirmed working end-to-end by
+ * real testing. Wrapped in try/catch so a failure here doesn't take down
+ * the rest of the push.
  */
 async function _pushMarkupImageToAcc(userId, project, reviztoIssue, accIssueId, comments) {
   try {
@@ -546,7 +546,7 @@ async function _pushMarkupImageToAcc(userId, project, reviztoIssue, accIssueId, 
     }
     if (!previewUrl) return;
 
-    await accService.attachImageToIssue(userId, project, accIssueId, previewUrl, `Revizto Issue ${reviztoIssue.id} Markup`);
+    await accService.attachFileToIssue(userId, project, accIssueId, previewUrl, `Revizto Issue ${reviztoIssue.id} Markup`);
     await pool.query('UPDATE sync_map SET last_markup_comment_uuid = $3 WHERE project_id = $1 AND revizto_issue_id = $2', [
       project.id,
       String(reviztoIssue.id),
@@ -554,6 +554,56 @@ async function _pushMarkupImageToAcc(userId, project, reviztoIssue, accIssueId, 
     ]);
   } catch (err) {
     console.warn(`[sync] Could not upload markup image for issue ${reviztoIssue.id} (skipping):`, err.message);
+  }
+}
+
+/**
+ * Pushes the single latest Revizto FILE comment (a real attachment —
+ * photo, PDF, etc.) to ACC, same "latest only" policy and tracking shape
+ * as _pushMarkupImageToAcc (sync_map.last_pushed_file_comment_uuid).
+ *
+ * Ping-pong guard: if this latest file comment is the exact one that
+ * pollAccAttachmentsForProject itself just created by pulling an ACC
+ * attachment INTO Revizto (tracked via sync_map.
+ * last_pulled_acc_attachment_comment_uuid), skip pushing it — otherwise
+ * an attachment added in ACC would bounce straight back to ACC as if it
+ * were a brand new Revizto attachment. Still records it as "handled" so
+ * this check doesn't re-run every cycle for the same comment.
+ */
+async function _pushLatestFileAttachmentToAcc(userId, project, reviztoIssue, accIssueId, comments) {
+  try {
+    const latestFile = reviztoService.findLatestFileComment(comments);
+    if (!latestFile) return;
+
+    const { rows } = await pool.query(
+      'SELECT last_pushed_file_comment_uuid, last_pulled_acc_attachment_comment_uuid FROM sync_map WHERE project_id = $1 AND revizto_issue_id = $2',
+      [project.id, String(reviztoIssue.id)]
+    );
+    if (latestFile.uuid === rows[0]?.last_pushed_file_comment_uuid) return; // already pushed this exact one
+
+    if (latestFile.uuid === rows[0]?.last_pulled_acc_attachment_comment_uuid) {
+      // This is the comment OUR OWN ACC->Revizto pull just created — mark
+      // it handled without pushing, so we don't re-check it every cycle.
+      await pool.query('UPDATE sync_map SET last_pushed_file_comment_uuid = $3 WHERE project_id = $1 AND revizto_issue_id = $2', [
+        project.id,
+        String(reviztoIssue.id),
+        latestFile.uuid,
+      ]);
+      return;
+    }
+
+    const fileUrl = latestFile.preview?.original;
+    if (!fileUrl) return;
+
+    const result = await accService.attachFileToIssue(userId, project, accIssueId, fileUrl, latestFile.filename || `revizto-attachment-${latestFile.uuid}`);
+    // Recorded so pollAccAttachmentsForProject's own ping-pong guard can
+    // recognize this exact ACC attachment and skip pulling it back in.
+    await pool.query(
+      'UPDATE sync_map SET last_pushed_file_comment_uuid = $3, last_pushed_file_attachment_acc_id = $4 WHERE project_id = $1 AND revizto_issue_id = $2',
+      [project.id, String(reviztoIssue.id), latestFile.uuid, result.attachmentId]
+    );
+  } catch (err) {
+    console.warn(`[sync] Could not upload file attachment for issue ${reviztoIssue.id} (skipping):`, err.message);
   }
 }
 
@@ -1451,7 +1501,7 @@ async function pollAccCommentsForProject(userId, project, reporterEmail) {
  */
 async function pollAccAttachmentsForProject(userId, project, reporterEmail) {
   const { rows } = await pool.query(
-    'SELECT revizto_issue_id, acc_issue_id, last_pulled_acc_attachment_id FROM sync_map WHERE project_id = $1',
+    'SELECT revizto_issue_id, acc_issue_id, last_pulled_acc_attachment_id, last_pushed_file_attachment_acc_id FROM sync_map WHERE project_id = $1',
     [project.id]
   );
   for (const row of rows) {
@@ -1467,12 +1517,19 @@ async function pollAccAttachmentsForProject(userId, project, reporterEmail) {
       if (!latestId || String(latestId) === String(row.last_pulled_acc_attachment_id)) continue; // nothing new
 
       const displayName = latest.displayName || latest.fileName || '';
-      // Ping-pong guard: an image WE pushed Revizto->ACC (see
+      // Ping-pong guard #1: a markup image WE pushed Revizto->ACC (see
       // _pushMarkupImageToAcc) is attached with this exact display name
       // pattern — without this check, it would look like a genuine new
       // ACC attachment on the next poll and get imported right back into
       // Revizto as a "new" one.
-      if (displayName.startsWith('Revizto Issue ')) {
+      //
+      // Ping-pong guard #2: a real Revizto file attachment WE pushed
+      // Revizto->ACC (see _pushLatestFileAttachmentToAcc) uses the file's
+      // real name, not a recognizable pattern like guard #1 — so that
+      // push records the resulting ACC attachmentId itself
+      // (last_pushed_file_attachment_acc_id), and this checks against it
+      // directly instead of guessing from the name.
+      if (displayName.startsWith('Revizto Issue ') || String(latestId) === String(row.last_pushed_file_attachment_acc_id)) {
         await pool.query(
           'UPDATE sync_map SET last_pulled_acc_attachment_id = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
           [project.id, row.revizto_issue_id, latestId]
@@ -1502,8 +1559,9 @@ async function pollAccAttachmentsForProject(userId, project, reporterEmail) {
       // screenshot") rather than a clean, openable image. A plain file
       // attachment is a single real object with no such gap.
       console.log(`[poll] [step 2: upload to Revizto] "${fileName}" for Revizto issue #${row.revizto_issue_id} (file)`);
+      let uploadResult;
       try {
-        await reviztoService.addAttachment(
+        uploadResult = await reviztoService.addAttachment(
           userId,
           project.revizto_region,
           project.revizto_project_uuid,
@@ -1535,8 +1593,8 @@ async function pollAccAttachmentsForProject(userId, project, reporterEmail) {
       console.log('[poll] [step 3 done]');
 
       await pool.query(
-        'UPDATE sync_map SET last_pulled_acc_attachment_id = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
-        [project.id, row.revizto_issue_id, latestId]
+        'UPDATE sync_map SET last_pulled_acc_attachment_id = $3, last_pulled_acc_attachment_comment_uuid = $4 WHERE project_id = $1 AND revizto_issue_id = $2',
+        [project.id, row.revizto_issue_id, latestId, uploadResult?.commentUuid || null]
       );
     } catch (err) {
       console.warn(`[poll] Could not check ACC attachments for issue ${row.acc_issue_id} (skipping):`, err.response?.data?.detail || err.message);

@@ -245,6 +245,74 @@ if this ever needs revisiting:**
 `sync_map.last_markup_comment_uuid` (idempotent `ALTER TABLE`). Run
 `npm run migrate`.
 
+## File attachment sync (Revizto → ACC) — confirmed working
+
+Separate from markup image upload above: a Revizto issue's real
+**attachments** (photos, PDFs, etc. — added as a plain "file" comment, not
+a markup update) now also sync to ACC, using `reviztoService.
+findLatestFileComment` + `syncService._pushLatestFileAttachmentToAcc`.
+**Latest only** — same policy as markup and comments, deliberately not
+"sync every attachment," so this stays symmetric with those rather than
+introducing a different rule for this one field. Tracked via
+`sync_map.last_pushed_file_comment_uuid` (a single value, same shape as
+`last_markup_comment_uuid`).
+
+**Whether this is the real file or a lossy re-render depends on file
+type — confirmed by real testing, not assumed.** Revizto's API only ever
+exposes a `preview.original` URL for a file comment (its own schema calls
+this "a link to the issue markup picture," despite applying to every file
+type, image or not — there is no separate "download the original"
+endpoint anywhere in Revizto's v5 API):
+- **Non-image files (PDF, etc.): byte-identical to the real upload.**
+  Confirmed on a real 317,414-byte PDF — `preview.original`'s
+  `Content-Type` and `Content-Length` matched the upload exactly.
+- **Large photos: genuinely re-compressed.** Confirmed on a real
+  8,970,240-byte JPG — `preview.original` came back as 3,176,687 bytes,
+  same image, smaller file. Revizto's own pipeline does this, not
+  anything on this app's side; there's no way to get the untouched bytes
+  back for a large image specifically.
+
+Reuses the exact same upload pipeline as markup image upload
+(`accService.attachFileToIssue` — renamed from `attachImageToIssue` once
+it started handling real non-image files too; the mechanics never
+actually cared about file type).
+
+### Ping-pong guards (this direction now shares attachment traffic with the existing ACC→Revizto poll)
+
+Explicit requirement: an attachment that arrived via ACC→Revizto
+(`pollAccAttachmentsForProject`, below) must never bounce straight back to
+ACC as if newly added in Revizto, and symmetrically, an attachment this
+app just pushed Revizto→ACC must never get re-imported back into Revizto
+on the next poll. Two tracking columns close both directions:
+- `sync_map.last_pulled_acc_attachment_comment_uuid` — the Revizto
+  comment CREATED by pulling an ACC attachment in. If the latest Revizto
+  file comment matches this, `_pushLatestFileAttachmentToAcc` marks it
+  handled (updates `last_pushed_file_comment_uuid`) without pushing.
+- `sync_map.last_pushed_file_attachment_acc_id` — the ACC attachment
+  CREATED by pushing a Revizto file out. `pollAccAttachmentsForProject`'s
+  existing ping-pong check (previously only a `displayName.startsWith
+  ('Revizto Issue ')` pattern match, which only covered markup images —
+  a real file push uses the file's actual name, not a recognizable
+  pattern) now also checks this directly.
+
+**A real ping-pong round-trip happened once during development**, before
+this guard existed: a test push (Revizto→ACC) got auto-polled back into
+Revizto by the pre-existing, then-unguarded attachment poller, leaving one
+duplicate "file" comment + one "Attachment added via ACC sync" text
+comment on a real test issue. Contained to a single round-trip (not a
+runaway loop) since the app wasn't left running afterward. **Revizto's API
+has no delete-comment endpoint at all** (confirmed against its full
+endpoint list — comments can only be added or read, never removed via
+the API) — the affected tracking row was manually backfilled to reflect
+reality and confirmed the guard now correctly recognizes and skips it, but
+the duplicate comment itself is only removable by an admin directly in
+Revizto's UI, if it matters enough to bother.
+
+**Migration needed**: `sync_map.last_pushed_file_comment_uuid`,
+`sync_map.last_pulled_acc_attachment_comment_uuid`,
+`sync_map.last_pushed_file_attachment_acc_id` (idempotent `ALTER TABLE`).
+Run `npm run migrate`.
+
 ## Comment sync (latest comment only, both directions)
 
 Symmetric with... actually not fully symmetric anymore, see below:
@@ -326,6 +394,7 @@ Two different mechanisms, don't confuse them:
 | `watchers` (emails) | `watchers` | Both | Same resolution as assignee, just an array |
 | latest text comment | comment | Both | Automatic — only the single latest comment, not full history |
 | markup preview image (with drawings) | attachment | Revizto → ACC | Automatic — only the latest markup version, uploaded once per version |
+| file attachment (photo, PDF, etc. — a "file" comment) | attachment | Revizto → ACC | Automatic — latest only, same policy as markup/comments. See "File attachment sync" below for the byte-identical-vs-recompressed caveat and ping-pong guards |
 | *(reverse: ACC attachments)* | photo/PDF attachment | ACC → Revizto | Automatic, polling-based — see "Attachment sync" below |
 
 ### Status mapping — per workflow, both directions
@@ -620,14 +689,22 @@ editor — that likely needs real viewpoint/pin data only created by
 drawing directly in Revizto's client, not reachable via this API. A
 one-time "Attachment added via ACC sync" comment follows — tagged with
 `by <name>` when the uploader's `createdBy` resolves to a real name (same
-mechanism as comment attribution above), so the ping-pong guard that
-recognizes this auto-posted comment checks a text *prefix*, not exact
-equality — and a guard skips re-importing attachments this app already
-pushed the other direction (matched by the `"Revizto Issue "` naming
-`_pushMarkupImageToAcc` already uses).
+mechanism as comment attribution above).
 
-**Migration needed**: `sync_map.last_pulled_acc_attachment_id`
-(idempotent `ALTER TABLE`). Run `npm run migrate`.
+Two ping-pong guards, now that attachment traffic flows both ways — skips
+re-importing an attachment this app already pushed the *other* direction
+(Revizto→ACC, see "File attachment sync" above for the full picture):
+matches the `"Revizto Issue "` naming `_pushMarkupImageToAcc` uses for
+markup images, or the exact ACC `attachmentId` recorded in `sync_map.
+last_pushed_file_attachment_acc_id` for real file pushes (which use the
+file's actual name, not a recognizable pattern, so name-matching alone
+wouldn't catch those). The resulting Revizto comment's own uuid is also
+recorded (`sync_map.last_pulled_acc_attachment_comment_uuid`) so the
+Revizto→ACC direction can return the favor and recognize *this* comment.
+
+**Migration needed**: `sync_map.last_pulled_acc_attachment_id`,
+`sync_map.last_pulled_acc_attachment_comment_uuid` (idempotent
+`ALTER TABLE`). Run `npm run migrate`.
 
 ## Syncing issues (updated model)
 

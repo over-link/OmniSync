@@ -291,4 +291,24 @@ ALTER TABLE projects ADD COLUMN IF NOT EXISTS allow_manual_unlink BOOLEAN NOT NU
 -- instead of asking for a separate nickname.
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS acc_project_name TEXT;
 
+-- File attachment sync (Revizto -> ACC, real attachments like photos/PDFs —
+-- as opposed to markup updates, already tracked separately via
+-- last_markup_comment_uuid above). Same "latest only" policy as markup, so
+-- just one tracked value each, plus two ping-pong guards since this and
+-- the existing ACC->Revizto attachment poll (pollAccAttachmentsForProject)
+-- now both touch attachments and could otherwise re-import each other's
+-- pushes forever:
+--   last_pushed_file_comment_uuid: the Revizto file comment we last pushed
+--     to ACC — skip re-pushing the same one every 2-minute cycle.
+--   last_pulled_acc_attachment_comment_uuid: the Revizto comment CREATED
+--     by pulling an ACC attachment in (pollAccAttachmentsForProject) — the
+--     Revizto->ACC push must recognize and skip this exact comment, or it
+--     would push it straight back to ACC as if it were newly added there.
+--   last_pushed_file_attachment_acc_id: the ACC attachment CREATED by
+--     pushing a Revizto file out — the ACC->Revizto poll must recognize
+--     and skip this exact attachment, the mirror-image guard.
+ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_pushed_file_comment_uuid TEXT;
+ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_pulled_acc_attachment_comment_uuid TEXT;
+ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_pushed_file_attachment_acc_id TEXT;
+
 -- connect-pg-simple creates its own "session" table automatically on first run.

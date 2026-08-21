@@ -420,14 +420,26 @@ async function _attachToIssue(userId, project, issueId, displayName, objectKey, 
   const { data } = await axios.post(url, body, {
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'x-ads-region': 'US' },
   });
-  return data;
+  // attachmentId is generated client-side above (ACC doesn't hand back its
+  // own), so we already know it for certain — surfaced here rather than
+  // making callers dig through `data` (whose exact response shape for a
+  // multi-attachment POST isn't itself confirmed) so the ping-pong guard
+  // in syncService can record which ACC attachment a given Revizto push
+  // resulted in.
+  return { ...data, attachmentId };
 }
 
 /**
- * Full pipeline: downloads an image from a URL (e.g. Revizto's preview
- * image) and attaches it to an ACC issue. Orchestrates all 4 steps above.
+ * Full pipeline: downloads a file from a URL (Revizto's `preview.original`
+ * — despite the field name, confirmed by real testing to be the true
+ * original file for non-image types like PDF, byte-for-byte; only large
+ * photos get re-compressed by Revizto's own pipeline) and attaches it to
+ * an ACC issue. Orchestrates all 4 steps above. Not actually image-specific
+ * despite the old name (attachImageToIssue) — renamed once it started
+ * being used for markup images AND real file attachments (PDF, etc.)
+ * alike; the mechanics never cared about file type to begin with.
  */
-async function attachImageToIssue(userId, project, issueId, imageUrl, displayName) {
+async function attachFileToIssue(userId, project, issueId, imageUrl, displayName) {
   const imageResponse = await axios.get(imageUrl, { responseType: 'arraybuffer' });
   const fileBuffer = Buffer.from(imageResponse.data);
   const fileType = (imageResponse.headers['content-type'] || 'image/jpeg').split('/').pop();
@@ -464,7 +476,7 @@ async function attachImageToIssue(userId, project, issueId, imageUrl, displayNam
 
 /**
  * Downloads an ACC attachment's actual file bytes, for the ACC->Revizto
- * attachment sync direction — the reverse of attachImageToIssue's upload
+ * attachment sync direction — the reverse of attachFileToIssue's upload
  * pipeline. `storageUrn` (format: urn:adsk.objects:os.object:{bucketKey}/
  * {objectKey}) comes from an attachment entry on the issue. Confirmed end
  * to end from Autodesk's own "Download Issue Attachments" tutorial: GET
@@ -511,5 +523,5 @@ module.exports = {
   deleteWebhook,
   getHubs,
   getHubProjects,
-  attachImageToIssue,
+  attachFileToIssue,
 };
