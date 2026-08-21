@@ -807,15 +807,21 @@ async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, 
     ? [reviztoIssue.author.firstname, reviztoIssue.author.lastname].filter(Boolean).join(' ')
     : unwrap(reviztoIssue.reporter);
 
-  // A direct link back to this issue in Revizto — `openLinks.web` opens it
-  // in Revizto Workspace's own web app (works for anyone with project
-  // access, no desktop client required), as opposed to `.desktop` (a
-  // revizto5:// custom protocol link, not clickable from a browser/ACC) or
-  // `.redirect` (a wrapper around the desktop link for Revizto Site,
-  // Revizto's mobile app). Confirmed present on every real issue response
-  // with no extra request params needed (unlike clashAndLocationFields,
-  // this isn't gated behind additionalFields).
-  const reviztoUrl = reviztoIssue.openLinks?.web || null;
+  // A direct link back to this issue in Revizto — `openLinks.desktop`
+  // opens it straight in the desktop Revizto application (explicit
+  // request), a revizto5:// custom-protocol URI, not http(s) like `.web`
+  // (Revizto Workspace's web app) or `.redirect` (Revizto's own docs:
+  // for the mobile Site app specifically, despite its URL shape
+  // superficially resembling a desktop-launch wrapper). Confirmed by
+  // testing that ACC does render `.web` as a clickable link in its UI;
+  // unconfirmed whether that extends to a non-http(s) custom scheme like
+  // this one — if `desktop` doesn't render/behave as a link in ACC,
+  // `.redirect`'s real https:// URL (which itself embeds this same
+  // revizto5:// URI) is the fallback worth trying instead. Confirmed
+  // present on every real issue response with no extra request params
+  // needed (unlike clashAndLocationFields, this isn't gated behind
+  // additionalFields).
+  const reviztoUrl = reviztoIssue.openLinks?.desktop || null;
 
   // Confirmed from real Revizto docs: clashAndLocationFields.level/.zone
   // are both array[string] — normally one entry, more than one only for a
