@@ -389,7 +389,7 @@ Two different mechanisms, don't confuse them:
 | `clashAndLocationFields.grid` / `.room`, `tags`, issue's own numeric ID, `priority` | ACC custom fields ("Grid Intersection", "Room", "Tags", "Revizto ID", "Issue Priority") | Priority is bidirectional; the rest are Revizto → ACC | Automatic — matched by title against the project's own custom fields (ACC has no native fields for these), see "Custom field mapping" below |
 | `created` | ACC custom field ("Date Created") — **not** ACC's native "Created On" | Revizto → ACC only | Automatic, same mechanism as the row above. See "Why a custom field, not ACC's native Created On" below |
 | `author` (falls back to `reporter`) | ACC custom field ("Reporter") — **not** ACC's native "Created By" | Revizto → ACC only | Automatic, same mechanism/reasoning as `created` → "Date Created" just above — see the same section below |
-| `openLinks.desktop` | ACC custom field ("Revizto URL") | Revizto → ACC only | Automatic — opens the issue in the desktop Revizto app (a `revizto5://` link). See "Revizto URL" below — confirmed ACC renders a `.web` https:// link clickable, but a custom-scheme link like this is unconfirmed |
+| `openLinks.redirect` | ACC custom field ("Revizto URL") | Revizto → ACC only | Automatic — a clickable https:// link that opens the issue in the desktop Revizto app (falls back to the web tracker if not installed). See "Revizto URL" below |
 | `deadline` | `dueDate` | Both | Automatic — direct copy; ACC → Revizto also posts a one-time "Deadline changed via ACC sync" comment, see below |
 | `assignee` (email) | `assignedTo` | Both | Automatic — resolved via ACC's project members list, with an optional manual per-project override (`user_map` table, not exposed in the UI yet) |
 | `watchers` (emails) | `watchers` | Both | Same resolution as assignee, just an array |
@@ -651,24 +651,30 @@ simplest) rather than whichever handful are mapped today.
 
 #### Revizto URL
 
-`reviztoIssue.openLinks.desktop` → managed custom field **"Revizto
-URL"** — a direct link back to the issue that opens straight in the
-**desktop Revizto application** (explicit request), a `revizto5://`
-custom-protocol URI. Revizto → ACC only, written on every push, same
-treatment as Date Created/Reporter (the link doesn't change either).
-`openLinks` is present on every real issue response with no extra
-request params needed — unlike `clashAndLocationFields`, it isn't gated
-behind `additionalFields`.
+`reviztoIssue.openLinks.redirect` → managed custom field **"Revizto
+URL"** — a direct link back to the issue that opens the **desktop
+Revizto application** (explicit request). Revizto → ACC only, written on
+every push, same treatment as Date Created/Reporter (the link doesn't
+change either). `openLinks` is present on every real issue response with
+no extra request params needed — unlike `clashAndLocationFields`, it
+isn't gated behind `additionalFields`.
 
-Was `.web` (Revizto Workspace's web app, a real `https://` URL) until an
-explicit request to open the desktop app specifically instead. **Confirmed
-by testing that ACC does render `.web` as a clickable link in its UI** —
-whether that extends to `.desktop`'s non-`http(s)` custom scheme is
-unconfirmed; if it doesn't render/behave as a link, `.redirect` is the
-fallback worth trying (a real `https://` URL that itself embeds this same
-`revizto5://` URI — despite the shape, Revizto's own docs describe
-`.redirect` as being for the mobile Site app specifically, not desktop, so
-it's an unconfirmed fallback, not a documented equivalent).
+**Went through 3 iterations before landing here, each confirmed by
+real testing, not assumed:**
+1. `.web` (Revizto Workspace's web app, a real `https://` URL) — worked
+   and rendered clickable in ACC, but opened the web tracker, not the
+   desktop app (the actual ask).
+2. `.desktop` — the *real* `revizto5://` custom-protocol URI, and does
+   correctly launch the desktop app when it works — but confirmed by
+   testing that **ACC does not render a non-`http(s)` custom scheme as a
+   clickable link at all**. Correct destination, wrong transport.
+3. `.redirect` — a real `https://` URL, so clickable in ACC same as
+   `.web`; confirmed by testing (loaded it directly) that it embeds and
+   auto-launches that same `revizto5://` URI, falling back to "Open in
+   the web issue tracker" if Revizto isn't installed. The best of both —
+   despite Revizto's own docs describing `.redirect` as being for the
+   mobile Site app specifically, not desktop, real behavior wins out over
+   the docs here.
 
 **Same mapping-scope caveat as above** — this field also existed
 pre-provisioned but scoped to a single subtype; **confirmed by testing
