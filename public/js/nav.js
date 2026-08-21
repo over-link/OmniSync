@@ -21,6 +21,10 @@ const NAV_LINKS = [
   // each project runs off its own DB.
   { href: '#', label: 'License Administration', adminOnly: true, disabled: true },
   { href: '#', label: 'Analytics', adminOnly: false, disabled: true },
+  // Mockup only — see README "Planned: Help Center (phase 3)". Topics:
+  // best practices, FAQ, video tutorials, contact support. Open to
+  // everyone (not admin-gated), unlike the two entries above it.
+  { href: '#', label: 'Help Center', adminOnly: false, disabled: true },
 ];
 
 async function loadNav() {

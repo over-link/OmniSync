@@ -784,6 +784,23 @@ intentionally inert mockups so the shape is visible without implying it
 works: `#new-project-btn` (disabled), the "Project:" dropdown (still doing
 its old job only), and the "License Administration" nav item (disabled).
 
+## Planned: Help Center (phase 3, not built)
+
+**Status: TODO — nav entry mocked up (disabled) for visualization, no
+content or pages behind it.** Lower priority than the multi-project work
+above; phase 3.
+
+New left-nav tab (`nav.js`, currently `disabled` like Analytics and License
+Administration), open to all users (not admin-gated). Planned topics:
+
+- Best practices
+- FAQ
+- Video tutorials
+- Contact support
+
+No page, routing, or content exists yet — just the greyed sidebar entry so
+the shape is visible.
+
 ## Getting ACC API access approved
 
 Send your ACC Account Admin:
