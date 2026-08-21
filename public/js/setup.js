@@ -441,7 +441,7 @@ document.getElementById('save-type-map-btn').addEventListener('click', async () 
 let reviztoProjectOptions = []; // {id, uuid, title}
 let accProjectOptions = []; // {id, name}
 let currentProjectsList = [];
-let editingPairingId = null; // number | 'new' | null
+let editingPairingId = null; // number | null
 
 async function loadReviztoProjectOptions() {
   try {
@@ -498,22 +498,18 @@ function pairingRowHtml(p) {
   return pairingEditRowHtml(p);
 }
 
-// p is null for the "add new" row.
+// No more "add new pairing" path here — each project has exactly one
+// pairing, set once when the project itself is created. See the TODO in
+// README ("Planned: multi-project workspaces") — that'll happen via the
+// (not yet built) "+ New Project" button instead.
 function pairingEditRowHtml(p) {
-  const id = p ? p.id : 'new';
+  const id = p.id;
   const reviztoOptionsHtml = reviztoProjectOptions
-    .map((rp) => `<option value="${rp.uuid}" data-project-id="${rp.id}" ${p && rp.uuid === p.revizto_project_uuid ? 'selected' : ''}>${rp.title}</option>`)
+    .map((rp) => `<option value="${rp.uuid}" data-project-id="${rp.id}" ${rp.uuid === p.revizto_project_uuid ? 'selected' : ''}>${rp.title}</option>`)
     .join('');
   const accOptionsHtml = accProjectOptions
-    .map((ap) => `<option value="${ap.id}" ${p && ap.id === p.acc_project_id ? 'selected' : ''}>${ap.name}</option>`)
+    .map((ap) => `<option value="${ap.id}" ${ap.id === p.acc_project_id ? 'selected' : ''}>${ap.name}</option>`)
     .join('');
-  const defaultSubtypeHtml = p
-    ? `<label>Default ACC issue type (safeguard for unmapped stamps):</label>
-       <select class="pairing-default-subtype-select" data-id="${id}" data-current="${p.acc_default_subtype_id || ''}"><option value="">Loading...</option></select>`
-    : `<span class="hint">Default ACC issue type can be set afterward via "Modify pairing".</span>`;
-  const ownerHtml = p
-    ? ''
-    : `<label><input type="checkbox" class="pairing-owner-checkbox" checked /> Use my connection for automated/background syncs on this project</label>`;
   return `<div class="pairing-row pairing-row-editing" data-id="${id}">
     <select class="pairing-revizto-select" data-id="${id}">
       <option value="">${reviztoProjectOptions.length ? 'Select Revizto project' : 'No Revizto projects — set license above'}</option>
@@ -526,31 +522,23 @@ function pairingEditRowHtml(p) {
     </select>
   </div>
   <div class="pairing-extra-fields">
-    ${defaultSubtypeHtml}
-    ${ownerHtml}
+    <label>Default ACC issue type (safeguard for unmapped stamps):</label>
+    <select class="pairing-default-subtype-select" data-id="${id}" data-current="${p.acc_default_subtype_id || ''}"><option value="">Loading...</option></select>
   </div>
   <div class="pairing-actions">
-    <button type="button" class="btn save-pairing-btn" data-id="${id}">${p ? 'Save' : 'Add pairing'}</button>
-    ${p ? `<button type="button" class="btn secondary cancel-pairing-btn" data-id="${id}">Cancel</button>` : ''}
+    <button type="button" class="btn save-pairing-btn" data-id="${id}">Save</button>
+    <button type="button" class="btn secondary cancel-pairing-btn" data-id="${id}">Cancel</button>
     <span class="pairing-result" data-id="${id}"></span>
-  </div>`;
-}
-
-function renderAddPairingRow() {
-  if (editingPairingId === 'new') return pairingEditRowHtml(null);
-  return `<div class="pairing-row">
-    <button type="button" class="btn secondary" id="start-add-pairing-btn">+ Add new pairing</button>
   </div>`;
 }
 
 function renderProjectPairings() {
   const container = document.getElementById('project-pairing-rows');
-  if (!currentProjectsList.length && editingPairingId !== 'new') {
-    container.innerHTML = '<p class="hint">No projects paired yet.</p>' + renderAddPairingRow();
-    wirePairingRowHandlers();
+  if (!currentProjectsList.length) {
+    container.innerHTML = '<p class="hint">No project paired yet — use "+ New Project" above to set one up (coming soon).</p>';
     return;
   }
-  container.innerHTML = currentProjectsList.map((p) => pairingRowHtml(p)).join('') + renderAddPairingRow();
+  container.innerHTML = currentProjectsList.map((p) => pairingRowHtml(p)).join('');
   wirePairingRowHandlers();
 }
 
@@ -569,13 +557,6 @@ function wirePairingRowHandlers() {
       renderProjectPairings();
     });
   });
-  const startAddBtn = document.getElementById('start-add-pairing-btn');
-  if (startAddBtn) {
-    startAddBtn.addEventListener('click', () => {
-      editingPairingId = 'new';
-      renderProjectPairings();
-    });
-  }
   container.querySelectorAll('.save-revizto-project-id-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.id;
@@ -591,9 +572,7 @@ function wirePairingRowHandlers() {
     });
   });
 
-  // Editing row(s), if any: populate the default-subtype dropdown (needs
-  // an existing project id, so only for Modify — not "add new") and wire
-  // Save.
+  // Editing row, if any: populate the default-subtype dropdown and wire Save.
   container.querySelectorAll('.pairing-default-subtype-select').forEach((select) => {
     const id = select.dataset.id;
     const current = select.dataset.current;
@@ -611,7 +590,6 @@ function wirePairingRowHandlers() {
   container.querySelectorAll('.save-pairing-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.id;
-      const isNew = id === 'new';
       const reviztoSelect = document.querySelector(`.pairing-revizto-select[data-id="${id}"]`);
       const accSelect = document.querySelector(`.pairing-acc-select[data-id="${id}"]`);
       const resultEl = document.querySelector(`.pairing-result[data-id="${id}"]`);
@@ -630,24 +608,16 @@ function wirePairingRowHandlers() {
         acc_project_id: accSelect.value,
         acc_project_name: accOption.textContent,
       };
-      if (isNew) {
-        body.makeMeOwner = document.querySelector('.pairing-owner-checkbox')?.checked ?? true;
-      } else {
-        const subtypeSelect = document.querySelector(`.pairing-default-subtype-select[data-id="${id}"]`);
-        if (subtypeSelect && subtypeSelect.value) {
-          await api(`/api/projects/${id}/default-subtype`, {
-            method: 'PATCH',
-            body: JSON.stringify({ acc_default_subtype_id: subtypeSelect.value }),
-          }).catch(() => {}); // best-effort — the pairing save below is the important one
-        }
+      const subtypeSelect = document.querySelector(`.pairing-default-subtype-select[data-id="${id}"]`);
+      if (subtypeSelect && subtypeSelect.value) {
+        await api(`/api/projects/${id}/default-subtype`, {
+          method: 'PATCH',
+          body: JSON.stringify({ acc_default_subtype_id: subtypeSelect.value }),
+        }).catch(() => {}); // best-effort — the pairing save below is the important one
       }
       resultEl.textContent = 'Saving...';
       try {
-        if (isNew) {
-          await api('/api/projects', { method: 'POST', body: JSON.stringify(body) });
-        } else {
-          await api(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
-        }
+        await api(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
         editingPairingId = null;
         await loadProjects();
         await loadActiveProjectOptions();

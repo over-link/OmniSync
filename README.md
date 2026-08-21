@@ -733,10 +733,15 @@ A saved pairing renders **locked** (plain text, greyed) with a "Modify
 pairing" button — protects against an accidental change to a live pairing.
 Modifying re-opens the same two dropdowns pre-filled with the current
 selections; Save calls `PATCH /api/projects/:id` (new — previously only
-narrow single-field routes like `/default-subtype` existed). "+ Add new
-pairing" is the same row style, always available, not a separate/hidden
-form. The row's dot reflects whether the sync webhook actually registered
-(`projects.webhook_id` set), not just whether the row exists.
+narrow single-field routes like `/default-subtype` existed). The row's dot
+reflects whether the sync webhook actually registered (`projects.webhook_id`
+set), not just whether the row exists.
+
+There's deliberately no "add a pairing" UI here anymore — a project only
+ever has one pairing, set once. New pairings will be created by starting a
+new project instead (see "Planned: multi-project workspaces" below); the
+backend route (`POST /api/projects`) still exists for that, it's just not
+wired to any button yet.
 
 **ACC hub/project browsing requires ACC Custom Integration approval** (see
 below) — this account has it, so the dropdowns work; without it, `GET
@@ -748,6 +753,36 @@ unaffected if manual entry ever needs to come back).
 **Unverified assumption to check on first real use:** the shape of Revizto's
 project-list response (`uuid`/`title` fields) is now confirmed against real
 docs — no longer a guess.
+
+## Planned: multi-project workspaces & License Administration (not built)
+
+**Status: TODO — UI mocked up (disabled) for visualization, no backend
+behind it.** Not critical right now; revisit when actually needed.
+
+The idea: each project gets its own fully separate setup instead of one
+shared Setup page listing pairings.
+
+- **"+ New Project" button**, top-right of the Setup page header
+  (`#new-project-btn` in `setup.html`, currently `disabled`) — starts a new
+  project, lets you rename it, and drops you into its own setup.
+- **Project switcher** — the existing "Project:" dropdown
+  (`#active-project-select`) already at the top of the Setup page is the
+  intended home for this; today it just scopes Field mapping/Auto sync/
+  Issue linking within one shared DB. Under this plan it becomes a real
+  switch between fully separate projects, each with its own team members,
+  setup/mappings, and issue list.
+- **Separate DB per project** — so API-call/usage volume can be tracked and
+  attributed per project instead of blended into one shared account. The UI
+  layer stays shared; only the data backing each project's instance splits
+  out.
+- **License Administration** — new left-nav tab (`nav.js`, currently
+  `disabled` like Analytics) for viewing/managing how many project slots the
+  license allows and how many are in use, gating "+ New Project" once full.
+
+None of the above is implemented server-side. The visible pieces are
+intentionally inert mockups so the shape is visible without implying it
+works: `#new-project-btn` (disabled), the "Project:" dropdown (still doing
+its old job only), and the "License Administration" nav item (disabled).
 
 ## Getting ACC API access approved
 

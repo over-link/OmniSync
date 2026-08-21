@@ -86,6 +86,7 @@ body {
 
 /* ── Header ─────────────────────────────────────────────────────── */
 .app-header { margin-bottom: 2rem; }
+.app-header-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
 .app-header h1 {
   font-size: 1.5rem;
   font-weight: 700;
@@ -302,6 +303,7 @@ button, .btn {
 .btn:hover { background: #1e46a8; }
 .btn.secondary { background: var(--surface); color: var(--blueprint); border: 1px solid var(--blueprint); }
 .btn.secondary:hover { background: var(--blueprint-dim); }
+.btn:disabled, .btn:disabled:hover { background: #c3c8d1; color: #fff; cursor: not-allowed; }
 
 /* ── Status badges ──────────────────────────────────────────────── */
 .badge {

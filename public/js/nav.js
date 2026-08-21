@@ -16,6 +16,10 @@ const NAV_LINKS = [
   { href: '/account', label: 'My Connections', adminOnly: false },
   { href: '/setup', label: 'Project Setup', adminOnly: true },
   { href: '/team', label: 'Team', adminOnly: true },
+  // Mockup only — see README "Planned: multi-project workspaces". Will hold
+  // license project-slot count/usage and per-project API-call tracking once
+  // each project runs off its own DB.
+  { href: '#', label: 'License Administration', adminOnly: true, disabled: true },
   { href: '#', label: 'Analytics', adminOnly: false, disabled: true },
 ];
 

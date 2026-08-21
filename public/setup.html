@@ -13,14 +13,27 @@
   <div id="sidebar-mount"></div>
   <div id="app" class="container container-wide">
     <header class="app-header">
-      <h1>Project Setup <span class="badge badge-warning">Admin</span></h1>
-      <p class="app-sub">Map Revizto projects to ACC projects. Mistakes here affect the whole team — that's why it's admin-only.</p>
+      <div class="app-header-top">
+        <div>
+          <h1>Project Setup <span class="badge badge-warning">Admin</span></h1>
+          <p class="app-sub">Map Revizto projects to ACC projects. Mistakes here affect the whole team — that's why it's admin-only.</p>
+        </div>
+        <!-- Mockup only — see README "Planned: multi-project workspaces". Will
+             create a new project (own DB, own team/mappings/issues) and drop
+             you into its setup, letting you rename it. Gated by license
+             project-slot count once License Administration exists. -->
+        <button type="button" id="new-project-btn" class="btn" disabled title="Coming soon — see README: Planned: multi-project workspaces">+ New Project</button>
+      </div>
     </header>
 
     <button type="button" id="setup-top-warning" class="setup-top-warning hidden">
       ⚠️&nbsp;<span id="setup-top-warning-text"></span> — see Field mapping → Mapping warnings
     </button>
 
+    <!-- Today this only scopes Field mapping/Auto sync/Issue linking below
+         (one shared DB). Under the planned redesign this becomes the real
+         project switcher — each project's own DB, own team/mappings/issues
+         — see README "Planned: multi-project workspaces". -->
     <div class="card setup-context-bar">
       <label for="active-project-select">Project:</label>
       <select id="active-project-select"><option value="">Select a project</option></select>
@@ -51,8 +64,8 @@
             <span id="license-hub-result" class="result-text"></span>
           </div>
 
-          <h3 style="margin-top:1.75rem;">Project pairings</h3>
-          <p class="hint">Each row links one Revizto project to one ACC project — this is what makes syncing work for that project. A saved pairing is locked; click "Modify pairing" to change it. The sync webhook registers automatically when you save, nothing extra to click.</p>
+          <h3 style="margin-top:1.75rem;">Project pairing</h3>
+          <p class="hint">Links this project's Revizto side to its ACC side — this is what makes syncing work. Locked once saved; click "Modify pairing" to change it. The sync webhook registers automatically when you save, nothing extra to click. New pairings are created by starting a new project (see "+ New Project" above, coming soon) rather than added here.</p>
           <div class="pairing-column-headers">
             <span>Revizto</span>
             <span aria-hidden="true"></span>
