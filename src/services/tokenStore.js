@@ -32,6 +32,10 @@ async function saveAccTokens(userId, { access_token, refresh_token, expires_at, 
   );
 }
 
+async function saveAccHubId(userId, hubId) {
+  await pool.query('UPDATE acc_tokens SET default_hub_id = $2, updated_at = now() WHERE user_id = $1', [userId, hubId]);
+}
+
 // ─── Revizto tokens ─────────────────────────────────────────────────
 
 async function getReviztoTokens(userId) {
@@ -71,6 +75,7 @@ async function clearReviztoTokens(userId) {
 module.exports = {
   getAccTokens,
   saveAccTokens,
+  saveAccHubId,
   getReviztoTokens,
   saveReviztoTokens,
   saveReviztoLicenseId,

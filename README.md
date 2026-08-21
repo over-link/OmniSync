@@ -667,13 +667,23 @@ filters already draw from.
 
 ## Webhooks — registering the ACC side
 
-The receiving endpoint always existed; what was missing was telling ACC to
-actually call it. Fixed via `POST /api/projects/:id/register-webhook`
-(button: "Register ACC webhook" on each project row) — but this **requires
-`PUBLIC_BASE_URL` to be set to a real, internet-reachable HTTPS URL**. It will
-deliberately fail against `localhost`, since ACC's servers can't reach your
-laptop. Deploy first (see "Deployment" below), set `PUBLIC_BASE_URL` to that
-real URL, then click the button.
+Registration is now **automatic**: `routes/index.js`'s `_autoRegisterWebhook`
+fires right after a project pairing is created or modified (Setup page, see
+"Adding a project pairing" below) — no manual button anymore. It still
+**requires `PUBLIC_BASE_URL` to be set to a real, internet-reachable HTTPS
+URL**; it deliberately no-ops (not a hard failure — the pairing itself still
+saves) against `localhost`, since ACC's servers can't reach your laptop.
+Deploy first (see "Deployment" below) and set `PUBLIC_BASE_URL` to that real
+URL before pairing a project if you want the webhook to register on save;
+otherwise re-save the pairing (Modify pairing → Save, no fields need to
+actually change) once deployed to trigger it retroactively.
+
+The underlying manual route (`POST /api/projects/:id/register-webhook`) and
+its diagnostic siblings (`relink-webhook`, `webhook-status`, delete, and the
+webhook.site test-delivery route) still exist server-side for recovery, just
+no longer surfaced in the Setup UI — it got noisy once the webhook path
+proved stable. Re-add UI for one of these if a delivery mystery ever needs
+debugging again.
 
 **Hard-won discovery**: registrations against `/webhook/acc` stopped
 receiving deliveries at some point despite the hook showing `active` with
@@ -698,27 +708,42 @@ first thing to try before assuming something else broke.
 
 ## Adding a project pairing
 
-Each row in "Projects" links one Revizto project to one ACC project.
+The Setup page's "Map license & project" step is two stacked Revizto/ACC
+mapping tables, same visual language as status mapping:
 
-**Revizto side**: after connecting and selecting a license, the "Add a project
-pairing" form fetches your real Revizto projects into a dropdown.
+1. **License ↔ hub** — pick your Revizto license and your ACC hub, Save.
+   This is what scopes the project dropdowns below (mirrors each other:
+   `revizto_tokens.license_id` / `acc_tokens.default_hub_id`, both per-user
+   "current context" selections). A pulsing green dot shows once both are
+   set.
+2. **Project pairings** — each row links one Revizto project to one ACC
+   project by **name**, picked from real dropdowns (`GET /api/revizto/
+   projects`, `GET /api/acc/hubs/:hubId/projects`) — no raw IDs typed or
+   shown anywhere in this UI. `projects.name` is auto-filled from the
+   selected Revizto project's own title (no separate nickname field to
+   fill in); `projects.acc_project_name` is captured the same way from the
+   ACC side at save time, so a locked row always has a real name to show on
+   both sides without depending on the currently-selected hub's live
+   project list still containing it.
 
-**ACC side**: this is **manual ID entry for now, by design** — not a
-placeholder we forgot to finish. Listing ACC hubs/projects via the API
-requires an ACC Account Admin to first add this app under **Account Admin →
-Custom Integrations** (using your APS Client ID) — this is a platform
-requirement, not something project membership alone grants, and is separate
-from your own personal ACC permissions. See "Getting ACC API access approved"
-below for what to send your admin. Until that's approved, type the ACC Hub ID
-and Project ID directly (found in your ACC project's URL) — this always works
-regardless of Custom Integration status, since direct access to a known
-project ID only needs your own project membership.
+**Migration needed**: `acc_tokens.default_hub_id`, `projects.acc_project_name`.
+Run `npm run migrate`.
 
-The dropdown code for ACC (`accService.getHubs`/`getHubProjects`, and the
-`/api/acc/hubs` routes) is already built and left in place — once your
-Custom Integration is approved, re-add the `<select>` markup and its handlers
-in `public/index.html`/`app.js` (removed for now to avoid dead UI) to switch
-back to dropdown selection.
+A saved pairing renders **locked** (plain text, greyed) with a "Modify
+pairing" button — protects against an accidental change to a live pairing.
+Modifying re-opens the same two dropdowns pre-filled with the current
+selections; Save calls `PATCH /api/projects/:id` (new — previously only
+narrow single-field routes like `/default-subtype` existed). "+ Add new
+pairing" is the same row style, always available, not a separate/hidden
+form. The row's dot reflects whether the sync webhook actually registered
+(`projects.webhook_id` set), not just whether the row exists.
+
+**ACC hub/project browsing requires ACC Custom Integration approval** (see
+below) — this account has it, so the dropdowns work; without it, `GET
+/api/acc/hubs`/`GET /api/acc/hubs/:hubId/projects` will fail and there's
+currently no manual-ID fallback UI (the old one was removed as part of this
+redesign — `accService.getHubs`/`getHubProjects` and their routes are
+unaffected if manual entry ever needs to come back).
 
 **Unverified assumption to check on first real use:** the shape of Revizto's
 project-list response (`uuid`/`title` fields) is now confirmed against real
@@ -731,8 +756,9 @@ Send your ACC Account Admin:
 2. Ask them to: ACC → **Account Admin** → **Custom Integrations** → **Add Custom Integration** → paste the Client ID → name it (e.g. "Revizto Sync") → Add
 
 This is a one-time, per-account step. It only affects the hub/project
-*discovery* endpoints — it has no bearing on direct access to a project you're
-already a member of, which is why manual entry works today without it.
+*discovery* endpoints (now required for the Setup page's project-pairing
+dropdowns, see above) — it has no bearing on direct access to a project
+you're already a member of.
 
 Check "use my connection for automated/background syncs" if you want this
 project to also sync via a scheduled job (`POLL_ENABLED=true`) — background

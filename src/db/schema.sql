@@ -47,6 +47,13 @@ CREATE TABLE IF NOT EXISTS acc_tokens (
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- The user's selected ACC hub — mirrors revizto_tokens.license_id (below):
+-- a per-user "current context" selection that scopes which ACC projects
+-- show up in the "add/modify project pairing" dropdown, the same way
+-- license_id scopes the Revizto project dropdown. Nullable — not required
+-- just to connect ACC, same reasoning as license_id.
+ALTER TABLE acc_tokens ADD COLUMN IF NOT EXISTS default_hub_id TEXT;
+
 -- One row per user holding their Revizto OAuth tokens.
 -- access token: ~1hr life. refresh token: ~1 month life (per Revizto docs;
 -- confirm with Revizto whether this is a hard expiry or resets on use).
@@ -274,5 +281,14 @@ CREATE INDEX IF NOT EXISTS idx_auto_sync_filters_project ON auto_sync_filters(pr
 -- own automatic 404 self-heal for the common case; this is the manual
 -- escape hatch for anything that doesn't self-heal.
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS allow_manual_unlink BOOLEAN NOT NULL DEFAULT false;
+
+-- Denormalized ACC project display name, captured at pairing save time —
+-- lets the Setup page's locked pairing row always show a real name on
+-- both sides without depending on the currently-selected ACC hub's live
+-- project list still containing it (e.g. after switching hubs). `name`
+-- (above) now doubles as the Revizto side's display name — the Setup
+-- page auto-fills it from the selected Revizto project's own title
+-- instead of asking for a separate nickname.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS acc_project_name TEXT;
 
 -- connect-pg-simple creates its own "session" table automatically on first run.

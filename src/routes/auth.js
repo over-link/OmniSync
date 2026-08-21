@@ -74,7 +74,7 @@ router.get('/auth/me', async (req, res) => {
   const reviztoTokens = await tokenStore.getReviztoTokens(req.session.userId);
   res.json({
     user: { id: req.session.userId, email: req.session.userEmail, role },
-    acc: accTokens ? { connected: true, expiresAt: accTokens.expires_at } : { connected: false },
+    acc: accTokens ? { connected: true, expiresAt: accTokens.expires_at, hubId: accTokens.default_hub_id } : { connected: false },
     revizto: reviztoTokens
       ? {
           connected: true,
@@ -98,6 +98,18 @@ router.post('/auth/revizto/license', requireLogin, async (req, res) => {
 });
 
 // ─── 2. ACC OAuth (redirect flow) ───────────────────────────────────
+
+// Mirrors /auth/revizto/license — the ACC hub is the equivalent "current
+// context" selection that scopes the ACC project dropdown, the same way
+// license scopes the Revizto project dropdown.
+router.post('/auth/acc/hub', requireLogin, async (req, res) => {
+  const { hubId } = req.body;
+  if (!hubId) return res.status(400).json({ error: 'hubId required' });
+  const tokens = await tokenStore.getAccTokens(req.session.userId);
+  if (!tokens) return res.status(400).json({ error: 'Connect ACC first' });
+  await tokenStore.saveAccHubId(req.session.userId, hubId.trim());
+  res.json({ ok: true });
+});
 
 router.get('/auth/acc', requireLogin, (req, res) => {
   res.redirect(accAuth.getAuthUrl(String(req.session.userId)));

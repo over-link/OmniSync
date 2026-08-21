@@ -105,6 +105,30 @@ router.get('/api/projects', requireLogin, async (req, res) => {
   res.json({ projects: rows });
 });
 
+/**
+ * Auto-registers the ACC webhook right after a pairing is created or
+ * modified — same registration the retired manual "Register ACC webhook"
+ * button used to require a click for (see /register-webhook below, kept
+ * for recovery but no longer surfaced in the Setup UI). Never blocks the
+ * save itself: PUBLIC_BASE_URL unset (e.g. local dev) or a registration
+ * failure just leaves webhook_id unset, logged, recoverable later.
+ */
+async function _autoRegisterWebhook(userId, project) {
+  if (!process.env.PUBLIC_BASE_URL || process.env.PUBLIC_BASE_URL.includes('localhost')) {
+    console.warn(`[webhook] Skipping auto-registration for project "${project.name}" — PUBLIC_BASE_URL not set to a real deployed URL.`);
+    return;
+  }
+  try {
+    // /webhook/acc-v2, not /webhook/acc — see the manual route below for
+    // why (kept identical so registrations behave the same either way).
+    const callbackUrl = `${process.env.PUBLIC_BASE_URL}/webhook/acc-v2`;
+    const hook = await accService.registerWebhook(userId, project, callbackUrl);
+    await pool.query('UPDATE projects SET webhook_id = $2 WHERE id = $1', [project.id, hook.hookId || hook.id || null]);
+  } catch (err) {
+    console.error(`[webhook] Auto-registration failed for project "${project.name}":`, err.response?.data || err.message);
+  }
+}
+
 router.post('/api/projects', requireAdmin, async (req, res) => {
   const {
     name,
@@ -113,6 +137,7 @@ router.post('/api/projects', requireAdmin, async (req, res) => {
     revizto_region,
     acc_hub_id,
     acc_project_id,
+    acc_project_name,
     acc_default_subtype_id,
     makeMeOwner,
   } = req.body;
@@ -120,8 +145,8 @@ router.post('/api/projects', requireAdmin, async (req, res) => {
     return res.status(400).json({ error: 'name, revizto_project_uuid, acc_hub_id, acc_project_id are required' });
   }
   const { rows } = await pool.query(
-    `INSERT INTO projects (name, revizto_project_uuid, revizto_project_id, revizto_region, acc_hub_id, acc_project_id, acc_default_subtype_id, owner_user_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+    `INSERT INTO projects (name, revizto_project_uuid, revizto_project_id, revizto_region, acc_hub_id, acc_project_id, acc_project_name, acc_default_subtype_id, owner_user_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
     [
       name,
       revizto_project_uuid,
@@ -129,10 +154,32 @@ router.post('/api/projects', requireAdmin, async (req, res) => {
       revizto_region || 'virginia',
       acc_hub_id,
       acc_project_id,
+      acc_project_name || null,
       acc_default_subtype_id || null,
       makeMeOwner ? req.session.userId : null,
     ]
   );
+  await _autoRegisterWebhook(req.session.userId, rows[0]);
+  res.json({ project: rows[0] });
+});
+
+// Modifies an existing pairing (Setup page's "Modify pairing" flow) — the
+// same fields POST accepts, minus the create-only acc_default_subtype_id/
+// makeMeOwner (those have their own dedicated routes already). Re-runs
+// webhook auto-registration too, since a changed ACC project/hub makes any
+// existing webhook stale.
+router.patch('/api/projects/:id', requireAdmin, async (req, res) => {
+  const { name, revizto_project_uuid, revizto_project_id, revizto_region, acc_hub_id, acc_project_id, acc_project_name } = req.body;
+  if (!name || !revizto_project_uuid || !acc_hub_id || !acc_project_id) {
+    return res.status(400).json({ error: 'name, revizto_project_uuid, acc_hub_id, acc_project_id are required' });
+  }
+  const { rows } = await pool.query(
+    `UPDATE projects SET name = $2, revizto_project_uuid = $3, revizto_project_id = $4, revizto_region = $5, acc_hub_id = $6, acc_project_id = $7, acc_project_name = $8
+     WHERE id = $1 RETURNING *`,
+    [req.params.id, name, revizto_project_uuid, revizto_project_id || null, revizto_region || 'virginia', acc_hub_id, acc_project_id, acc_project_name || null]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'Project not found' });
+  await _autoRegisterWebhook(req.session.userId, rows[0]);
   res.json({ project: rows[0] });
 });
 

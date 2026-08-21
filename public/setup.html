@@ -34,55 +34,33 @@
           <span class="accordion-caret" aria-hidden="true">▾</span>
         </button>
         <div class="accordion-panel">
-          <h3>Your Revizto license</h3>
-          <p class="hint">Needed to browse your Revizto projects below when adding a pairing. Connect Revizto first on <a href="/account">My Connections</a> if this is empty.</p>
-          <div class="conn-row">
-            <span class="conn-label">License</span>
-            <span id="license-status" class="badge badge-neutral">—</span>
-            <select id="license-select">
-              <option value="">Loading your licenses...</option>
-            </select>
-            <button id="license-save-btn" class="btn">Save</button>
+          <h3>Revizto license ↔ ACC hub</h3>
+          <p class="hint">Sets the context both project dropdowns below pull from — connect Revizto and ACC first on <a href="/account">My Connections</a> if either is empty.</p>
+          <div class="pairing-column-headers">
+            <span>Revizto</span>
+            <span aria-hidden="true"></span>
+            <span>ACC</span>
+          </div>
+          <div class="pairing-row">
+            <select id="license-select"><option value="">Loading your licenses...</option></select>
+            <span id="license-hub-dot" class="pairing-dot" title="Not connected"></span>
+            <select id="acc-hub-select"><option value="">Loading your ACC hubs...</option></select>
+          </div>
+          <div class="pairing-actions">
+            <button id="license-hub-save-btn" class="btn">Save</button>
+            <span id="license-hub-result" class="result-text"></span>
           </div>
 
-          <h3>Projects</h3>
-          <div id="projects-list"></div>
+          <h3 style="margin-top:1.75rem;">Project pairings</h3>
+          <p class="hint">Each row links one Revizto project to one ACC project — this is what makes syncing work for that project. A saved pairing is locked; click "Modify pairing" to change it. The sync webhook registers automatically when you save, nothing extra to click.</p>
+          <div class="pairing-column-headers">
+            <span>Revizto</span>
+            <span aria-hidden="true"></span>
+            <span>ACC</span>
+          </div>
+          <div id="project-pairing-rows"></div>
 
-          <details>
-            <summary>+ Add a project pairing</summary>
-            <form id="project-form">
-              <input name="name" placeholder="Display name (e.g. West Tower)" required />
-
-              <label>Revizto project:</label>
-              <select id="revizto-project-select" name="revizto_project_uuid" required>
-                <option value="">Loading your Revizto projects...</option>
-              </select>
-              <button type="button" id="revizto-project-refresh" class="btn secondary">Refresh list</button>
-              <div id="revizto-project-error" class="hint"></div>
-
-              <input type="hidden" name="revizto_region" id="revizto-region-hidden" />
-              <input type="hidden" name="revizto_project_id" id="revizto-project-id-hidden" />
-
-              <label>ACC Hub ID:</label>
-              <input name="acc_hub_id" id="acc-hub-manual" placeholder="ACC Hub ID (b.xxxx)" required />
-              <label>ACC Project ID:</label>
-              <input name="acc_project_id" id="acc-project-manual" placeholder="ACC Project ID (b.xxxx)" required />
-              <span class="hint">Dropdown selection for these is built but disabled until your ACC Custom Integration is approved — see README.</span>
-
-              <input name="acc_default_subtype_id" placeholder="Default ACC issue subtype ID (optional)" />
-              <label><input type="checkbox" name="makeMeOwner" checked /> Use my connection for automated/background syncs on this project</label>
-              <button type="submit" class="btn">Add project</button>
-            </form>
-          </details>
-
-          <details>
-            <summary>🔧 Diagnostics: test webhook delivery (webhook.site)</summary>
-            <p class="hint">Paste a URL from <a href="https://webhook.site" target="_blank" rel="noopener">webhook.site</a> to test whether ACC's webhook delivery reaches ANY server at all, independent of this app. Remember to delete the test hook when done.</p>
-            <input id="test-webhook-url" type="text" placeholder="https://webhook.site/your-unique-id" />
-            <select id="test-webhook-project"></select>
-            <button type="button" id="register-test-webhook-btn" class="btn secondary">Register test webhook</button>
-            <div id="test-webhook-result" class="result-text"></div>
-          </details>
+          <input type="hidden" id="revizto-region-hidden" />
         </div>
       </section>
 

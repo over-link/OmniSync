@@ -40,16 +40,23 @@ function openMappingWarningsTab() {
 }
 document.getElementById('setup-top-warning').addEventListener('click', openMappingWarningsTab);
 
+let currentRevizto = { connected: false };
+let currentAcc = { connected: false };
+
 window.addEventListener('app:ready', async (e) => {
   // nav.js already redirects non-admins away from this page — if we get
   // here, the user is an admin. Still guard against the brief moment
   // before that redirect fires.
   if (!e.detail.user || e.detail.user.role !== 'admin') return;
-  document.getElementById('license-status').textContent = e.detail.revizto.licenseId || 'Not set';
-  document.getElementById('license-status').className = 'badge ' + (e.detail.revizto.licenseId ? 'badge-success' : 'badge-neutral');
-  if (e.detail.revizto.connected) await loadLicenseOptions(e.detail.revizto.licenseId);
-  if (e.detail.revizto.connected && e.detail.revizto.licenseId) await loadReviztoProjectOptions();
+  currentRevizto = e.detail.revizto;
+  currentAcc = e.detail.acc;
   document.getElementById('revizto-region-hidden').value = e.detail.revizto.region || 'virginia';
+  await loadLicenseAndHubOptions();
+  updateLicenseHubDot();
+  await Promise.all([
+    currentRevizto.connected && currentRevizto.licenseId ? loadReviztoProjectOptions() : Promise.resolve(),
+    currentAcc.connected && currentAcc.hubId ? loadAccProjectOptions() : Promise.resolve(),
+  ]);
   await loadProjects();
   await loadActiveProjectOptions();
 });
@@ -134,37 +141,69 @@ async function loadMappingWarnings(projectId) {
   }
 }
 
-async function loadLicenseOptions(currentLicenseId) {
-  const select = document.getElementById('license-select');
-  select.innerHTML = '<option value="">Loading...</option>';
-  try {
-    const { licenses } = await api('/api/revizto/licenses');
-    if (!licenses.length) {
-      select.innerHTML = '<option value="">No licenses found</option>';
-      return;
+function updateLicenseHubDot() {
+  const dot = document.getElementById('license-hub-dot');
+  const connected = !!(currentRevizto.licenseId && currentAcc.hubId);
+  dot.classList.toggle('connected', connected);
+  dot.title = connected ? 'License and hub both set' : 'Select and save both to enable project pairing below';
+}
+
+async function loadLicenseAndHubOptions() {
+  const licenseSelect = document.getElementById('license-select');
+  const hubSelect = document.getElementById('acc-hub-select');
+
+  if (!currentRevizto.connected) {
+    licenseSelect.innerHTML = '<option value="">Connect Revizto on My Connections first</option>';
+  } else {
+    licenseSelect.innerHTML = '<option value="">Loading...</option>';
+    try {
+      const { licenses } = await api('/api/revizto/licenses');
+      licenseSelect.innerHTML = licenses.length
+        ? licenses
+            .map(
+              (l) =>
+                `<option value="${l.uuid}" ${String(l.uuid) === String(currentRevizto.licenseId) ? 'selected' : ''}>${l.name} (${l.region}${l.frozen ? ' — suspended' : ''})</option>`
+            )
+            .join('')
+        : '<option value="">No licenses found</option>';
+    } catch {
+      licenseSelect.innerHTML = '<option value="">—</option>';
     }
-    select.innerHTML = licenses
-      .map(
-        (l) =>
-          `<option value="${l.uuid}" ${String(l.uuid) === String(currentLicenseId) ? 'selected' : ''}>${l.name} (${l.region}${l.frozen ? ' — suspended' : ''})</option>`
-      )
-      .join('');
-  } catch (err) {
-    select.innerHTML = '<option value="">—</option>';
+  }
+
+  if (!currentAcc.connected) {
+    hubSelect.innerHTML = '<option value="">Connect ACC on My Connections first</option>';
+  } else {
+    hubSelect.innerHTML = '<option value="">Loading...</option>';
+    try {
+      const { hubs } = await api('/api/acc/hubs');
+      hubSelect.innerHTML = hubs.length
+        ? hubs.map((h) => `<option value="${h.id}" ${String(h.id) === String(currentAcc.hubId) ? 'selected' : ''}>${h.name}</option>`).join('')
+        : '<option value="">No hubs found</option>';
+    } catch {
+      hubSelect.innerHTML = '<option value="">—</option>';
+    }
   }
 }
 
-document.getElementById('license-save-btn').addEventListener('click', async () => {
+document.getElementById('license-hub-save-btn').addEventListener('click', async () => {
   const licenseId = document.getElementById('license-select').value;
-  if (!licenseId) return;
-  const statusEl = document.getElementById('license-status');
+  const hubId = document.getElementById('acc-hub-select').value;
+  const resultEl = document.getElementById('license-hub-result');
+  if (!licenseId && !hubId) return;
+  resultEl.textContent = 'Saving...';
   try {
-    await api('/auth/revizto/license', { method: 'POST', body: JSON.stringify({ licenseId }) });
-    statusEl.textContent = licenseId;
-    statusEl.className = 'badge badge-success';
-    await loadReviztoProjectOptions();
+    await Promise.all([
+      licenseId ? api('/auth/revizto/license', { method: 'POST', body: JSON.stringify({ licenseId }) }) : Promise.resolve(),
+      hubId ? api('/auth/acc/hub', { method: 'POST', body: JSON.stringify({ hubId }) }) : Promise.resolve(),
+    ]);
+    if (licenseId) currentRevizto.licenseId = licenseId;
+    if (hubId) currentAcc.hubId = hubId;
+    updateLicenseHubDot();
+    resultEl.textContent = 'Saved ✓';
+    await Promise.all([loadReviztoProjectOptions(), loadAccProjectOptions()]);
   } catch (err) {
-    alert(err.message);
+    resultEl.textContent = err.message;
   }
 });
 
@@ -399,75 +438,163 @@ document.getElementById('save-type-map-btn').addEventListener('click', async () 
   }
 });
 
+let reviztoProjectOptions = []; // {id, uuid, title}
+let accProjectOptions = []; // {id, name}
+let currentProjectsList = [];
+let editingPairingId = null; // number | 'new' | null
+
 async function loadReviztoProjectOptions() {
-  const select = document.getElementById('revizto-project-select');
-  const errorEl = document.getElementById('revizto-project-error');
-  select.innerHTML = '<option value="">Loading...</option>';
-  errorEl.textContent = '';
   try {
     const { projects } = await api('/api/revizto/projects');
-    if (!projects.length) {
-      select.innerHTML = '<option value="">No Revizto projects found</option>';
-      return;
-    }
-    select.innerHTML = projects
-      .map((p) => `<option value="${p.uuid}" data-project-id="${p.id}">${p.title} (${p.uuid})</option>`)
-      .join('');
-    updateReviztoProjectIdHidden();
-  } catch (err) {
-    select.innerHTML = '<option value="">—</option>';
-    errorEl.textContent = err.data?.message || err.message || 'Connect Revizto on My Connections first.';
+    reviztoProjectOptions = projects;
+  } catch {
+    reviztoProjectOptions = [];
   }
+  renderProjectPairings();
 }
 
-function updateReviztoProjectIdHidden() {
-  const select = document.getElementById('revizto-project-select');
-  const selected = select.options[select.selectedIndex];
-  document.getElementById('revizto-project-id-hidden').value = selected?.dataset.projectId || '';
+async function loadAccProjectOptions() {
+  if (!currentAcc.hubId) {
+    accProjectOptions = [];
+    renderProjectPairings();
+    return;
+  }
+  try {
+    const { projects } = await api(`/api/acc/hubs/${currentAcc.hubId}/projects`);
+    accProjectOptions = projects;
+  } catch {
+    accProjectOptions = [];
+  }
+  renderProjectPairings();
 }
-
-document.getElementById('revizto-project-select').addEventListener('change', updateReviztoProjectIdHidden);
-document.getElementById('revizto-project-refresh').addEventListener('click', loadReviztoProjectOptions);
 
 async function loadProjects() {
   const { projects } = await api('/api/projects');
-  const list = document.getElementById('projects-list');
-  list.innerHTML = '';
-  if (!projects.length) {
-    list.textContent = 'No projects paired yet.';
+  currentProjectsList = projects;
+  renderProjectPairings();
+}
+
+// One row per saved pairing — locked (plain names + "Modify pairing") by
+// default so an admin can't accidentally change a live pairing, editable
+// dropdowns only while that specific row is being modified. The dot
+// reflects whether the sync webhook is actually registered (set
+// automatically on save — see routes/index.js's _autoRegisterWebhook),
+// not just "this row exists in the DB".
+function pairingRowHtml(p) {
+  if (editingPairingId !== p.id) {
+    const missingIdHtml = p.revizto_project_id
+      ? ''
+      : `<div class="hint pairing-missing-id">Missing numeric Revizto project ID (needed for comment sync) —
+          <input type="number" class="revizto-project-id-input" data-id="${p.id}" placeholder="numeric ID" style="width:100px" />
+          <button type="button" class="btn secondary save-revizto-project-id-btn" data-id="${p.id}">Save</button>
+        </div>`;
+    return `<div class="pairing-row" data-id="${p.id}">
+      <span class="pairing-row-name">${p.name}</span>
+      <span class="pairing-dot${p.webhook_id ? ' connected' : ''}" title="${p.webhook_id ? 'Webhook registered — syncing active' : 'Webhook not registered yet — Modify and re-save to retry'}"></span>
+      <span class="pairing-row-name">${p.acc_project_name || p.acc_project_id}</span>
+      <button type="button" class="btn secondary modify-pairing-btn" data-id="${p.id}">Modify pairing</button>
+    </div>${missingIdHtml}`;
+  }
+  return pairingEditRowHtml(p);
+}
+
+// p is null for the "add new" row.
+function pairingEditRowHtml(p) {
+  const id = p ? p.id : 'new';
+  const reviztoOptionsHtml = reviztoProjectOptions
+    .map((rp) => `<option value="${rp.uuid}" data-project-id="${rp.id}" ${p && rp.uuid === p.revizto_project_uuid ? 'selected' : ''}>${rp.title}</option>`)
+    .join('');
+  const accOptionsHtml = accProjectOptions
+    .map((ap) => `<option value="${ap.id}" ${p && ap.id === p.acc_project_id ? 'selected' : ''}>${ap.name}</option>`)
+    .join('');
+  const defaultSubtypeHtml = p
+    ? `<label>Default ACC issue type (safeguard for unmapped stamps):</label>
+       <select class="pairing-default-subtype-select" data-id="${id}" data-current="${p.acc_default_subtype_id || ''}"><option value="">Loading...</option></select>`
+    : `<span class="hint">Default ACC issue type can be set afterward via "Modify pairing".</span>`;
+  const ownerHtml = p
+    ? ''
+    : `<label><input type="checkbox" class="pairing-owner-checkbox" checked /> Use my connection for automated/background syncs on this project</label>`;
+  return `<div class="pairing-row pairing-row-editing" data-id="${id}">
+    <select class="pairing-revizto-select" data-id="${id}">
+      <option value="">${reviztoProjectOptions.length ? 'Select Revizto project' : 'No Revizto projects — set license above'}</option>
+      ${reviztoOptionsHtml}
+    </select>
+    <span class="pairing-dot" aria-hidden="true"></span>
+    <select class="pairing-acc-select" data-id="${id}">
+      <option value="">${accProjectOptions.length ? 'Select ACC project' : 'No ACC projects — set hub above'}</option>
+      ${accOptionsHtml}
+    </select>
+  </div>
+  <div class="pairing-extra-fields">
+    ${defaultSubtypeHtml}
+    ${ownerHtml}
+  </div>
+  <div class="pairing-actions">
+    <button type="button" class="btn save-pairing-btn" data-id="${id}">${p ? 'Save' : 'Add pairing'}</button>
+    ${p ? `<button type="button" class="btn secondary cancel-pairing-btn" data-id="${id}">Cancel</button>` : ''}
+    <span class="pairing-result" data-id="${id}"></span>
+  </div>`;
+}
+
+function renderAddPairingRow() {
+  if (editingPairingId === 'new') return pairingEditRowHtml(null);
+  return `<div class="pairing-row">
+    <button type="button" class="btn secondary" id="start-add-pairing-btn">+ Add new pairing</button>
+  </div>`;
+}
+
+function renderProjectPairings() {
+  const container = document.getElementById('project-pairing-rows');
+  if (!currentProjectsList.length && editingPairingId !== 'new') {
+    container.innerHTML = '<p class="hint">No projects paired yet.</p>' + renderAddPairingRow();
+    wirePairingRowHandlers();
     return;
   }
-  for (const p of projects) {
-    const row = document.createElement('div');
-    row.className = 'project-row';
-    row.innerHTML = `
-      <strong>${p.name}</strong>
-      <span>Revizto: ${p.revizto_project_uuid} (${p.revizto_region})</span>
-      <span>ACC: ${p.acc_project_id}</span>
-      <button data-id="${p.id}" class="btn secondary register-webhook-btn">Register ACC webhook</button>
-      <button data-id="${p.id}" class="btn secondary relink-webhook-btn">Find &amp; relink existing webhook</button>
-      <button data-id="${p.id}" class="btn secondary check-webhook-btn">Check webhook status</button>
-      <button data-id="${p.id}" data-webhook-id="${p.webhook_id || ''}" class="btn secondary delete-webhook-btn">Delete webhook</button>
-      <span class="webhook-result" data-id="${p.id}"></span>
-      <div class="hint">Default ACC issue type (safeguard for unmapped stamps) —
-        <select class="default-subtype-select" data-id="${p.id}" data-current="${p.acc_default_subtype_id || ''}"><option value="">Loading...</option></select>
-        <button data-id="${p.id}" class="btn secondary save-default-subtype-btn">Save</button>
-        <span class="default-subtype-result" data-id="${p.id}"></span>
-      </div>
-      ${
-        p.revizto_project_id
-          ? ''
-          : `<div class="hint">Missing numeric Revizto project ID (needed for comment sync) —
-              <input type="number" class="revizto-project-id-input" placeholder="numeric ID" style="width:100px" />
-              <button data-id="${p.id}" class="btn secondary save-revizto-project-id-btn">Save</button>
-            </div>`
-      }
-    `;
-    list.appendChild(row);
+  container.innerHTML = currentProjectsList.map((p) => pairingRowHtml(p)).join('') + renderAddPairingRow();
+  wirePairingRowHandlers();
+}
+
+function wirePairingRowHandlers() {
+  const container = document.getElementById('project-pairing-rows');
+
+  container.querySelectorAll('.modify-pairing-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      editingPairingId = Number(btn.dataset.id);
+      renderProjectPairings();
+    });
+  });
+  container.querySelectorAll('.cancel-pairing-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      editingPairingId = null;
+      renderProjectPairings();
+    });
+  });
+  const startAddBtn = document.getElementById('start-add-pairing-btn');
+  if (startAddBtn) {
+    startAddBtn.addEventListener('click', () => {
+      editingPairingId = 'new';
+      renderProjectPairings();
+    });
   }
-  // Separate async pass per project so N slow ACC subtype lookups don't
-  // block the rest of the list from rendering.
-  list.querySelectorAll('.default-subtype-select').forEach((select) => {
+  container.querySelectorAll('.save-revizto-project-id-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      const input = document.querySelector(`.revizto-project-id-input[data-id="${id}"]`);
+      const value = input.value.trim();
+      if (!value) return;
+      try {
+        await api(`/api/projects/${id}/revizto-project-id`, { method: 'PATCH', body: JSON.stringify({ revizto_project_id: value }) });
+        await loadProjects();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  });
+
+  // Editing row(s), if any: populate the default-subtype dropdown (needs
+  // an existing project id, so only for Modify — not "add new") and wire
+  // Save.
+  container.querySelectorAll('.pairing-default-subtype-select').forEach((select) => {
     const id = select.dataset.id;
     const current = select.dataset.current;
     api(`/api/projects/${id}/subtypes`)
@@ -480,151 +607,56 @@ async function loadProjects() {
         select.innerHTML = '<option value="">Could not load ACC issue types</option>';
       });
   });
-  list.querySelectorAll('.save-default-subtype-btn').forEach((btn) => {
+
+  container.querySelectorAll('.save-pairing-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.id;
-      const select = document.querySelector(`.default-subtype-select[data-id="${id}"]`);
-      const resultEl = document.querySelector(`.default-subtype-result[data-id="${id}"]`);
-      resultEl.textContent = 'Saving...';
-      try {
-        await api(`/api/projects/${id}/default-subtype`, {
-          method: 'PATCH',
-          body: JSON.stringify({ acc_default_subtype_id: select.value }),
-        });
-        resultEl.textContent = 'Saved ✓';
-      } catch (err) {
-        resultEl.textContent = err.message;
-      }
-    });
-  });
-  list.querySelectorAll('.register-webhook-btn').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset.id;
-      const resultEl = document.querySelector(`.webhook-result[data-id="${id}"]`);
-      resultEl.textContent = 'Registering...';
-      try {
-        await api(`/api/projects/${id}/register-webhook`, { method: 'POST' });
-        resultEl.textContent = 'Webhook registered ✓';
-        await loadProjects();
-      } catch (err) {
-        resultEl.textContent = err.message;
-      }
-    });
-  });
-  list.querySelectorAll('.save-revizto-project-id-btn').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset.id;
-      const input = btn.previousElementSibling;
-      const value = input.value.trim();
-      if (!value) return;
-      try {
-        await api(`/api/projects/${id}/revizto-project-id`, { method: 'PATCH', body: JSON.stringify({ revizto_project_id: value }) });
-        await loadProjects();
-      } catch (err) {
-        alert(err.message);
-      }
-    });
-  });
-  list.querySelectorAll('.delete-webhook-btn').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset.id;
-      const hookId = btn.dataset.webhookId;
-      const resultEl = document.querySelector(`.webhook-result[data-id="${id}"]`);
-      if (!hookId) {
-        resultEl.textContent = 'No webhook_id on record — try "Check webhook status" or "Find & relink" first.';
+      const isNew = id === 'new';
+      const reviztoSelect = document.querySelector(`.pairing-revizto-select[data-id="${id}"]`);
+      const accSelect = document.querySelector(`.pairing-acc-select[data-id="${id}"]`);
+      const resultEl = document.querySelector(`.pairing-result[data-id="${id}"]`);
+      const reviztoOption = reviztoSelect.options[reviztoSelect.selectedIndex];
+      const accOption = accSelect.options[accSelect.selectedIndex];
+      if (!reviztoSelect.value || !accSelect.value) {
+        resultEl.textContent = 'Select both a Revizto project and an ACC project.';
         return;
       }
-      if (!confirm('Delete this webhook? You can re-register a fresh one after.')) return;
-      resultEl.textContent = 'Deleting...';
+      const body = {
+        name: reviztoOption.textContent,
+        revizto_project_uuid: reviztoSelect.value,
+        revizto_project_id: reviztoOption.dataset.projectId || '',
+        revizto_region: document.getElementById('revizto-region-hidden').value,
+        acc_hub_id: currentAcc.hubId,
+        acc_project_id: accSelect.value,
+        acc_project_name: accOption.textContent,
+      };
+      if (isNew) {
+        body.makeMeOwner = document.querySelector('.pairing-owner-checkbox')?.checked ?? true;
+      } else {
+        const subtypeSelect = document.querySelector(`.pairing-default-subtype-select[data-id="${id}"]`);
+        if (subtypeSelect && subtypeSelect.value) {
+          await api(`/api/projects/${id}/default-subtype`, {
+            method: 'PATCH',
+            body: JSON.stringify({ acc_default_subtype_id: subtypeSelect.value }),
+          }).catch(() => {}); // best-effort — the pairing save below is the important one
+        }
+      }
+      resultEl.textContent = 'Saving...';
       try {
-        await api(`/api/projects/${id}/webhook/${hookId}`, { method: 'DELETE' });
-        resultEl.textContent = 'Deleted ✓ — click "Register ACC webhook" to create a fresh one.';
+        if (isNew) {
+          await api('/api/projects', { method: 'POST', body: JSON.stringify(body) });
+        } else {
+          await api(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+        }
+        editingPairingId = null;
         await loadProjects();
+        await loadActiveProjectOptions();
       } catch (err) {
         resultEl.textContent = err.message;
       }
     });
   });
-  list.querySelectorAll('.relink-webhook-btn').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset.id;
-      const resultEl = document.querySelector(`.webhook-result[data-id="${id}"]`);
-      resultEl.textContent = 'Searching for existing webhook...';
-      try {
-        const { hookId } = await api(`/api/projects/${id}/relink-webhook`, { method: 'POST' });
-        resultEl.textContent = `Relinked ✓ (hookId: ${hookId})`;
-        await loadProjects();
-      } catch (err) {
-        resultEl.textContent = err.data?.error || err.message;
-      }
-    });
-  });
-  list.querySelectorAll('.check-webhook-btn').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset.id;
-      const resultEl = document.querySelector(`.webhook-result[data-id="${id}"]`);
-      resultEl.textContent = 'Checking...';
-      try {
-        const { hook } = await api(`/api/projects/${id}/webhook-status`);
-        resultEl.innerHTML = `status: <strong>${hook.status}</strong>, event: ${hook.event}, callback: ${hook.callbackUrl}, last updated: ${hook.lastUpdatedDate}`;
-      } catch (err) {
-        resultEl.textContent = err.data?.error || err.message;
-      }
-    });
-  });
 }
-
-// ─── Diagnostics: test webhook (webhook.site) ──────────────────────
-
-async function loadTestWebhookProjectOptions() {
-  const { projects } = await api('/api/projects');
-  const select = document.getElementById('test-webhook-project');
-  select.innerHTML = projects.map((p) => `<option value="${p.id}">${p.name}</option>`).join('');
-}
-loadTestWebhookProjectOptions();
-
-document.getElementById('register-test-webhook-btn').addEventListener('click', async () => {
-  const projectId = document.getElementById('test-webhook-project').value;
-  const callbackUrl = document.getElementById('test-webhook-url').value.trim();
-  const resultEl = document.getElementById('test-webhook-result');
-  if (!projectId || !callbackUrl) {
-    resultEl.textContent = 'Pick a project and paste a webhook.site URL first.';
-    return;
-  }
-  resultEl.textContent = 'Registering test webhook...';
-  try {
-    const { hookId } = await api(`/api/projects/${projectId}/register-test-webhook`, {
-      method: 'POST',
-      body: JSON.stringify({ callbackUrl }),
-    });
-    resultEl.innerHTML = `Registered ✓ (hookId: ${hookId}). Now change a status in ACC and check webhook.site. <button type="button" id="delete-test-webhook-btn" class="btn secondary">Delete test hook</button>`;
-    document.getElementById('delete-test-webhook-btn').addEventListener('click', async () => {
-      resultEl.textContent = 'Deleting...';
-      try {
-        await api(`/api/projects/${projectId}/webhook/${hookId}`, { method: 'DELETE' });
-        resultEl.textContent = 'Test hook deleted ✓';
-      } catch (err) {
-        resultEl.textContent = err.message;
-      }
-    });
-  } catch (err) {
-    resultEl.textContent = err.data?.error || err.message;
-  }
-});
-
-document.getElementById('project-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const form = new FormData(e.target);
-  const body = Object.fromEntries(form.entries());
-  body.makeMeOwner = form.get('makeMeOwner') === 'on';
-  try {
-    await api('/api/projects', { method: 'POST', body: JSON.stringify(body) });
-    e.target.reset();
-    await loadProjects();
-  } catch (err) {
-    alert(err.message);
-  }
-});
 
 // ─── Auto-sync by filter ────────────────────────────────────────────
 // Same field split as the Issues page's own filters (public/js/issues.js)

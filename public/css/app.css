@@ -369,6 +369,51 @@ form { display: flex; flex-direction: column; gap: 0.45rem; margin-top: 0.75rem;
 form label { font-size: 0.82rem; font-weight: 600; color: var(--muted); margin-top: 0.3rem; }
 details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); margin-top: 0.5rem; }
 
+/* ── License/project pairing (two-column Revizto/ACC layout) ──────── */
+.pairing-column-headers {
+  display: grid;
+  grid-template-columns: 1fr 28px 1fr;
+  gap: 1rem;
+  font-weight: 700;
+  font-size: 1.05rem;
+  padding-bottom: 0.5rem;
+}
+.pairing-row {
+  display: grid;
+  grid-template-columns: 1fr 28px 1fr;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.pairing-row:last-child { border-bottom: none; }
+.pairing-row-name { font-weight: 600; font-size: 0.92rem; }
+.pairing-row-editing select { width: 100%; }
+.pairing-extra-fields { display: flex; flex-direction: column; gap: 0.4rem; padding: 0.4rem 0 0.6rem; font-size: 0.85rem; }
+.pairing-extra-fields select { max-width: 320px; }
+.pairing-actions { display: flex; align-items: center; gap: 0.6rem; padding-bottom: 0.6rem; }
+.pairing-missing-id { padding-bottom: 0.6rem; }
+
+/* Connection status dot — grey/still when not connected, a pulsing green
+   ring when it is. Respects the site-wide prefers-reduced-motion rule
+   near the top of this file, which already zeroes animation-duration. */
+.pairing-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--line);
+  justify-self: center;
+}
+.pairing-dot.connected {
+  background: var(--success);
+  animation: pairing-pulse 1.8s infinite;
+}
+@keyframes pairing-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(31, 122, 77, 0.55); }
+  70% { box-shadow: 0 0 0 7px rgba(31, 122, 77, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(31, 122, 77, 0); }
+}
+
 .hint { color: var(--muted); font-size: 0.78rem; }
 
 /* ── Issue selection panel ──────────────────────────────────────── */
