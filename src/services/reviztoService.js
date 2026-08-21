@@ -318,6 +318,22 @@ async function updateIssueDeadline(userId, region, projectUuid, issueId, newDueD
   return _postDiffComment(userId, region, projectUuid, issue.uuid, { deadline: { old: oldDeadline, new: newDeadline } }, reporterEmail);
 }
 
+/**
+ * Updates an issue's title — ACC -> Revizto direction, the missing half of
+ * the title mapping (Revizto -> ACC is a direct copy in toAccIssue). Same
+ * UNCONFIRMED caveat as priority/assignee/watchers/deadline above:
+ * extrapolated from the proven customStatus diff pattern (title is a
+ * plain top-level string field, same shape as assignee), not confirmed
+ * against real Revizto write docs. Test and report back if a title change
+ * in ACC doesn't show up in Revizto.
+ */
+async function updateIssueTitle(userId, region, projectUuid, issueId, newTitle, reporterEmail) {
+  const issue = await getIssue(userId, region, projectUuid, issueId);
+  const oldTitle = unwrap(issue.title) || null;
+  if (oldTitle === newTitle) return null; // no-op
+  return _postDiffComment(userId, region, projectUuid, issue.uuid, { title: { old: oldTitle, new: newTitle } }, reporterEmail);
+}
+
 async function addComment(userId, region, projectUuid, issueId, text, reporterEmail) {
   const issue = await getIssue(userId, region, projectUuid, issueId);
   const commentUuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
@@ -959,6 +975,7 @@ module.exports = {
   updateIssueWatchers,
   updateIssuePriority,
   updateIssueDeadline,
+  updateIssueTitle,
   getWorkflowSettings,
   resolveIssueWorkflowUuid,
   getWorkflowLabel,

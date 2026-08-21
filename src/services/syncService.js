@@ -1068,6 +1068,34 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
     console.warn('[webhook] Could not sync due date back to Revizto (skipping):', err.response?.data?.message || err.message);
   }
 
+  // Title (ACC's title -> Revizto's title), the reverse of the direct
+  // copy done in toAccIssue. Same "only comment on a real change" guard as
+  // due date above — updateIssueTitle returns null on a no-op.
+  try {
+    if (accIssue.title) {
+      const changed = await reviztoService.updateIssueTitle(
+        userId,
+        project.revizto_region,
+        project.revizto_project_uuid,
+        reviztoIssueId,
+        accIssue.title,
+        reporterEmail
+      );
+      if (changed) {
+        await reviztoService.addComment(
+          userId,
+          project.revizto_region,
+          project.revizto_project_uuid,
+          reviztoIssueId,
+          'Title changed via ACC sync',
+          reporterEmail
+        );
+      }
+    }
+  } catch (err) {
+    console.warn('[webhook] Could not sync title back to Revizto (skipping):', err.response?.data?.message || err.message);
+  }
+
   // Comment pulling from ACC happens via pollAccCommentsForProject (see
   // pollService.js), not here — accIssue.comments never populated from
   // this base GET (confirmed: comments are a separate endpoint), so this

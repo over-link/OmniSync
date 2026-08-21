@@ -312,7 +312,7 @@ Two different mechanisms, don't confuse them:
 
 | Revizto field | ACC field | Direction | How it's mapped |
 |---|---|---|---|
-| `title` | `title` | Revizto → ACC | Automatic — direct copy |
+| `title` | `title` | Both | Automatic — Revizto → ACC is a direct copy; ACC → Revizto uses the same diff-comment mechanism as priority/due date below, posting "Title changed via ACC sync" |
 | *(none — Revizto has no description field)* | `description` | Revizto → ACC | Automatic — fixed marker `"Synced from Revizto"`, so issues are filterable in ACC by description |
 | `customStatusName` | `status` (+ an optional "Revizto Status" ACC custom field for precision) | Both, admin-configurable both ways, scoped per Revizto workflow | See "Status mapping — per workflow, both directions" below |
 | `stampAbbr` (shown as "Category > Stamp Title") | `issueSubtypeId` (issue type) | Revizto → ACC | **Admin-configurable** (Setup page) — falls back through: project's default subtype → title-keyword guess → auto-detected "General" subtype → first available, so a push can never fail from a missing subtype. Unmapped flags a sync error |
@@ -579,11 +579,16 @@ ideally "Revizto ID"/"Tags"/"Grid Intersection" too → enable each for
 every issue type actually in use (or project-wide, simplest) rather than
 whichever handful are mapped today.
 
-## Priority & due date (bidirectional)
+## Title, priority & due date (bidirectional)
 
-Both work the same way structurally: Revizto → ACC on every push;
+All three work the same way structurally: Revizto → ACC on every push;
 ACC → Revizto via the webhook, using the same diff-comment mechanism
 already proven for status/assignee/watchers.
+
+**Title**: plain direct copy both ways — no format conversion needed,
+unlike due date below. Posts a one-time "Title changed via ACC sync"
+comment when it actually changes. Verified end-to-end against a real
+issue (`updateIssueTitle`, changed and reverted during testing).
 
 **Due date**: ACC's `dueDate` is date-only; Revizto's `deadline` is a
 full datetime. Writing back is anchored at **noon**, not midnight —
@@ -641,10 +646,11 @@ pushed the other direction (matched by the `"Revizto Issue "` naming
 4. Click **"Show linked issues"** any time to see a two-column view:
    Revizto's current title/status next to ACC's, for every linked issue.
 
-**Known limitation:** the webhook side (ACC→Revizto) now updates status,
-assignee/watchers, priority, due date, the latest comment, and attachments
-— just not **title** yet. Everything else uses the same status-via-
-diff-comment mechanism, extended field by field.
+The webhook side (ACC→Revizto) now updates status, assignee/watchers,
+priority, due date, title, the latest comment, and attachments — every
+field in the mapping table above except description (Revizto has none)
+syncs both ways, all via the same status-via-diff-comment mechanism,
+extended field by field.
 
 ### Broken links: self-heal and manual unlink
 
@@ -876,9 +882,13 @@ as the project's owner.
 - **Revizto refresh token expiry (monthly, flat vs. inactivity-based) is unconfirmed.**
   The docs say "valid for 1 month" with no mention of resetting on use. Confirm
   with Revizto support/your API contact.
-- **ACC → Revizto doesn't sync title.** Status, assignee/watchers,
-  priority, due date, latest comment, and attachments all now sync both
-  ways — title is the one field still Revizto → ACC only.
+- **Title is now bidirectional too** (`updateIssueTitle`, same diff-comment
+  mechanism as status/assignee/watchers/priority/due date) — so every field
+  in the mapping table above except description (Revizto has none) now
+  syncs both ways. Verified end-to-end against a real issue (changed and
+  reverted). Same UNCONFIRMED-against-docs caveat as
+  priority/assignee/watchers/due date: extrapolated from the proven
+  `customStatus` diff pattern, not from Revizto's own write docs.
 - **New issues created directly in ACC are not yet auto-created in Revizto.**
   `handleAccWebhook` detects and logs this case but doesn't act on it — needs
   a decision on which side is source-of-truth for new issue creation before
