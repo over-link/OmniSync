@@ -235,7 +235,7 @@ body {
 }
 .board-header {
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: 1rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--blueprint);
@@ -246,6 +246,7 @@ body {
 .board-row em { color: var(--muted); font-style: normal; font-family: var(--font-mono); font-size: 0.78rem; }
 .bridge-connector { color: var(--blueprint); font-family: var(--font-mono); text-align: center; }
 .link-checkbox { font-size: 0.85rem; color: var(--muted); }
+.board-select-all-bar { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0.4rem; border-bottom: 1px solid var(--line); }
 #board-actions { margin-top: 0.9rem; display: flex; align-items: center; gap: 0.75rem; }
 
 /* ── Cards / steps ──────────────────────────────────────────────── */

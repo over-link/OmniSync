@@ -147,16 +147,20 @@ function renderBoard() {
 
   document.getElementById('filter-issue-count').textContent = `${filtered.length} issue${filtered.length === 1 ? '' : 's'}`;
 
+  const selectAllBar = document.getElementById('board-select-all-bar');
+
   if (!filtered.length) {
     rowsEl.innerHTML = '';
     emptyEl.classList.remove('hidden');
     actionsEl.classList.add('hidden');
+    selectAllBar.classList.add('hidden');
     return;
   }
   emptyEl.classList.add('hidden');
 
   const hasUnlinked = filtered.some((i) => !i.linked);
   actionsEl.classList.toggle('hidden', !hasUnlinked);
+  selectAllBar.classList.toggle('hidden', !hasUnlinked);
 
   const projectId = document.getElementById('project-select').value;
   const allowManualUnlink = !!currentProjects.find((p) => String(p.id) === String(projectId))?.allow_manual_unlink;
@@ -182,7 +186,35 @@ function renderBoard() {
       </div>`;
     })
     .join('');
+  // Checkboxes above were just rebuilt from scratch (all unchecked) —
+  // reset the tally/button label to match instead of showing a stale count.
+  updateSelectedCount();
 }
+
+// Tallies how many of the currently-rendered "select to link" checkboxes
+// are checked, and flips the button's label between Select all/Deselect
+// all depending on whether every one of them already is. Only checkboxes
+// for unlinked issues exist in #board-rows at all (see rightMeta above),
+// and only ones matching the active filters, since renderBoard rebuilds
+// the row list from `filtered` on every call — so this is naturally
+// scoped to "select all in the current filtered/unfiltered list" already.
+function updateSelectedCount() {
+  const checkboxes = [...document.querySelectorAll('#board-rows input[type="checkbox"]')];
+  const checkedCount = checkboxes.filter((cb) => cb.checked).length;
+  document.getElementById('selected-count').textContent = `${checkedCount} selected`;
+  document.getElementById('select-all-btn').textContent = checkboxes.length && checkedCount === checkboxes.length ? 'Deselect all' : 'Select all';
+}
+
+document.getElementById('board-rows').addEventListener('change', (e) => {
+  if (e.target.matches('input[type="checkbox"]')) updateSelectedCount();
+});
+
+document.getElementById('select-all-btn').addEventListener('click', () => {
+  const checkboxes = [...document.querySelectorAll('#board-rows input[type="checkbox"]')];
+  const shouldCheck = !(checkboxes.length && checkboxes.every((cb) => cb.checked));
+  checkboxes.forEach((cb) => (cb.checked = shouldCheck));
+  updateSelectedCount();
+});
 
 document.getElementById('board-rows').addEventListener('click', async (e) => {
   const btn = e.target.closest('.unlink-btn');
@@ -210,6 +242,8 @@ document.getElementById('link-selected-btn').addEventListener('click', async () 
     resultEl.textContent = 'Select at least one issue first.';
     return;
   }
+  const confirmMsg = `${issueIds.length} issue${issueIds.length === 1 ? ' is' : 's are'} currently selected. Please confirm sync to ACC.`;
+  if (!confirm(confirmMsg)) return;
   resultEl.textContent = 'Linking & pushing...';
   try {
     const { results } = await api(`/api/projects/${projectId}/sync`, {
