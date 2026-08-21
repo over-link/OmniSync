@@ -189,7 +189,7 @@ async function makeLocationResolver(userId, project) {
 // "Revizto Status" is handled separately by makeReviztoStatusFieldResolver
 // below, not through this exact-title list — a project can have several
 // such fields (one per workflow), not just one fixed title.
-const MANAGED_CUSTOM_FIELDS = ['Grid Intersection', 'Room', 'Tags', 'Revizto ID', 'Issue Priority'];
+const MANAGED_CUSTOM_FIELDS = ['Grid Intersection', 'Room', 'Tags', 'Revizto ID', 'Issue Priority', 'Date Created', 'Reporter'];
 
 // Revizto returns many categorical fields (status, stamp, tags, etc.) in
 // ALL CAPS. Display as Title Case for readability — first letter of EACH

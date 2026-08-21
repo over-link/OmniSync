@@ -319,6 +319,8 @@ Two different mechanisms, don't confuse them:
 | `clashAndLocationFields.level` | `locationId` | Revizto → ACC | Automatic — matched by name against the ACC project's own Location Breakdown Structure (live lookup, nothing stored); no match just leaves it unset |
 | `clashAndLocationFields.zone` | `locationDetails` | Revizto → ACC | Automatic — free text, always written when a zone is set (kept separate from level so it isn't used as a location fallback) |
 | `clashAndLocationFields.grid` / `.room`, `tags`, issue's own numeric ID, `priority` | ACC custom fields ("Grid Intersection", "Room", "Tags", "Revizto ID", "Issue Priority") | Priority is bidirectional; the rest are Revizto → ACC | Automatic — matched by title against the project's own custom fields (ACC has no native fields for these), see "Custom field mapping" below |
+| `created` | ACC custom field ("Date Created") — **not** ACC's native "Created On" | Revizto → ACC only | Automatic, same mechanism as the row above. See "Why a custom field, not ACC's native Created On" below |
+| `author` (falls back to `reporter`) | ACC custom field ("Reporter") — **not** ACC's native "Created By" | Revizto → ACC only | Automatic, same mechanism/reasoning as `created` → "Date Created" just above — see the same section below |
 | `deadline` | `dueDate` | Both | Automatic — direct copy; ACC → Revizto also posts a one-time "Deadline changed via ACC sync" comment, see below |
 | `assignee` (email) | `assignedTo` | Both | Automatic — resolved via ACC's project members list, with an optional manual per-project override (`user_map` table, not exposed in the UI yet) |
 | `watchers` (emails) | `watchers` | Both | Same resolution as assignee, just an array |
@@ -503,7 +505,7 @@ include it (a real bug hit and fixed while building this — see
 No migration needed — this reads live from both systems on every push,
 nothing new is stored in the database.
 
-### Custom field mapping — Grid, Room, Tags, Revizto ID, Issue Priority
+### Custom field mapping — Grid, Room, Tags, Revizto ID, Date Created, Reporter, Issue Priority
 
 ACC has no native fields for grid intersection, room, tags, or "the
 Revizto issue's own ID" — these map to **admin-created ACC custom
@@ -529,6 +531,53 @@ docs implied — then lowercases it to match Revizto's own value format.
 
 No migration needed for any of this — nothing new stored, all resolved
 live against ACC's real custom field definitions on every push.
+
+#### Why "Date Created" / "Reporter" are custom fields, not ACC's native Created On / Created By
+
+Both of ACC's built-in columns are server-assigned at the moment the issue
+record is POSTed to ACC — confirmed against Autodesk's own create-issue
+request schema, neither `createdAt` nor `createdBy` is an accepted field
+in the request body, only in responses. `createdBy` specifically is set to
+whichever ACC account **this app's own connection** used to make the POST
+(the project's owner user) — confirmed by testing, a real synced issue's
+`createdBy` resolved to that owner's Autodesk ID, not the Revizto issue's
+actual author. So both native columns always read as "sync
+metadata" (when this app pushed it, which app-connected user pushed it),
+never the issue's real origin — exactly backwards from what they should
+show, since the creating author/platform is what actually determines an
+issue's real origin, not this app relaying it. There's no way to override
+either via the API.
+
+The fix, same shape for both: `reviztoIssue.created` → managed custom
+field **"Date Created"**; `reviztoIssue.author` (richer, falls back to
+`reviztoIssue.reporter` if `author` isn't populated) → managed custom
+field **"Reporter"** — same mechanism as Grid/Room/Tags/Revizto ID above,
+Revizto → ACC only in both cases (an ACC → Revizto direction would make no
+sense: neither of Revizto's own values can change after the issue
+exists). Both written on every push, same as Revizto ID, since re-sending
+an unchanging value is a harmless no-op.
+
+**Needs an ACC admin to fully take effect.** Both fields already existed
+in this project (provisioned ahead of time, unused) but were originally
+mapped to only a single issue subtype each — confirmed via
+`issue-attribute-mappings` during testing, any *other* subtype's issues
+silently skipped them with a `[sync] ... isn't mapped to this issue's
+subtype` warning. An issue-type-level mapping for the "Revizto" issue type
+has since been added for both (confirmed working end-to-end against a
+real linked issue: "Date Created" now shows the real Revizto creation
+date, "Reporter" shows the real author name, not sync metadata) — but
+that's only 1 of the 11 issue types in this project, and real synced
+issues already span at least 4 of them (**Revizto, Design, General,
+Coordination**, confirmed from live linked issues). Compare against
+"Revizto ID", which is further along but *also* incomplete — mapped to 4
+of 11 issue types (Design, Coordination, Observation, Revizto), missing
+**General** among others, so a currently-linked issue under "General"
+(Revizto #28) has zero custom attributes set at all despite Revizto ID
+being otherwise reliable. To close the gap for real: ACC → Project Admin
+→ Issues → Custom attributes/fields → for "Date Created", "Reporter", and
+ideally "Revizto ID"/"Tags"/"Grid Intersection" too → enable each for
+every issue type actually in use (or project-wide, simplest) rather than
+whichever handful are mapped today.
 
 ## Priority & due date (bidirectional)
 

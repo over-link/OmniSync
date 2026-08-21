@@ -739,6 +739,27 @@ async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, 
   // ACC by description.
   const description = 'Synced from Revizto';
   const dueDate = formatDateForAcc(reviztoIssue.deadline);
+  // ACC's own native "Created On" can't be targeted — confirmed against
+  // Autodesk's create-issue request schema, it's server-assigned to
+  // whenever the POST happens (i.e. sync time), not settable. So the only
+  // way to show Revizto's real creation date in ACC is this managed custom
+  // field ("Date Created", already provisioned on this project) instead of
+  // the built-in column — see customAttributes below, Revizto -> ACC only,
+  // since Revizto's own `created` is authoritative and never changes.
+  const createdDate = formatDateForAcc(reviztoIssue.created);
+
+  // Same reasoning, same fix, for who created it: ACC's native "Created
+  // By" is also server-assigned — confirmed by testing, it comes back set
+  // to whichever ACC account this app's own connection used to make the
+  // POST (the project's owner user), never something the request body can
+  // set — so it can't reflect the real Revizto author either. `author` is
+  // the richer, unwrapped top-level object (firstname/lastname/email,
+  // confirmed present on real issue data — same shape as a comment's
+  // `author`); `reporter` (bare, {value}-wrapped email) is only a
+  // fallback for the rare case `author` isn't populated.
+  const reporterName = reviztoIssue.author?.firstname || reviztoIssue.author?.lastname
+    ? [reviztoIssue.author.firstname, reviztoIssue.author.lastname].filter(Boolean).join(' ')
+    : unwrap(reviztoIssue.reporter);
 
   // Confirmed from real Revizto docs: clashAndLocationFields.level/.zone
   // are both array[string] — normally one entry, more than one only for a
@@ -838,9 +859,11 @@ async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, 
   // for zone specifically rather than doubling as a level fallback.
   if (zones.length) payload.locationDetails = zones.join(', ');
 
-  // Grid, room, tags, the issue's own ID, & priority -> ACC custom fields
-  // ("Grid Intersection", "Room", "Tags", "Revizto ID", "Issue Priority")
-  // — ACC has no native fields for these, unlike level/zone, so
+  // Grid, room, tags, the issue's own ID, creation date, reporter, &
+  // priority -> ACC custom fields ("Grid Intersection", "Room", "Tags",
+  // "Revizto ID", "Date Created", "Reporter", "Issue Priority") — ACC has
+  // no native fields for these (or, for Date Created/Reporter, no
+  // *settable* native field — see above), unlike level/zone, so
   // customAttributeResolver looks up the admin-created custom field by
   // title instead of a built-in column, and also checks it's actually
   // mapped to this issue's subtype (subtypeId, computed above) — a field
@@ -856,6 +879,13 @@ async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, 
     if (rooms.length) _addCustomAttribute(customAttributes, await customAttributeResolver('Room', subtypeId), rooms.join(', '));
     if (tagsList.length) _addCustomAttribute(customAttributes, await customAttributeResolver('Tags', subtypeId), tagsList.join(', '));
     if (reviztoIssue.id != null) _addCustomAttribute(customAttributes, await customAttributeResolver('Revizto ID', subtypeId), String(reviztoIssue.id));
+    // Same "written on every push" treatment as Revizto ID, for the same
+    // reason: always available, and re-sending it is a harmless no-op
+    // since Revizto's `created` never changes after the issue exists.
+    if (createdDate) _addCustomAttribute(customAttributes, await customAttributeResolver('Date Created', subtypeId), createdDate);
+    // Same reasoning/treatment as Date Created just above — an issue's
+    // author doesn't change after creation either.
+    if (reporterName) _addCustomAttribute(customAttributes, await customAttributeResolver('Reporter', subtypeId), reporterName);
     // Issue Priority is a dropdown/list field in ACC, not free text (unlike
     // the others above) — _addCustomAttribute resolves the raw Revizto
     // priority string to the matching dropdown option's ID.
