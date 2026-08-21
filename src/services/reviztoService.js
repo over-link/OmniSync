@@ -807,6 +807,16 @@ async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, 
     ? [reviztoIssue.author.firstname, reviztoIssue.author.lastname].filter(Boolean).join(' ')
     : unwrap(reviztoIssue.reporter);
 
+  // A direct link back to this issue in Revizto — `openLinks.web` opens it
+  // in Revizto Workspace's own web app (works for anyone with project
+  // access, no desktop client required), as opposed to `.desktop` (a
+  // revizto5:// custom protocol link, not clickable from a browser/ACC) or
+  // `.redirect` (a wrapper around the desktop link for Revizto Site,
+  // Revizto's mobile app). Confirmed present on every real issue response
+  // with no extra request params needed (unlike clashAndLocationFields,
+  // this isn't gated behind additionalFields).
+  const reviztoUrl = reviztoIssue.openLinks?.web || null;
+
   // Confirmed from real Revizto docs: clashAndLocationFields.level/.zone
   // are both array[string] — normally one entry, more than one only for a
   // clash issue spanning multiple levels/zones. ACC's locationId is a
@@ -932,6 +942,16 @@ async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, 
     // Same reasoning/treatment as Date Created just above — an issue's
     // author doesn't change after creation either.
     if (reporterName) _addCustomAttribute(customAttributes, await customAttributeResolver('Reporter', subtypeId), reporterName);
+    // Same reasoning/treatment as Date Created/Reporter above — the link
+    // back to a given Revizto issue doesn't change either. ACC has no
+    // dedicated "hyperlink" custom field data type — confirmed against
+    // Autodesk's own API docs/examples and every field actually deployed
+    // on this real project, both only ever text/numeric/list — so this is
+    // a plain URL string in a text field. UNCONFIRMED whether ACC's issue
+    // detail UI auto-linkifies it visually (couldn't verify — that needs
+    // a real logged-in ACC session, not reachable from here); the value
+    // itself is correct and clickable if pasted anywhere else regardless.
+    if (reviztoUrl) _addCustomAttribute(customAttributes, await customAttributeResolver('Revizto URL', subtypeId), reviztoUrl);
     // Issue Priority is a dropdown/list field in ACC, not free text (unlike
     // the others above) — _addCustomAttribute resolves the raw Revizto
     // priority string to the matching dropdown option's ID.

@@ -389,6 +389,7 @@ Two different mechanisms, don't confuse them:
 | `clashAndLocationFields.grid` / `.room`, `tags`, issue's own numeric ID, `priority` | ACC custom fields ("Grid Intersection", "Room", "Tags", "Revizto ID", "Issue Priority") | Priority is bidirectional; the rest are Revizto → ACC | Automatic — matched by title against the project's own custom fields (ACC has no native fields for these), see "Custom field mapping" below |
 | `created` | ACC custom field ("Date Created") — **not** ACC's native "Created On" | Revizto → ACC only | Automatic, same mechanism as the row above. See "Why a custom field, not ACC's native Created On" below |
 | `author` (falls back to `reporter`) | ACC custom field ("Reporter") — **not** ACC's native "Created By" | Revizto → ACC only | Automatic, same mechanism/reasoning as `created` → "Date Created" just above — see the same section below |
+| `openLinks.web` | ACC custom field ("Revizto URL") | Revizto → ACC only | Automatic — a clickable-in-theory link back to the issue in Revizto Workspace's web app. See "Revizto URL" below — ACC has no native hyperlink field type, and whether ACC visually auto-linkifies it is unconfirmed |
 | `deadline` | `dueDate` | Both | Automatic — direct copy; ACC → Revizto also posts a one-time "Deadline changed via ACC sync" comment, see below |
 | `assignee` (email) | `assignedTo` | Both | Automatic — resolved via ACC's project members list, with an optional manual per-project override (`user_map` table, not exposed in the UI yet) |
 | `watchers` (emails) | `watchers` | Both | Same resolution as assignee, just an array |
@@ -574,7 +575,7 @@ include it (a real bug hit and fixed while building this — see
 No migration needed — this reads live from both systems on every push,
 nothing new is stored in the database.
 
-### Custom field mapping — Grid, Room, Tags, Revizto ID, Date Created, Reporter, Issue Priority
+### Custom field mapping — Grid, Room, Tags, Revizto ID, Date Created, Reporter, Revizto URL, Issue Priority
 
 ACC has no native fields for grid intersection, room, tags, or "the
 Revizto issue's own ID" — these map to **admin-created ACC custom
@@ -643,10 +644,39 @@ of 11 issue types (Design, Coordination, Observation, Revizto), missing
 **General** among others, so a currently-linked issue under "General"
 (Revizto #28) has zero custom attributes set at all despite Revizto ID
 being otherwise reliable. To close the gap for real: ACC → Project Admin
-→ Issues → Custom attributes/fields → for "Date Created", "Reporter", and
-ideally "Revizto ID"/"Tags"/"Grid Intersection" too → enable each for
-every issue type actually in use (or project-wide, simplest) rather than
-whichever handful are mapped today.
+→ Issues → Custom attributes/fields → for "Date Created", "Reporter",
+"Revizto URL" (below), and ideally "Revizto ID"/"Tags"/"Grid Intersection"
+too → enable each for every issue type actually in use (or project-wide,
+simplest) rather than whichever handful are mapped today.
+
+#### Revizto URL
+
+`reviztoIssue.openLinks.web` → managed custom field **"Revizto URL"** —
+a direct link back to the issue in Revizto Workspace's web app. Revizto
+→ ACC only, written on every push, same treatment as Date Created/Reporter
+(the link doesn't change either). `openLinks` is present on every real
+issue response with no extra request params needed — unlike
+`clashAndLocationFields`, it isn't gated behind `additionalFields`.
+Deliberately uses `.web` over `.desktop` (a `revizto5://` custom protocol
+link — not openable from a browser or from within ACC) or `.redirect` (a
+wrapper around the desktop link, for Revizto's mobile Site app).
+
+**Same mapping-scope caveat as above** — this field also existed
+pre-provisioned but scoped to a single subtype; **confirmed by testing
+that ACC's API hard-rejects a customAttributes write to an unmapped
+field** (`400: "custom attribute definition is deleted or unmapped"`),
+which is exactly why `customAttributeResolver`'s subtype-applicability
+check exists rather than being a defensive nicety.
+
+**Also unconfirmed: whether ACC's issue detail UI actually renders this
+as a clickable hyperlink**, as opposed to inert plain text. ACC has no
+dedicated hyperlink/URL custom field data type at all — confirmed against
+Autodesk's own API docs/examples and every field on this real project,
+both only ever `text`/`numeric`/`list` — so this is necessarily a plain
+URL string in a `text` field. Whether ACC auto-linkifies that visually
+couldn't be verified here (needs a real logged-in ACC session in a
+browser, not reachable from this environment) — check in ACC directly
+once mapped to a real issue's subtype.
 
 ## Title, priority & due date (bidirectional)
 
