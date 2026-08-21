@@ -48,21 +48,8 @@
         </button>
         <div class="accordion-panel">
           <h3>Revizto license ↔ ACC hub</h3>
-          <p class="hint">Sets the context both project dropdowns below pull from — connect Revizto and ACC first on <a href="/account">My Connections</a> if either is empty.</p>
-          <div class="pairing-column-headers">
-            <span>Revizto</span>
-            <span aria-hidden="true"></span>
-            <span>ACC</span>
-          </div>
-          <div class="pairing-row">
-            <select id="license-select"><option value="">Loading your licenses...</option></select>
-            <span id="license-hub-dot" class="pairing-dot" title="Not connected"></span>
-            <select id="acc-hub-select"><option value="">Loading your ACC hubs...</option></select>
-          </div>
-          <div class="pairing-actions">
-            <button id="license-hub-save-btn" class="btn">Save</button>
-            <span id="license-hub-result" class="result-text"></span>
-          </div>
+          <p class="hint">Sets the context both project dropdowns below pull from — connect Revizto and ACC first on <a href="/account">My Connections</a> if either is empty. Locks once both are saved; click "Modify" to change it.</p>
+          <div id="license-hub-row"></div>
 
           <h3 style="margin-top:1.75rem;">Project pairing</h3>
           <p class="hint">Links this project's Revizto side to its ACC side — this is what makes syncing work. Locked once saved; click "Modify pairing" to change it. The sync webhook registers automatically when you save, nothing extra to click. New pairings are created by starting a new project (see "+ New Project" above, coming soon) rather than added here.</p>

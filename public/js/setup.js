@@ -52,7 +52,6 @@ window.addEventListener('app:ready', async (e) => {
   currentAcc = e.detail.acc;
   document.getElementById('revizto-region-hidden').value = e.detail.revizto.region || 'virginia';
   await loadLicenseAndHubOptions();
-  updateLicenseHubDot();
   await Promise.all([
     currentRevizto.connected && currentRevizto.licenseId ? loadReviztoProjectOptions() : Promise.resolve(),
     currentAcc.connected && currentAcc.hubId ? loadAccProjectOptions() : Promise.resolve(),
@@ -141,52 +140,114 @@ async function loadMappingWarnings(projectId) {
   }
 }
 
-function updateLicenseHubDot() {
-  const dot = document.getElementById('license-hub-dot');
-  const connected = !!(currentRevizto.licenseId && currentAcc.hubId);
-  dot.classList.toggle('connected', connected);
-  dot.title = connected ? 'License and hub both set' : 'Select and save both to enable project pairing below';
-}
+let reviztoLicenseOptions = []; // {uuid, name, region, frozen}
+let accHubOptions = []; // {id, name}
+let editingLicenseHub = false;
 
 async function loadLicenseAndHubOptions() {
-  const licenseSelect = document.getElementById('license-select');
-  const hubSelect = document.getElementById('acc-hub-select');
-
-  if (!currentRevizto.connected) {
-    licenseSelect.innerHTML = '<option value="">Connect Revizto on My Connections first</option>';
-  } else {
-    licenseSelect.innerHTML = '<option value="">Loading...</option>';
+  if (currentRevizto.connected) {
     try {
       const { licenses } = await api('/api/revizto/licenses');
-      licenseSelect.innerHTML = licenses.length
-        ? licenses
-            .map(
-              (l) =>
-                `<option value="${l.uuid}" ${String(l.uuid) === String(currentRevizto.licenseId) ? 'selected' : ''}>${l.name} (${l.region}${l.frozen ? ' — suspended' : ''})</option>`
-            )
-            .join('')
-        : '<option value="">No licenses found</option>';
+      reviztoLicenseOptions = licenses;
     } catch {
-      licenseSelect.innerHTML = '<option value="">—</option>';
+      reviztoLicenseOptions = [];
     }
+  } else {
+    reviztoLicenseOptions = [];
   }
 
-  if (!currentAcc.connected) {
-    hubSelect.innerHTML = '<option value="">Connect ACC on My Connections first</option>';
-  } else {
-    hubSelect.innerHTML = '<option value="">Loading...</option>';
+  if (currentAcc.connected) {
     try {
       const { hubs } = await api('/api/acc/hubs');
-      hubSelect.innerHTML = hubs.length
-        ? hubs.map((h) => `<option value="${h.id}" ${String(h.id) === String(currentAcc.hubId) ? 'selected' : ''}>${h.name}</option>`).join('')
-        : '<option value="">No hubs found</option>';
+      accHubOptions = hubs;
     } catch {
-      hubSelect.innerHTML = '<option value="">—</option>';
+      accHubOptions = [];
     }
+  } else {
+    accHubOptions = [];
+  }
+
+  renderLicenseHubRow();
+}
+
+// Same locked-by-default / "Modify" pattern as the project pairing rows
+// below — once both are set, the dropdowns lock so they can't be
+// accidentally re-picked; "Modify" re-opens them pre-filled.
+function renderLicenseHubRow() {
+  const container = document.getElementById('license-hub-row');
+  const columnHeadersHtml = `<div class="pairing-column-headers">
+    <span>Revizto</span>
+    <span aria-hidden="true"></span>
+    <span>ACC</span>
+  </div>`;
+  const hasSaved = !!(currentRevizto.licenseId && currentAcc.hubId);
+
+  if (hasSaved && !editingLicenseHub) {
+    const license = reviztoLicenseOptions.find((l) => String(l.uuid) === String(currentRevizto.licenseId));
+    const hub = accHubOptions.find((h) => String(h.id) === String(currentAcc.hubId));
+    container.innerHTML = `${columnHeadersHtml}
+      <div class="pairing-row">
+        <span class="pairing-row-name">${license ? license.name : currentRevizto.licenseId}</span>
+        <span class="pairing-dot connected" title="License and hub both set"></span>
+        <span class="pairing-row-name">${hub ? hub.name : currentAcc.hubId}</span>
+        <button type="button" class="btn secondary" id="modify-license-hub-btn">Modify</button>
+      </div>`;
+    document.getElementById('modify-license-hub-btn').addEventListener('click', () => {
+      editingLicenseHub = true;
+      renderLicenseHubRow();
+    });
+    return;
+  }
+
+  let licenseOptionsHtml;
+  if (!currentRevizto.connected) {
+    licenseOptionsHtml = '<option value="">Connect Revizto on My Connections first</option>';
+  } else if (!reviztoLicenseOptions.length) {
+    licenseOptionsHtml = '<option value="">No licenses found</option>';
+  } else {
+    licenseOptionsHtml =
+      '<option value="">Select a license</option>' +
+      reviztoLicenseOptions
+        .map(
+          (l) =>
+            `<option value="${l.uuid}" ${String(l.uuid) === String(currentRevizto.licenseId) ? 'selected' : ''}>${l.name} (${l.region}${l.frozen ? ' — suspended' : ''})</option>`
+        )
+        .join('');
+  }
+  let hubOptionsHtml;
+  if (!currentAcc.connected) {
+    hubOptionsHtml = '<option value="">Connect ACC on My Connections first</option>';
+  } else if (!accHubOptions.length) {
+    hubOptionsHtml = '<option value="">No hubs found</option>';
+  } else {
+    hubOptionsHtml =
+      '<option value="">Select a hub</option>' +
+      accHubOptions.map((h) => `<option value="${h.id}" ${String(h.id) === String(currentAcc.hubId) ? 'selected' : ''}>${h.name}</option>`).join('');
+  }
+
+  container.innerHTML = `${columnHeadersHtml}
+    <div class="pairing-row pairing-row-editing">
+      <select id="license-select">${licenseOptionsHtml}</select>
+      <span class="pairing-dot" aria-hidden="true"></span>
+      <select id="acc-hub-select">${hubOptionsHtml}</select>
+    </div>
+    <div class="pairing-actions">
+      <button id="license-hub-save-btn" class="btn">Save</button>
+      ${hasSaved ? `<button type="button" class="btn secondary" id="cancel-license-hub-btn">Cancel</button>` : ''}
+      <span id="license-hub-result" class="result-text"></span>
+    </div>`;
+
+  document.getElementById('license-hub-save-btn').addEventListener('click', saveLicenseHub);
+  const cancelBtn = document.getElementById('cancel-license-hub-btn');
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', () => {
+      editingLicenseHub = false;
+      renderLicenseHubRow();
+    });
   }
 }
 
-document.getElementById('license-hub-save-btn').addEventListener('click', async () => {
+async function saveLicenseHub() {
   const licenseId = document.getElementById('license-select').value;
   const hubId = document.getElementById('acc-hub-select').value;
   const resultEl = document.getElementById('license-hub-result');
@@ -199,13 +260,18 @@ document.getElementById('license-hub-save-btn').addEventListener('click', async 
     ]);
     if (licenseId) currentRevizto.licenseId = licenseId;
     if (hubId) currentAcc.hubId = hubId;
-    updateLicenseHubDot();
-    resultEl.textContent = 'Saved ✓';
+    editingLicenseHub = false;
+    renderLicenseHubRow();
+    // Still editing (e.g. only one of the two was set) — the re-render
+    // above didn't switch to the locked view, so the "Saved" cue would
+    // otherwise be lost when the container's HTML was just replaced.
+    const newResultEl = document.getElementById('license-hub-result');
+    if (newResultEl) newResultEl.textContent = 'Saved ✓';
     await Promise.all([loadReviztoProjectOptions(), loadAccProjectOptions()]);
   } catch (err) {
     resultEl.textContent = err.message;
   }
-});
+}
 
 // ─── Field mapping ────────────────────────────────────────────────
 
