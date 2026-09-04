@@ -426,15 +426,14 @@ handler posts is attributed to them; falls back to the project owner
 (unchanged behavior) otherwise. Resolved once per webhook call and reused
 across all six field types, rather than re-resolved per field.
 
-**Revizto → ACC field changes are intentionally NOT covered by this fix**
+**Revizto → ACC field changes were initially NOT covered by this fix**
 (a deliberate phase-1 scope decision, not an oversight) — unlike a single
 new comment or attachment, a full issue resync re-sends the entire
 computed payload every 2-minute cycle regardless of what specifically
-changed, so there's no clean "this one field change = this one person"
-signal the way `createdBy`/`updatedBy` provide on the ACC side. Revisit
-if this direction turns out to matter enough to be worth the fuzzier
-heuristic (e.g. attributing to whoever authored the latest diff-type
-comment) that would be needed.
+changed, so there was no clean "this one field change = this one person"
+signal the way `createdBy`/`updatedBy` provide on the ACC side. See
+"Field-change attribution (Revizto → ACC), phase 2" below for how this
+gap was closed.
 
 **Pre-existing bug fixed in passing, unrelated to the above**: this
 function's final `return` referenced an undefined `newStatus` variable,
@@ -459,6 +458,63 @@ projects`, or ask your Revizto contact) and save it there once.
 `sync_map.last_pushed_comment_uuid`, and
 `sync_map.last_pulled_acc_comment_id` (idempotent `ALTER TABLE`). Run
 `npm run migrate`.
+
+### Field-change attribution (Revizto → ACC), phase 2
+
+Closes the gap phase 1 deliberately left open. The missing signal turned
+out to already exist: editing a field (status, assignee, watchers,
+priority, due date, title) through Revizto's own UI posts the exact same
+`type: 'diff'` comment shape this app itself writes when relaying an
+ACC-driven change back into Revizto (`reviztoService._postDiffComment`) —
+confirmed by the person who actually uses Revizto day to day, not
+independently tested against a live API response, so treat the mechanism
+as strongly likely rather than fully proven until it's watched working
+end-to-end. `GET /issue/{uuid}/comments/date` returns every comment type
+mixed together (confirmed from real docs — "text/file/diff/markup"), and
+`pushIssueToAcc` already fetches that full list once per push cycle for
+the comment/markup/file-attachment sync — so reading diff comments for
+attribution costs nothing extra.
+
+**The other half of the problem**: even with that signal, a full
+issue resync re-sends every field every 2-minute cycle regardless of
+whether it changed, so "a diff comment exists somewhere in the history"
+isn't enough on its own — it has to be a diff comment for a field that
+**actually changed since the last push**, or every cycle would
+misattribute to whoever's diff comment happens to be newest, changed or
+not. `sync_map.last_synced_revizto_fields` snapshots the six
+diff-comment-tracked fields (in the same shape/keys `_postDiffComment`
+itself writes with) as of the last successful push;
+`syncService._changedReviztoFieldKeys` diffs the current values against
+it every cycle to find out what, if anything, genuinely changed.
+Only then does `_findReviztoFieldEditorEmail` scan the shared comment
+list (newest first) for the latest `diff` comment naming one of those
+changed fields, and use its author. If several fields changed via
+separate edits within the same 2-minute window, the whole push is
+attributed to whoever made the **latest** one — same "latest wins"
+policy already used for comments/markup/file attachments elsewhere in
+this file, not a new rule invented for this feature.
+
+**Attribution mechanism itself reuses phase 1's comment/attachment
+plumbing exactly**: the resolved editor's email is checked against
+`_findAccUserIdForEmail` (do they have their own ACC connection?), and if
+so the actual `accService.createIssue`/`updateIssue` call runs under
+**their** token via `_withAccUserFallback`, so ACC's own "Modified By"
+shows them — not a text note claiming it, an actual per-request identity
+switch, same as the real per-user ACC posting phase 1 added for comments
+and file attachments. Falls back to the project's default connection
+(unchanged prior behavior) whenever nothing changed, no comments could be
+fetched, no matching diff comment is found (e.g. the change predates this
+feature), or the resolved editor has no personal ACC connection.
+
+**Cold start**: `last_synced_revizto_fields` is `NULL` for every issue
+until its first push after this feature ships — that first push has
+nothing to diff against, so it just establishes the baseline
+(`_changedReviztoFieldKeys` returns no changes for a null previous
+snapshot) rather than guessing off no data. Attribution starts working
+from the following cycle onward.
+
+**Migration needed**: `sync_map.last_synced_revizto_fields` (JSONB,
+idempotent `ALTER TABLE`). Run `npm run migrate`.
 
 ## Field mapping — what's automatic vs. what's admin-configurable
 

@@ -326,4 +326,15 @@ ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_pushed_file_attachment_acc_id
 -- rather than a single one.
 ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS acc_issue_missing_since TIMESTAMPTZ;
 
+-- Field-change attribution (Revizto -> ACC), phase 2. A snapshot of the six
+-- diff-comment-tracked Revizto fields (status/assignee/watchers/priority/
+-- deadline/title) as of the last successful push — the 2-minute auto-resync
+-- re-sends every field every cycle regardless of what changed, so this is
+-- what lets syncService detect which fields, if any, actually changed since
+-- last time (see syncService._changedReviztoFieldKeys). NULL until the
+-- first push after this column exists; that first push has nothing to
+-- compare against, so attribution just starts cold and catches up next
+-- cycle rather than guessing off no baseline.
+ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_synced_revizto_fields JSONB;
+
 -- connect-pg-simple creates its own "session" table automatically on first run.

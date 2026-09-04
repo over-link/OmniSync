@@ -413,6 +413,85 @@ async function makeReviztoStatusFieldResolver(userId, project) {
   };
 }
 
+// ─── Field-change attribution (Revizto -> ACC), phase 2 ────────────────
+//
+// Phase 1 (see _resolveEffectiveReporterEmail below) covers ACC -> Revizto:
+// ACC's webhook payload carries `updatedBy`, a clean per-change signal.
+// This direction has no equivalent — a Revizto issue has no "who last
+// edited this" field, and the 2-minute auto-resync re-sends every field
+// every cycle regardless of what actually changed, so on its own there's
+// no "this one field change = this one person" signal at all.
+//
+// The fix: diff against what was ACTUALLY pushed last cycle
+// (sync_map.last_synced_revizto_fields) to find out whether anything
+// really changed, and if so, consult Revizto's own comment feed — editing
+// a field through Revizto's UI posts the exact same `type: 'diff'`
+// comment shape this app itself writes for ACC-driven changes (see
+// reviztoService._postDiffComment), so the newest diff comment naming one
+// of the changed fields identifies who really made the edit. That
+// person's own ACC connection (if they have one — same `_findAccUserIdForEmail`/
+// `_withAccUserFallback` mechanism already proven for comments/
+// attachments) then runs the actual create/update call, so ACC's own
+// "Modified By" shows them, not just the project owner.
+
+const REVIZTO_DIFF_FIELD_KEYS = ['customStatus', 'assignee', 'watchers', 'priority', 'deadline', 'title'];
+
+/**
+ * The subset of a Revizto issue's fields that a diff comment can name,
+ * captured in the same shape/keys `_postDiffComment` writes with, so a
+ * stored snapshot can be compared directly against a fresh one next cycle.
+ */
+function _snapshotReviztoFields(reviztoIssue) {
+  const watchers = reviztoService.unwrap(reviztoIssue.watchers) || [];
+  return {
+    customStatus: reviztoService.unwrap(reviztoIssue.customStatus) || null,
+    assignee: reviztoService.unwrap(reviztoIssue.assignee) || null,
+    watchers: [...watchers].sort(),
+    priority: reviztoService.unwrap(reviztoIssue.priority) || null,
+    deadline: reviztoService.unwrap(reviztoIssue.deadline) || null,
+    title: reviztoService.unwrap(reviztoIssue.title) || null,
+  };
+}
+
+/**
+ * Which of REVIZTO_DIFF_FIELD_KEYS actually differ from last cycle's
+ * pushed snapshot. `previous` is null for an issue's first push after
+ * this feature shipped (or its very first push ever) — treated as
+ * "nothing to attribute yet" rather than guessed, since there's no real
+ * baseline to diff against.
+ */
+function _changedReviztoFieldKeys(current, previous) {
+  if (!previous) return [];
+  return REVIZTO_DIFF_FIELD_KEYS.filter((key) => JSON.stringify(current[key]) !== JSON.stringify(previous[key]));
+}
+
+/**
+ * Scans a shared comment list (newest last, per Revizto's own sort order)
+ * for the most recent `diff`-type comment naming at least one of
+ * `changedKeys`, and returns whoever posted it — `author` (confirmed
+ * richer/present on real comment data, same as text comments) preferred
+ * over the bare `reporter` email. If several fields changed via separate
+ * edits within the same 2-minute window, this attributes the whole push
+ * to whoever made the LATEST one, same "latest wins" policy already used
+ * for comments/markup/file attachments elsewhere in this file. Returns
+ * null (caller falls back to the default owner/triggering connection) if
+ * comments weren't fetched, nothing changed, or no matching diff comment
+ * is found — e.g. the change predates this feature, or genuinely came
+ * from this app's own ACC->Revizto diff-comment write rather than a real
+ * Revizto-side edit.
+ */
+function _findReviztoFieldEditorEmail(comments, changedKeys) {
+  if (!comments || !changedKeys.length) return null;
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const comment = comments[i];
+    if (comment.type !== 'diff' || !comment.diff) continue;
+    if (Object.keys(comment.diff).some((key) => changedKeys.includes(key))) {
+      return comment.author?.email || comment.reporter || null;
+    }
+  }
+  return null;
+}
+
 // ─── Push: Revizto issue -> ACC (create or update) ────────────────────
 
 async function pushIssueToAcc(userId, project, reviztoIssue) {
@@ -482,10 +561,50 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
     reviztoStatusFieldResolver,
   });
 
+  // Fetch comments ONCE and share between attribution, comment-push, and
+  // markup-push — was calling this twice per issue per cycle before, which
+  // contributed to a real 429 rate-limit error hit during testing. Moved
+  // ahead of the create/update call (it used to run after) so the same
+  // fetch can also drive field-change attribution below, before the push
+  // it's attributing actually happens.
+  let sharedComments = null;
+  if (!project.revizto_project_id) {
+    console.warn(`[sync] Project "${project.name}" has no numeric revizto_project_id set — skipping comment/markup sync. Set it on the Setup page.`);
+  } else {
+    try {
+      sharedComments = await reviztoService.getIssueComments(
+        userId,
+        project.revizto_region,
+        reviztoIssue.uuid,
+        project.revizto_project_id
+      );
+    } catch (err) {
+      console.warn(`[sync] Could not fetch comments for issue ${reviztoIssue.id} (skipping comment/markup sync):`, err.message);
+    }
+  }
+
+  // Field-change attribution (Revizto -> ACC), phase 2 — see
+  // _changedReviztoFieldKeys/_findReviztoFieldEditorEmail for the full
+  // mechanism. Only meaningful on an update (a create has no prior
+  // snapshot to diff against) and only once comments actually loaded.
+  const currentFieldSnapshot = _snapshotReviztoFields(reviztoIssue);
+  let preferredPushUserId = null;
+  if (existingAccId) {
+    const { rows: snapshotRows } = await pool.query(
+      'SELECT last_synced_revizto_fields FROM sync_map WHERE project_id = $1 AND revizto_issue_id = $2',
+      [project.id, String(reviztoIssue.id)]
+    );
+    const changedKeys = _changedReviztoFieldKeys(currentFieldSnapshot, snapshotRows[0]?.last_synced_revizto_fields || null);
+    if (changedKeys.length) {
+      const editorEmail = _findReviztoFieldEditorEmail(sharedComments, changedKeys);
+      preferredPushUserId = editorEmail ? await _findAccUserIdForEmail(editorEmail) : null;
+    }
+  }
+
   let accIssueId;
   if (existingAccId) {
     try {
-      await accService.updateIssue(userId, project, existingAccId, payload);
+      await _withAccUserFallback(preferredPushUserId, userId, (uid) => accService.updateIssue(uid, project, existingAccId, payload));
       accIssueId = existingAccId;
       await _clearAccIssueMissingFlag(project, reviztoIssue.id);
     } catch (err) {
@@ -513,6 +632,16 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
     accIssueId = created.id;
   }
 
+  // Baseline/refresh the field snapshot for next cycle's diff, regardless
+  // of whether attribution actually resolved to anyone this time — a
+  // create establishes the starting point, an update (attributed or not)
+  // always reflects Revizto's current values now that they've been pushed.
+  await pool.query('UPDATE sync_map SET last_synced_revizto_fields = $3 WHERE project_id = $1 AND revizto_issue_id = $2', [
+    project.id,
+    String(reviztoIssue.id),
+    JSON.stringify(currentFieldSnapshot),
+  ]);
+
   // Tracking-category status and/or stamp with no admin mapping
   // configured (defaulted to ACC "Open" / the project's default subtype
   // in toAccIssue) — surfaces on both the Setup page mapping-warnings and
@@ -531,24 +660,6 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
     await clearSyncError(project.id, reviztoIssue.id);
   }
 
-  // Fetch comments ONCE and share between comment-push and markup-push —
-  // was calling this twice per issue per cycle before, which contributed
-  // to a real 429 rate-limit error hit during testing.
-  let sharedComments = null;
-  if (!project.revizto_project_id) {
-    console.warn(`[sync] Project "${project.name}" has no numeric revizto_project_id set — skipping comment/markup sync. Set it on the Setup page.`);
-  } else {
-    try {
-      sharedComments = await reviztoService.getIssueComments(
-        userId,
-        project.revizto_region,
-        reviztoIssue.uuid,
-        project.revizto_project_id
-      );
-    } catch (err) {
-      console.warn(`[sync] Could not fetch comments for issue ${reviztoIssue.id} (skipping comment/markup sync):`, err.message);
-    }
-  }
   if (sharedComments) {
     await _pushLatestCommentToAcc(userId, project, reviztoIssue, accIssueId, sharedComments);
     await _pushMarkupImageToAcc(userId, project, reviztoIssue, accIssueId, sharedComments);
