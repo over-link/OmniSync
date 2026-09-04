@@ -12,7 +12,7 @@
 const cron = require('node-cron');
 const pool = require('../db/pool');
 const syncService = require('./syncService');
-const { ReconnectRequiredError } = require('./authManager');
+const { ReconnectRequiredError, getValidAccToken } = require('./authManager');
 
 async function pollAllProjects() {
   const { rows: projects } = await pool.query('SELECT * FROM projects WHERE owner_user_id IS NOT NULL');
@@ -49,6 +49,34 @@ async function pollAllProjects() {
   }
 }
 
+/**
+ * Proactively refreshes every ACC-connected user's token on a schedule,
+ * regardless of whether they've personally used the app recently.
+ * Confirmed by real testing: Autodesk revokes a refresh token after a
+ * period of pure inactivity ("grant revoked due to idle timeout" on a
+ * connection unused for ~3 weeks) — which would otherwise silently break
+ * per-user attribution (syncService._findAccUserIdForEmail: using the
+ * REAL Revizto author's own ACC connection when they have one, so ACC's
+ * activity log shows them, not just a text note) for anyone who doesn't
+ * happen to touch ACC-connected features often. getValidAccToken's own
+ * refresh call counts as activity to Autodesk, resetting their idle
+ * clock — so running this on a schedule keeps every connection alive
+ * indefinitely with no other engagement required from that person. Cheap
+ * and safe to run often: getValidAccToken only actually calls Autodesk
+ * when the current access token (short-lived, ~1hr) has already expired,
+ * so most runs for an active connection are a local no-op.
+ */
+async function keepAccConnectionsAlive() {
+  const { rows } = await pool.query('SELECT user_id, autodesk_email FROM acc_tokens');
+  for (const row of rows) {
+    try {
+      await getValidAccToken(row.user_id);
+    } catch (err) {
+      console.warn(`[poll] Could not keep ACC connection alive for ${row.autodesk_email || row.user_id} (reconnect needed):`, err.message);
+    }
+  }
+}
+
 function startPolling() {
   if (process.env.POLL_ENABLED === 'false') {
     console.log('[poll] Automatic re-sync of linked issues disabled (POLL_ENABLED=false)');
@@ -57,6 +85,10 @@ function startPolling() {
   const schedule = process.env.POLL_CRON || '*/2 * * * *'; // every 2 minutes by default
   console.log(`[poll] Automatic re-sync of linked issues enabled: ${schedule}`);
   cron.schedule(schedule, pollAllProjects);
+
+  const keepAliveSchedule = process.env.ACC_KEEPALIVE_CRON || '0 3 * * *'; // once daily by default
+  console.log(`[poll] ACC connection keep-alive enabled: ${keepAliveSchedule}`);
+  cron.schedule(keepAliveSchedule, keepAccConnectionsAlive);
 }
 
-module.exports = { startPolling, pollAllProjects };
+module.exports = { startPolling, pollAllProjects, keepAccConnectionsAlive };

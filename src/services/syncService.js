@@ -656,13 +656,33 @@ async function _pushLatestFileAttachmentToAcc(userId, project, reviztoIssue, acc
     const fileUrl = latestFile.preview?.original;
     if (!fileUrl) return;
 
-    const result = await accService.attachFileToIssue(userId, project, accIssueId, fileUrl, latestFile.filename || `revizto-attachment-${latestFile.uuid}`);
+    // Same real-member attribution as _pushLatestCommentToAcc — post as
+    // the real uploader's own ACC connection when they have one, falling
+    // back to `userId` otherwise.
+    const uploaderName = [latestFile.author?.firstname, latestFile.author?.lastname].filter(Boolean).join(' ') || null;
+    const uploaderEmail = latestFile.author?.email || latestFile.reporter || null;
+    const preferredUserId = await _findAccUserIdForEmail(uploaderEmail);
+
+    const result = await _withAccUserFallback(preferredUserId, userId, (uid) =>
+      accService.attachFileToIssue(uid, project, accIssueId, fileUrl, latestFile.filename || `revizto-attachment-${latestFile.uuid}`)
+    );
     // Recorded so pollAccAttachmentsForProject's own ping-pong guard can
     // recognize this exact ACC attachment and skip pulling it back in.
     await pool.query(
       'UPDATE sync_map SET last_pushed_file_comment_uuid = $3, last_pushed_file_attachment_acc_id = $4 WHERE project_id = $1 AND revizto_issue_id = $2',
       [project.id, String(reviztoIssue.id), latestFile.uuid, result.attachmentId]
     );
+
+    // Explanatory comment, same parity as the ACC->Revizto direction's
+    // "Attachment added via ACC sync by <name>" (pollAccAttachmentsForProject)
+    // — previously this direction posted the file with no note at all.
+    try {
+      await _withAccUserFallback(preferredUserId, userId, (uid) =>
+        accService.addComment(uid, project, accIssueId, uploaderName ? `Attachment added via Revizto sync by ${uploaderName}` : 'Attachment added via Revizto sync')
+      );
+    } catch (err) {
+      console.warn(`[sync] Could not post attachment notice for issue ${reviztoIssue.id} (skipping):`, err.response?.data || err.message);
+    }
   } catch (err) {
     console.warn(`[sync] Could not upload file attachment for issue ${reviztoIssue.id} (skipping):`, err.message);
   }
@@ -690,6 +710,43 @@ async function _resolveReviztoAuthorName(userId, project, email) {
     console.warn(`[sync] Could not resolve Revizto author name for ${email} (using email):`, err.message);
     return email;
   }
+}
+
+/**
+ * Finds whether `email` belongs to a real app user who has personally
+ * connected their OWN ACC account (a `users` row with that email joined
+ * to a real `acc_tokens` row) — if so, returns their user id so a push
+ * can be made using THEIR OAuth token instead of the project owner's,
+ * making ACC's own activity log correctly show them as the real author,
+ * not just a text note saying who it was. Returns null on no match; the
+ * caller falls back to whichever userId it already had.
+ */
+async function _findAccUserIdForEmail(email) {
+  if (!email) return null;
+  const { rows } = await pool.query(
+    `SELECT u.id FROM users u JOIN acc_tokens at ON at.user_id = u.id WHERE lower(u.email) = lower($1)`,
+    [email]
+  );
+  return rows[0]?.id || null;
+}
+
+/**
+ * Runs `fn(userId)` as `preferredUserId` if given, falling back to
+ * `fallbackUserId` on ANY failure — most commonly someone's own ACC
+ * connection has gone idle/dead (see pollService.keepAccConnectionsAlive,
+ * which exists specifically to prevent that from simple inactivity) or
+ * was never connected to begin with. Ensures a push never fails outright
+ * just because a specific person's own connection isn't usable right now.
+ */
+async function _withAccUserFallback(preferredUserId, fallbackUserId, fn) {
+  if (preferredUserId && preferredUserId !== fallbackUserId) {
+    try {
+      return await fn(preferredUserId);
+    } catch (err) {
+      console.warn(`[sync] ACC action as user ${preferredUserId} failed (falling back to ${fallbackUserId}):`, err.response?.data?.detail || err.message);
+    }
+  }
+  return fn(fallbackUserId);
 }
 
 async function _pushLatestCommentToAcc(userId, project, reviztoIssue, accIssueId, comments) {
@@ -733,7 +790,16 @@ async function _pushLatestCommentToAcc(userId, project, reviztoIssue, accIssueId
     const authorFromObject = [latest.author?.firstname, latest.author?.lastname].filter(Boolean).join(' ') || null;
     const authorName = authorFromObject || (await _resolveReviztoAuthorName(userId, project, latest.reporter));
     const attribution = authorName ? ` by ${authorName}` : '';
-    await accService.addComment(userId, project, accIssueId, `${latest.text || ''} - synced from Revizto${attribution}`);
+    // If the real commenter personally connected their own ACC account,
+    // post as THEM — ACC's activity log then correctly shows the real
+    // author, not just this text note. Falls back to `userId` (whoever
+    // this push is already running as) when there's no match or their
+    // connection isn't usable right now.
+    const authorEmail = latest.author?.email || latest.reporter || null;
+    const preferredUserId = await _findAccUserIdForEmail(authorEmail);
+    await _withAccUserFallback(preferredUserId, userId, (uid) =>
+      accService.addComment(uid, project, accIssueId, `${latest.text || ''} - synced from Revizto${attribution}`)
+    );
     await pool.query(
       'UPDATE sync_map SET last_pushed_comment_uuid = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
       [project.id, String(reviztoIssue.id), latest.uuid]
@@ -1490,23 +1556,52 @@ async function getSyncStats(userId, project) {
  */
 /**
  * Resolves an ACC autodeskId (the `createdBy` field on comments and
- * attachments — confirmed via real testing) to a display name, for
+ * attachments — confirmed via real testing) to { name, email }, for
  * tagging who actually posted a comment/attachment when syncing it into
  * Revizto. `.name` on getProjectMembers' member objects is confirmed from
- * a real response (e.g. "Edgar Perez"); firstName/lastName and email are
- * kept as fallbacks in case a member record is ever missing it. Returns
- * null (not the autodeskId) on failure so callers can skip attribution
- * cleanly rather than tagging a comment with a meaningless ID string.
+ * a real response (e.g. "Edgar Perez"); firstName/lastName kept as a
+ * fallback in case a member record is ever missing it. Returns null (not
+ * the autodeskId) on failure so callers can skip attribution cleanly
+ * rather than tagging a comment with a meaningless ID string.
  */
-async function _resolveAccAuthorName(userId, project, autodeskId) {
+async function _resolveAccAuthor(userId, project, autodeskId) {
   if (!autodeskId) return null;
   try {
     const members = await accService.getProjectMembers(userId, project);
     const member = members.find((m) => m.autodeskId === autodeskId);
     if (!member) return null;
-    return member.name || [member.firstName, member.lastName].filter(Boolean).join(' ') || member.email || null;
+    const name = member.name || [member.firstName, member.lastName].filter(Boolean).join(' ') || member.email || null;
+    return { name, email: member.email || null };
   } catch (err) {
-    console.warn(`[poll] Could not resolve ACC author name for ${autodeskId} (skipping attribution):`, err.message);
+    console.warn(`[poll] Could not resolve ACC author for ${autodeskId} (skipping attribution):`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Checks whether an ACC commenter's email belongs to a real member of the
+ * Revizto license this project was set up under — if so, that same email
+ * can be passed as the Revizto comment's own `reporter` field, so the
+ * ACTUAL person's profile/name shows above the synced comment in Revizto
+ * (not just a text tag saying who it was). Explicit fix: previously every
+ * ACC->Revizto comment showed the app-connected project-owner's profile
+ * regardless of who really wrote it in ACC, even when that person was
+ * also a real Revizto team member — the "by <name>" text was the only
+ * place their identity showed up. Returns null (falls back to the
+ * app-connected owner, text-only attribution) if there's no real match —
+ * an arbitrary non-member email as `reporter` is untested and not worth
+ * risking.
+ */
+async function _resolveReviztoReporterEmail(userId, project, accCommenterEmail) {
+  if (!accCommenterEmail) return null;
+  try {
+    const reviztoTokens = await tokenStore.getReviztoTokens(userId);
+    if (!reviztoTokens?.license_id) return null;
+    const members = await reviztoService.getLicenseMembers(userId, project.revizto_region, reviztoTokens.license_id);
+    const match = members.find((m) => m.user?.email?.toLowerCase() === accCommenterEmail.toLowerCase());
+    return match?.user?.email || null;
+  } catch (err) {
+    console.warn(`[poll] Could not check Revizto license membership for ${accCommenterEmail} (falling back to owner attribution):`, err.message);
     return null;
   }
 }
@@ -1534,8 +1629,12 @@ async function pollAccCommentsForProject(userId, project, reporterEmail) {
       // becomes ACC's new "latest comment," which would otherwise look
       // like a genuine new ACC comment on the next poll and get pushed
       // right back into Revizto with another tag stacked on. Mark it
-      // seen (so we stop re-checking it) without re-pushing it.
-      if (commentText.includes('- synced from Revizto')) {
+      // seen (so we stop re-checking it) without re-pushing it. The
+      // "Attachment added via Revizto sync" case doesn't carry the
+      // "- synced from Revizto" phrase (see _pushLatestFileAttachmentToAcc)
+      // so needs its own prefix check, same as the mirror-image case
+      // below (isAutoPostedComment's "Attachment added via ACC sync").
+      if (commentText.includes('- synced from Revizto') || commentText.startsWith('Attachment added via Revizto sync')) {
         await pool.query(
           'UPDATE sync_map SET last_pulled_acc_comment_id = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
           [project.id, row.revizto_issue_id, latestId]
@@ -1543,15 +1642,20 @@ async function pollAccCommentsForProject(userId, project, reporterEmail) {
         continue;
       }
 
-      const authorName = await _resolveAccAuthorName(userId, project, latest.createdBy);
-      const attribution = authorName ? ` by ${authorName}` : '';
+      const author = await _resolveAccAuthor(userId, project, latest.createdBy);
+      const attribution = author?.name ? ` by ${author.name}` : '';
+      // If the ACC commenter is also a real Revizto team member, attribute
+      // the comment to THEM (their own profile shows above it in Revizto)
+      // instead of the app-connected project owner — falls back to the
+      // owner when there's no match, same as before.
+      const reviztoReporterEmail = (await _resolveReviztoReporterEmail(userId, project, author?.email)) || reporterEmail;
       await reviztoService.addComment(
         userId,
         project.revizto_region,
         project.revizto_project_uuid,
         row.revizto_issue_id,
         `${commentText} - synced from ACC${attribution}`,
-        reporterEmail
+        reviztoReporterEmail
       );
       await pool.query(
         'UPDATE sync_map SET last_pulled_acc_comment_id = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
@@ -1611,6 +1715,14 @@ async function pollAccAttachmentsForProject(userId, project, reporterEmail) {
         continue;
       }
 
+      // Same real-member attribution as pollAccCommentsForProject: if
+      // whoever added this attachment in ACC is also a real Revizto team
+      // member, both the attachment's own comment and the explanatory
+      // text comment below are attributed to THEM, not the app-connected
+      // project owner.
+      const author = await _resolveAccAuthor(userId, project, latest.createdBy);
+      const reviztoReporterEmail = (await _resolveReviztoReporterEmail(userId, project, author?.email)) || reporterEmail;
+
       // TEMP DEBUG: labeled steps so a failure pinpoints exactly which
       // leg (ACC download, Revizto upload, or the follow-up comment)
       // actually broke, instead of a bare "Internal Server Error" that
@@ -1642,7 +1754,7 @@ async function pollAccAttachmentsForProject(userId, project, reporterEmail) {
           row.revizto_issue_id,
           buffer,
           fileName,
-          reporterEmail,
+          reviztoReporterEmail,
           { asMarkup: false }
         );
       } catch (err) {
@@ -1652,14 +1764,13 @@ async function pollAccAttachmentsForProject(userId, project, reporterEmail) {
 
       console.log('[poll] [step 3: post explanatory comment]');
       try {
-        const authorName = await _resolveAccAuthorName(userId, project, latest.createdBy);
         await reviztoService.addComment(
           userId,
           project.revizto_region,
           project.revizto_project_uuid,
           row.revizto_issue_id,
-          authorName ? `Attachment added via ACC sync by ${authorName}` : 'Attachment added via ACC sync',
-          reporterEmail
+          author?.name ? `Attachment added via ACC sync by ${author.name}` : 'Attachment added via ACC sync',
+          reviztoReporterEmail
         );
       } catch (err) {
         throw new Error(`[step 3: post comment] status ${err.response?.status}: ${JSON.stringify(err.response?.data) || err.message}`);

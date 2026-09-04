@@ -349,6 +349,62 @@ resolved to a name via the project members list's `.name` field
 resolved on either side, the suffix is just omitted rather than showing
 a raw ID/email.
 
+**ACC → Revizto: the real author's own profile now shows too, not just
+text.** Previously every ACC-authored comment showed up in Revizto under
+the app-connected project owner's profile, with the real author only
+named in that text suffix — even when they were also a genuine Revizto
+team member. Fixed via `_resolveReviztoReporterEmail`: if the ACC
+commenter's email matches a real member of the Revizto license, that
+email is passed as the comment's `reporter` field instead of the project
+owner's; falls back to the owner (text-only attribution, as before) when
+there's no match. **Confirmed by real, live testing that `reporter` is
+what actually drives the displayed profile** — despite the comment's
+separate `author` object still always coming back as the app-connected
+account regardless of `reporter` (server-assigned to whichever token
+authenticated the POST, same limitation as ACC's own "Created By"; posted
+a real test comment and confirmed in Revizto's UI that the profile shown
+was the resolved real member, not the connected account). Same
+real-member resolution now also applies to the "Attachment added via ACC
+sync" notification comment and the attachment's own file comment
+(`pollAccAttachmentsForProject`).
+
+**Revizto → ACC: the real author's own ACC connection is used too, when
+they have one.** Unlike the direction above, ACC's comment-create endpoint
+accepts only `{ body }` — no author/reporter field of any kind — so
+there's no equivalent "just pass their email" trick; the comment is
+always posted as whichever ACC account actually authenticates the POST.
+The fix is one level up: `_findAccUserIdForEmail` checks whether the real
+Revizto author has **personally connected their own ACC account** to this
+app (a `users` row with their email joined to a real `acc_tokens` row —
+this app already supports every team member doing that independently,
+not just the project owner) — if so, the comment (or file attachment, via
+`_pushLatestFileAttachmentToAcc`, which also now posts an "Attachment
+added via Revizto sync by \<name\>" note, matching the ACC→Revizto
+direction's parity) is posted using **their own token**, so ACC's actual
+activity log shows them, not just a text note. `_withAccUserFallback`
+falls back to whichever connection the sync was already running as if
+their personal connection fails for any reason (not connected, or their
+connection has gone idle-dead — see below).
+
+**Why this needed a second piece: Autodesk revokes an idle refresh
+token.** Confirmed by real testing: a real, previously-working ACC
+connection came back `grant revoked due to idle timeout` after roughly 3
+weeks of not being used — which would otherwise make per-user attribution
+silently stop working for anyone who doesn't happen to touch
+ACC-connected features often. Fixed with `pollService.
+keepAccConnectionsAlive`, a new daily cron job (`ACC_KEEPALIVE_CRON`,
+default `0 3 * * *`) that calls `getValidAccToken` for every connected
+user regardless of whether they've used anything — a refresh counts as
+activity to Autodesk, resetting the idle clock, so this alone keeps every
+connection alive indefinitely with zero engagement required from that
+person. Cheap to run often: `getValidAccToken` only actually calls
+Autodesk when the cached access token (short-lived, ~1hr) has already
+expired, so most daily runs for an active connection are a local no-op.
+**This can't revive an already-dead connection** — confirmed by testing,
+two real connections that had already gone idle before this job existed
+needed a fresh reconnect (My Connections page), not just a refresh
+attempt, to work again.
+
 GET comments' response shape is now confirmed from real data:
 `{id, issueId, body, createdBy, createdAt, updatedAt, deletedAt, ...}` —
 matches what was previously just extrapolated from the POST shape.
