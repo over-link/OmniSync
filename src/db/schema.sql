@@ -311,4 +311,19 @@ ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_pushed_file_comment_uuid TEXT
 ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_pulled_acc_attachment_comment_uuid TEXT;
 ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_pushed_file_attachment_acc_id TEXT;
 
+-- Real incident: a transient failure (root cause never pinned down — a
+-- bad/expired token was directly tested and confirmed to return 401, not
+-- 403, so it wasn't that) made an ACC issue briefly look "gone" (403/404,
+-- or missing from ACC's own bulk issue list) for EVERY currently-linked
+-- issue in a single poll cycle. The self-heal logic back then unlinked
+-- all of them immediately and irreversibly on that one observation, even
+-- though every single one of those ACC issues was confirmed afterward to
+-- still exist and never having been deleted. This column adds a grace
+-- period (see syncService.ACC_ISSUE_GONE_GRACE_MS) — set the first time
+-- an issue looks gone, cleared again the moment a normal fetch succeeds;
+-- the link is only actually torn down once this has stood, unresolved,
+-- for the full grace period, confirmed across multiple separate checks
+-- rather than a single one.
+ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS acc_issue_missing_since TIMESTAMPTZ;
+
 -- connect-pg-simple creates its own "session" table automatically on first run.

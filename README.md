@@ -782,6 +782,43 @@ recreate them automatically on the next poll cycle. The issue just
 reverts to "unlinked" and becomes available to relink normally (manually,
 or via auto-sync-by-filter).
 
+#### Real incident: a transient blip once unlinked every issue at once
+
+A 403/404 (or, in `getIssuesBoard`'s bulk-fetch path, an issue simply
+being **absent** from ACC's own issue list — no error involved at all)
+used to trigger the self-heal above **immediately, on the very first
+sighting**. A real incident showed why that's dangerous: some transient
+failure (root cause never pinned down — directly tested that a genuinely
+bad/expired ACC token returns **401**, not 403, so it wasn't simply an
+expired connection) made ACC issues look "gone" for an entire poll cycle,
+and every currently-linked issue got unlinked at once. Confirmed
+afterward, individually, that **every one of those ACC issues still
+existed and was never deleted** (`deleted: false` on each) — a false
+positive, not a real cleanup.
+
+**Fix: a grace period, confirmed across multiple separate checks.**
+`sync_map.acc_issue_missing_since` is set the first time an issue looks
+gone (`_handlePossibleAccIssueGone`) — the link is **not** touched yet, it
+just shows a "confirming before unlinking" error on the Issues page and
+retries normally next cycle. Only once that flag has stood, unresolved,
+for `syncService.ACC_ISSUE_GONE_GRACE_MS` (10 minutes — several poll
+cycles at the default 2-minute schedule) does it actually unlink. A normal
+successful fetch at any point clears the flag (`_clearAccIssueMissingFlag`)
+— a one-off blip that resolves itself on its own next cycle never
+progresses to an unlink at all. Verified end-to-end by simulating both
+outcomes: an immediate check stays linked with the confirming-error state,
+and only unlinks once the flag is (simulated) 11 minutes old; pointing a
+flagged issue back at a real, reachable ACC issue before that clears the
+flag with no unlink.
+
+This doesn't need "a way to keep the ACC connection from expiring" —
+`authManager.getValidAccToken` already refreshes the access token
+automatically on every use (see "Connecting accounts" above), and a truly
+dead refresh token surfaces as 401, a completely different, already
+correctly-handled failure path (`ReconnectRequiredError`, not this one at
+all). The actual bug was the self-heal being too trigger-happy about a
+single momentary read failure, not the connection failing to renew itself.
+
 **Manual unlink** — an admin-gated opt-in (`projects.allow_manual_unlink`,
 off by default, toggled on the Setup page's "Issue linking" section) that
 lets any signed-in user manually clear a link from the Issues page, for
@@ -792,7 +829,8 @@ best-effort notification comment on both sides when used
 markup-upload comments; a failed comment post (e.g. the ACC issue is
 already gone) never blocks the unlink itself.
 
-**Migration needed**: `projects.allow_manual_unlink`. Run `npm run migrate`.
+**Migration needed**: `projects.allow_manual_unlink`,
+`sync_map.acc_issue_missing_since`. Run `npm run migrate`.
 
 ### Auto-sync by filter — opt-in exception to "linking is manual"
 

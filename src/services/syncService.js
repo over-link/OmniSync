@@ -64,6 +64,61 @@ async function clearLink(projectId, reviztoIssueId) {
   await pool.query('DELETE FROM sync_map WHERE project_id = $1 AND revizto_issue_id = $2', [projectId, String(reviztoIssueId)]);
 }
 
+// How long an ACC issue must look persistently gone (403/404, or absent
+// from ACC's own bulk issue list) before actually unlinking it — not on
+// the very first sighting. Real incident this fixes: a transient failure
+// (root cause never pinned down — directly tested that a bad/expired
+// token returns 401, not 403, so it wasn't simply that) made EVERY
+// currently-linked issue look gone in a single poll cycle; the old code
+// unlinked all of them immediately, even though every one of those ACC
+// issues was confirmed afterward to still exist. A few poll cycles'
+// worth of grace (default cycle is 2 minutes) means one bad cycle can no
+// longer destroy data — only an issue that stays unreachable across
+// several separate checks does.
+const ACC_ISSUE_GONE_GRACE_MS = 10 * 60 * 1000;
+
+/**
+ * Call when an ACC issue looks gone. Doesn't unlink on the first sighting
+ * — flags it (sync_map.acc_issue_missing_since) and only actually calls
+ * clearLink once that flag has stood for ACC_ISSUE_GONE_GRACE_MS,
+ * confirmed by a later, separate check finding it still gone. Returns
+ * true if this call actually unlinked it, false if just flagged/waiting.
+ */
+async function _handlePossibleAccIssueGone(project, reviztoIssueId, accIssueId, reasonLabel) {
+  const { rows } = await pool.query(
+    'SELECT acc_issue_missing_since FROM sync_map WHERE project_id = $1 AND revizto_issue_id = $2',
+    [project.id, String(reviztoIssueId)]
+  );
+  const missingSince = rows[0]?.acc_issue_missing_since;
+  if (missingSince && Date.now() - new Date(missingSince).getTime() >= ACC_ISSUE_GONE_GRACE_MS) {
+    console.warn(
+      `[sync] ACC issue ${accIssueId} still unreachable after ${ACC_ISSUE_GONE_GRACE_MS / 60000}+ min (${reasonLabel}) — auto-unlinking Revizto issue ${reviztoIssueId}.`
+    );
+    await clearLink(project.id, reviztoIssueId);
+    return true;
+  }
+  if (!missingSince) {
+    console.warn(`[sync] ACC issue ${accIssueId} looks gone (${reasonLabel}) — flagging Revizto issue ${reviztoIssueId}, will confirm before unlinking.`);
+    await pool.query('UPDATE sync_map SET acc_issue_missing_since = now() WHERE project_id = $1 AND revizto_issue_id = $2', [
+      project.id,
+      String(reviztoIssueId),
+    ]);
+  }
+  return false;
+}
+
+/**
+ * Call on a normal successful ACC fetch/push for a linked issue — clears
+ * any pending "looks gone" flag left over from a past transient blip that
+ * has since resolved itself.
+ */
+async function _clearAccIssueMissingFlag(project, reviztoIssueId) {
+  await pool.query(
+    'UPDATE sync_map SET acc_issue_missing_since = NULL WHERE project_id = $1 AND revizto_issue_id = $2 AND acc_issue_missing_since IS NOT NULL',
+    [project.id, String(reviztoIssueId)]
+  );
+}
+
 /**
  * The user-facing manual unlink action (see routes: POST /api/projects/
  * :id/issues/:reviztoIssueId/unlink) — clears the link, then posts a
@@ -432,18 +487,24 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
     try {
       await accService.updateIssue(userId, project, existingAccId, payload);
       accIssueId = existingAccId;
+      await _clearAccIssueMissingFlag(project, reviztoIssue.id);
     } catch (err) {
       if (!_isAccIssueGoneError(err)) throw err;
-      // The linked ACC issue no longer exists (e.g. deleted directly in
-      // ACC, outside this app) — self-heal by clearing the stale link
+      // The linked ACC issue MIGHT no longer exist (e.g. deleted directly
+      // in ACC, outside this app) — self-heal by clearing the stale link
       // (same treatment as getIssuesBoard's read-path handling of the
       // same error) rather than silently re-creating a replacement issue
       // in ACC on the app's own initiative — explicit request: an admin
       // who deliberately deleted issues in ACC wants them to show up as
       // unlinked and ready to review/relink deliberately, not have this
-      // app recreate them automatically on the next poll cycle.
-      console.warn(`[sync] ACC issue ${existingAccId} no longer exists (${err.response?.status}) — auto-unlinking Revizto issue ${reviztoIssue.id}.`);
-      await clearLink(project.id, reviztoIssue.id);
+      // app recreate them automatically on the next poll cycle. But
+      // "might" is deliberate: don't conclude "gone" from a single 403/404
+      // — see _handlePossibleAccIssueGone's own comment for the real
+      // incident this guards against. Not yet past the grace period just
+      // rethrows, so this cycle's push shows as a normal transient error
+      // and retries next cycle rather than unlinking.
+      const unlinked = await _handlePossibleAccIssueGone(project, reviztoIssue.id, existingAccId, `push failed with ${err.response?.status}`);
+      if (!unlinked) throw err;
       return { action: 'unlinked', reason: `ACC issue ${existingAccId} no longer exists` };
     }
   } else {
@@ -1291,13 +1352,21 @@ async function getIssuesBoard(userId, project) {
         const accIssue = accIssueById.get(accIssueId);
         if (accIssue) {
           acc = { id: accIssueId, displayId: accIssue.displayId ?? accIssueId, title: accIssue.title, status: accIssue.status };
+          await _clearAccIssueMissingFlag(project, issue.id);
         } else {
-          // Not in the bulk list — the ACC issue no longer exists. Same
-          // self-heal as pushIssueToAcc's 403/404 handling, just inferred
-          // from absence in the complete list rather than a per-issue
-          // error, since we already have it in hand.
-          await clearLink(project.id, issue.id);
-          linked = false;
+          // Not in the bulk list — the ACC issue MIGHT no longer exist, or
+          // this one bulk snapshot might just be incomplete/stale. Same
+          // grace-period guard as pushIssueToAcc's 403/404 handling (see
+          // _handlePossibleAccIssueGone) rather than concluding "gone" from
+          // a single missing appearance — this path in particular requires
+          // no error at all to trigger, which is exactly what caused the
+          // real incident that guard fixes.
+          const unlinked = await _handlePossibleAccIssueGone(project, issue.id, accIssueId, 'absent from ACC bulk issue list');
+          if (unlinked) {
+            linked = false;
+          } else {
+            acc = { id: accIssueId, error: 'Not found in this cycle\'s ACC issue list — confirming before unlinking' };
+          }
         }
       } else {
         // Bulk fetch itself failed — fall back to the old per-issue GET so
@@ -1305,10 +1374,15 @@ async function getIssuesBoard(userId, project) {
         try {
           const accIssue = await accService.getIssue(userId, project, accIssueId);
           acc = { id: accIssueId, displayId: accIssue.displayId ?? accIssueId, title: accIssue.title, status: accIssue.status };
+          await _clearAccIssueMissingFlag(project, issue.id);
         } catch (err) {
           if (_isAccIssueGoneError(err)) {
-            await clearLink(project.id, issue.id);
-            linked = false;
+            const unlinked = await _handlePossibleAccIssueGone(project, issue.id, accIssueId, `GET failed with ${err.response?.status}`);
+            if (unlinked) {
+              linked = false;
+            } else {
+              acc = { id: accIssueId, error: 'Temporarily unreachable in ACC — confirming before unlinking' };
+            }
           } else {
             acc = { id: accIssueId, error: err.response?.data?.detail || err.message };
           }
