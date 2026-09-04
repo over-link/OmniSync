@@ -718,7 +718,18 @@ async function _pushMarkupImageToAcc(userId, project, reviztoIssue, accIssueId, 
     }
     if (!previewUrl) return;
 
-    await accService.attachFileToIssue(userId, project, accIssueId, previewUrl, `Revizto Issue ${reviztoIssue.id} Markup`);
+    // Same real-member attribution as the file-attachment push below —
+    // previously missing here entirely, so every markup image always
+    // showed as uploaded by the default connection regardless of who
+    // actually drew it. No author to resolve for the fallback issue-level
+    // preview (not a markup comment, nobody "drew" it specifically), so
+    // preferredUserId stays null and it uses the default connection, same
+    // as before.
+    const preferredUserId = markupComment?.author?.email
+      ? await _findAccUserIdForEmail(markupComment.author.email)
+      : null;
+
+    await accService.attachFileToIssue(userId, project, accIssueId, previewUrl, `Revizto Issue ${reviztoIssue.id} Markup`, preferredUserId || userId);
     await pool.query('UPDATE sync_map SET last_markup_comment_uuid = $3 WHERE project_id = $1 AND revizto_issue_id = $2', [
       project.id,
       String(reviztoIssue.id),
@@ -769,13 +780,23 @@ async function _pushLatestFileAttachmentToAcc(userId, project, reviztoIssue, acc
 
     // Same real-member attribution as _pushLatestCommentToAcc — post as
     // the real uploader's own ACC connection when they have one, falling
-    // back to `userId` otherwise.
+    // back to `userId` otherwise. Passed straight through as
+    // `attachAsUserId` (not wrapped in _withAccUserFallback here) —
+    // attachFileToIssue now handles the preferred/fallback split itself,
+    // per-phase, rather than as one all-or-nothing call (see its own doc
+    // comment for why: a Docs-access gap in the upload steps used to cost
+    // the actual attachment record its attribution too).
     const uploaderName = [latestFile.author?.firstname, latestFile.author?.lastname].filter(Boolean).join(' ') || null;
     const uploaderEmail = latestFile.author?.email || latestFile.reporter || null;
     const preferredUserId = await _findAccUserIdForEmail(uploaderEmail);
 
-    const result = await _withAccUserFallback(preferredUserId, userId, (uid) =>
-      accService.attachFileToIssue(uid, project, accIssueId, fileUrl, latestFile.filename || `revizto-attachment-${latestFile.uuid}`)
+    const result = await accService.attachFileToIssue(
+      userId,
+      project,
+      accIssueId,
+      fileUrl,
+      latestFile.filename || `revizto-attachment-${latestFile.uuid}`,
+      preferredUserId || userId
     );
     // Recorded so pollAccAttachmentsForProject's own ping-pong guard can
     // recognize this exact ACC attachment and skip pulling it back in.

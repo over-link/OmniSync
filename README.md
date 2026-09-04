@@ -277,6 +277,53 @@ Reuses the exact same upload pipeline as markup image upload
 it started handling real non-image files too; the mechanics never
 actually cared about file type).
 
+### Attachment record attribution — separate from the upload pipeline's own access needs
+
+Reported gap: the real uploader's name showed correctly in the issue's
+Activity feed (the "Attachment added via Revizto sync by `<name>`" note
+comment — plain text, so it displays correctly regardless of which
+connection actually posted it) but **not** on the attachment's own
+details, e.g. the "uploaded by" shown when hovering an attachment chip in
+ACC's Attachments panel.
+
+Root cause: `accService.attachFileToIssue` is a 4-step pipeline (get the
+project's root folder → create Docs storage → upload the file's bytes →
+attach the storage object to the issue as a Construction Issues
+attachment record — this last step is what ACC's own per-attachment
+"uploaded by" metadata is read from). It used to run as a single
+all-or-nothing call under one identity: if the real editor's personal ACC
+connection could authenticate the Issues API fine but lacked Docs/
+Data-Management access (confirmed to be a genuinely separate per-user
+permission in ACC, distinct from Issues access), step 1-3 would fail and
+the ENTIRE pipeline — including step 4, which never itself needed Docs
+access — silently fell back to the default/owner connection, losing real
+attribution on the attachment record even though the separate note
+comment (needing only Issues access) still posted fine under the real
+editor and displayed their name as plain text regardless.
+
+Fixed: `attachFileToIssue` now takes an optional `attachAsUserId`,
+independent from the `userId` used for steps 1-3. Each phase (storage
+upload vs. the final attach-to-issue call) tries the real editor's own
+connection first and only falls back to the default connection for the
+phase that actually failed — a Docs-access gap in steps 1-3 no longer
+costs step 4 its own independent shot at the real editor's identity, and
+vice versa. Wired into both existing callers, which now pass the resolved
+real-editor connection straight through instead of wrapping the whole
+call in `_withAccUserFallback` as before: `_pushLatestFileAttachmentToAcc`
+(file attachments, attribution already existed but was lost by the
+all-or-nothing wrapping) and `_pushMarkupImageToAcc` (markup images,
+which previously had **no** attribution resolution at all — always
+uploaded as the default connection regardless of who actually drew the
+markup, now resolved from the markup comment's own `author`, same as
+everywhere else in this file).
+
+**Not independently confirmed against a live Docs-permission gap** — the
+exact mechanism (Docs access vs. some other transient failure) is a
+strong hypothesis from the code's own all-or-nothing structure, not
+something directly observed in logs. The fix is safe either way: it can
+only add an independent attribution attempt for the attach-to-issue step,
+never remove one that worked before.
+
 ### Ping-pong guards (this direction now shares attachment traffic with the existing ACC→Revizto poll)
 
 Explicit requirement: an attachment that arrived via ACC→Revizto

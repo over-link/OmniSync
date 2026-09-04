@@ -430,6 +430,21 @@ async function _attachToIssue(userId, project, issueId, displayName, objectKey, 
 }
 
 /**
+ * Steps 1-3: get the project's root folder, create a storage location,
+ * upload the file's bytes into it. Split out from the old single
+ * `attachFileToIssue` body so it can be attempted under a DIFFERENT
+ * identity than step 4 (see attachFileToIssue below) without duplicating
+ * the whole pipeline inline.
+ */
+async function _uploadToAccStorage(userId, project, fileName, fileBuffer) {
+  const folderId = await _getProjectRootFolderId(userId, project);
+  if (!folderId) throw new Error('No folders returned for this project');
+  const storageResult = await _createStorage(userId, project, folderId, fileName);
+  await _uploadFileBytes(userId, storageResult.bucketKey, storageResult.objectKey, fileBuffer);
+  return storageResult;
+}
+
+/**
  * Full pipeline: downloads a file from a URL (Revizto's `preview.original`
  * — despite the field name, confirmed by real testing to be the true
  * original file for non-image types like PDF, byte-for-byte; only large
@@ -438,39 +453,58 @@ async function _attachToIssue(userId, project, issueId, displayName, objectKey, 
  * despite the old name (attachImageToIssue) — renamed once it started
  * being used for markup images AND real file attachments (PDF, etc.)
  * alike; the mechanics never cared about file type to begin with.
+ *
+ * `attachAsUserId` (optional, defaults to `userId`) lets step 4 — the
+ * actual Construction Issues attachment record, which is what ACC's own
+ * per-attachment "uploaded by" metadata (shown on hover in the
+ * Attachments panel) is read from — run under a DIFFERENT identity than
+ * steps 1-3 (Data Management API: folder lookup, storage creation, byte
+ * upload). Real gap this fixes: the whole pipeline used to be one
+ * all-or-nothing call under a single identity, so if a real editor's
+ * personal ACC connection could authenticate the Issues API fine but
+ * lacked Docs/Data-Management access (a genuinely separate per-user
+ * permission in ACC), steps 1-3 would fail and silently fall back the
+ * ENTIRE pipeline — including step 4 — to the default connection, losing
+ * their attribution on the attachment record even though nothing about
+ * step 4 itself required Docs access. Each phase now tries `attachAsUserId`
+ * first and independently falls back to `userId` only for the phase that
+ * actually failed, so a Docs-access gap in steps 1-3 no longer costs step
+ * 4 its shot at the real editor's identity.
  */
-async function attachFileToIssue(userId, project, issueId, imageUrl, displayName) {
+async function attachFileToIssue(userId, project, issueId, imageUrl, displayName, attachAsUserId = userId) {
   const imageResponse = await axios.get(imageUrl, { responseType: 'arraybuffer' });
   const fileBuffer = Buffer.from(imageResponse.data);
   const fileType = (imageResponse.headers['content-type'] || 'image/jpeg').split('/').pop();
   const fileName = displayName.includes('.') ? displayName : `${displayName}.${fileType}`;
 
-  let folderId;
-  try {
-    folderId = await _getProjectRootFolderId(userId, project);
-  } catch (err) {
-    throw new Error(`[step 1: get root folder] ${err.response?.data?.developerMessage || err.message}`);
-  }
-  if (!folderId) throw new Error('[step 1: get root folder] No folders returned for this project');
-
   let storageResult;
   try {
-    storageResult = await _createStorage(userId, project, folderId, fileName);
+    storageResult = await _uploadToAccStorage(attachAsUserId, project, fileName, fileBuffer);
   } catch (err) {
-    throw new Error(`[step 2: create storage] ${err.response?.data?.developerMessage || err.message}`);
+    if (attachAsUserId === userId) {
+      throw new Error(`[steps 1-3: upload to storage] ${err.response?.data?.developerMessage || err.message}`);
+    }
+    console.warn(`[acc] Could not upload attachment storage as user ${attachAsUserId} (falling back to ${userId}):`, err.response?.data?.developerMessage || err.message);
+    try {
+      storageResult = await _uploadToAccStorage(userId, project, fileName, fileBuffer);
+    } catch (fallbackErr) {
+      throw new Error(`[steps 1-3: upload to storage] ${fallbackErr.response?.data?.developerMessage || fallbackErr.message}`);
+    }
   }
-  const { bucketKey, objectKey, storageUrn } = storageResult;
+  const { objectKey, storageUrn } = storageResult;
 
   try {
-    await _uploadFileBytes(userId, bucketKey, objectKey, fileBuffer);
+    return await _attachToIssue(attachAsUserId, project, issueId, fileName, objectKey, storageUrn);
   } catch (err) {
-    throw new Error(`[step 3: upload bytes] ${err.response?.data?.developerMessage || err.message}`);
-  }
-
-  try {
-    return await _attachToIssue(userId, project, issueId, fileName, objectKey, storageUrn);
-  } catch (err) {
-    throw new Error(`[step 4: attach to issue] ${JSON.stringify(err.response?.data) || err.message}`);
+    if (attachAsUserId === userId) {
+      throw new Error(`[step 4: attach to issue] ${JSON.stringify(err.response?.data) || err.message}`);
+    }
+    console.warn(`[acc] Could not attach as user ${attachAsUserId} (falling back to ${userId}):`, err.response?.data?.detail || err.message);
+    try {
+      return await _attachToIssue(userId, project, issueId, fileName, objectKey, storageUrn);
+    } catch (fallbackErr) {
+      throw new Error(`[step 4: attach to issue] ${JSON.stringify(fallbackErr.response?.data) || fallbackErr.message}`);
+    }
   }
 }
 
