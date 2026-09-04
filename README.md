@@ -286,17 +286,19 @@ connection actually posted it) but **not** on the attachment's own
 details, e.g. the "uploaded by" shown when hovering an attachment chip in
 ACC's Attachments panel.
 
-Root cause: `accService.attachFileToIssue` is a 4-step pipeline (get the
-project's root folder → create Docs storage → upload the file's bytes →
-attach the storage object to the issue as a Construction Issues
-attachment record — this last step is what ACC's own per-attachment
-"uploaded by" metadata is read from). It used to run as a single
-all-or-nothing call under one identity: if the real editor's personal ACC
-connection could authenticate the Issues API fine but lacked Docs/
-Data-Management access (confirmed to be a genuinely separate per-user
-permission in ACC, distinct from Issues access), step 1-3 would fail and
-the ENTIRE pipeline — including step 4, which never itself needed Docs
-access — silently fell back to the default/owner connection, losing real
+Likely root cause (the fix below is confirmed working; the exact
+mechanism wasn't independently verified against logs): `accService.
+attachFileToIssue` is a 4-step pipeline (get the project's root folder →
+create Docs storage → upload the file's bytes → attach the storage object
+to the issue as a Construction Issues attachment record — this last step
+is what ACC's own per-attachment "uploaded by" metadata is read from). It
+used to run as a single all-or-nothing call under one identity: if the
+real editor's personal ACC connection could authenticate the Issues API
+fine but lacked Docs/Data-Management access (a genuinely separate
+per-user permission in ACC, distinct from Issues access), steps 1-3 would
+fail and the ENTIRE pipeline — including step 4, which never itself
+needed Docs access — silently fell back to the default/owner connection,
+losing real
 attribution on the attachment record even though the separate note
 comment (needing only Issues access) still posted fine under the real
 editor and displayed their name as plain text regardless.
@@ -317,12 +319,9 @@ uploaded as the default connection regardless of who actually drew the
 markup, now resolved from the markup comment's own `author`, same as
 everywhere else in this file).
 
-**Not independently confirmed against a live Docs-permission gap** — the
-exact mechanism (Docs access vs. some other transient failure) is a
-strong hypothesis from the code's own all-or-nothing structure, not
-something directly observed in logs. The fix is safe either way: it can
-only add an independent attribution attempt for the attach-to-issue step,
-never remove one that worked before.
+**Confirmed fixed by real testing** — a fresh attachment push after this
+shipped showed the real editor correctly attributed on the attachment's
+own hover details in ACC, not just the note comment.
 
 ### Ping-pong guards (this direction now shares attachment traffic with the existing ACC→Revizto poll)
 
