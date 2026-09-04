@@ -1079,6 +1079,13 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
   const reviztoIssueId = await getReviztoIdForAcc(project.id, accIssueId);
   const accIssue = await accService.getIssue(userId, project, accIssueId);
 
+  // Attribute every field-change diff-comment below to whoever actually
+  // made this change in ACC, when they're also a real Revizto member —
+  // falls back to the project owner (reporterEmail, unchanged behavior)
+  // otherwise. Resolved once here and reused for all of status/assignee/
+  // watchers/priority/due-date/title below.
+  const effectiveReporterEmail = await _resolveEffectiveReporterEmail(userId, project, accIssue.updatedBy, reporterEmail);
+
   if (!reviztoIssueId) {
     // New issue created directly in ACC — not yet linked to a Revizto issue.
     // We don't auto-create in Revizto without a clear source-of-truth
@@ -1107,7 +1114,7 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
       project.revizto_project_uuid,
       reviztoIssueId,
       resolution.targetStatusName,
-      reporterEmail
+      effectiveReporterEmail
     );
     if (statusResult && statusResult.ok === false) {
       await recordSyncError(project.id, reviztoIssueId, `${statusResult.reason} Configure a status mapping on the Setup page.`);
@@ -1147,7 +1154,7 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
     if (assignedToId) {
       const email = emailByAutodeskId[assignedToId];
       if (email) {
-        await reviztoService.updateIssueAssignee(userId, project.revizto_region, project.revizto_project_uuid, reviztoIssueId, email, reporterEmail);
+        await reviztoService.updateIssueAssignee(userId, project.revizto_region, project.revizto_project_uuid, reviztoIssueId, email, effectiveReporterEmail);
       } else {
         console.warn('[webhook] Could not resolve ACC assignee to an email (not found in project members):', assignedToId);
       }
@@ -1157,7 +1164,7 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
     if (watcherIds.length) {
       const watcherEmails = watcherIds.map((id) => emailByAutodeskId[id]).filter(Boolean);
       if (watcherEmails.length) {
-        await reviztoService.updateIssueWatchers(userId, project.revizto_region, project.revizto_project_uuid, reviztoIssueId, watcherEmails, reporterEmail);
+        await reviztoService.updateIssueWatchers(userId, project.revizto_region, project.revizto_project_uuid, reviztoIssueId, watcherEmails, effectiveReporterEmail);
       }
     }
   } catch (err) {
@@ -1203,7 +1210,7 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
         project.revizto_project_uuid,
         reviztoIssueId,
         priorityValue,
-        reporterEmail
+        effectiveReporterEmail
       );
     }
   } catch (err) {
@@ -1228,7 +1235,7 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
         project.revizto_project_uuid,
         reviztoIssueId,
         accIssue.dueDate,
-        reporterEmail
+        effectiveReporterEmail
       );
       if (changed) {
         await reviztoService.addComment(
@@ -1237,7 +1244,7 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
           project.revizto_project_uuid,
           reviztoIssueId,
           'Deadline changed via ACC sync',
-          reporterEmail
+          effectiveReporterEmail
         );
       }
     }
@@ -1256,7 +1263,7 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
         project.revizto_project_uuid,
         reviztoIssueId,
         accIssue.title,
-        reporterEmail
+        effectiveReporterEmail
       );
       if (changed) {
         await reviztoService.addComment(
@@ -1265,7 +1272,7 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
           project.revizto_project_uuid,
           reviztoIssueId,
           'Title changed via ACC sync',
-          reporterEmail
+          effectiveReporterEmail
         );
       }
     }
@@ -1278,7 +1285,16 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
   // this base GET (confirmed: comments are a separate endpoint), so this
   // block was dead code and has been removed.
 
-  return { action: 'pulled', reviztoIssueId, newStatus };
+  // Pre-existing bug fixed in passing: this referenced an undefined
+  // `newStatus` variable, throwing a ReferenceError on every single
+  // successful webhook delivery — harmless in practice (the route handler
+  // that calls this just logs the error; all the real sync work above had
+  // already completed), but worth fixing since it polluted logs on every
+  // webhook with a crash that looked far worse than what was happening.
+  // `resolution.targetStatusName` is only set in the non-ambiguous branch
+  // above, so this is undefined for an ambiguous status — an incomplete
+  // but accurate result, not a crash.
+  return { action: 'pulled', reviztoIssueId, newStatus: resolution.targetStatusName };
 }
 
 /**
@@ -1604,6 +1620,25 @@ async function _resolveReviztoReporterEmail(userId, project, accCommenterEmail) 
     console.warn(`[poll] Could not check Revizto license membership for ${accCommenterEmail} (falling back to owner attribution):`, err.message);
     return null;
   }
+}
+
+/**
+ * Field-change counterpart to the comment/attachment attribution above:
+ * resolves who actually last touched this ACC issue (`accIssue.
+ * updatedBy`, an Autodesk user ID — same field already confirmed used
+ * for comments'/attachments' `createdBy`) to their real Revizto reporter
+ * email, so the diff-comment(s) handleAccWebhook posts for a status/
+ * assignee/watchers/priority/due-date/title change are attributed to the
+ * actual editor instead of the fixed project-owner email — same
+ * `reporter`-drives-the-displayed-profile mechanism already confirmed by
+ * live testing for comments. Falls back to `fallbackReporterEmail`
+ * (unchanged behavior) when `updatedBy` is missing, doesn't resolve to a
+ * real ACC member, or that member isn't also a real Revizto member.
+ */
+async function _resolveEffectiveReporterEmail(userId, project, accUpdatedById, fallbackReporterEmail) {
+  const author = await _resolveAccAuthor(userId, project, accUpdatedById);
+  const matchedEmail = author?.email ? await _resolveReviztoReporterEmail(userId, project, author.email) : null;
+  return matchedEmail || fallbackReporterEmail;
 }
 
 async function pollAccCommentsForProject(userId, project, reporterEmail) {

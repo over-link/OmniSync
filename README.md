@@ -409,6 +409,44 @@ GET comments' response shape is now confirmed from real data:
 `{id, issueId, body, createdBy, createdAt, updatedAt, deletedAt, ...}` —
 matches what was previously just extrapolated from the POST shape.
 
+### Field-change attribution (ACC → Revizto), phase 1
+
+Extends the same real-member attribution above from comments/attachments
+to **field changes** — status, assignee, watchers, priority, due date,
+title — pushed by `handleAccWebhook`. Every diff-comment those generate
+in Revizto previously used a fixed `reporterEmail` (the project owner),
+regardless of who actually made the change in ACC. `_resolveEffective
+ReporterEmail` resolves `accIssue.updatedBy` (an Autodesk user ID — the
+same field/mechanism already confirmed used for comments'/attachments'
+`createdBy`, just reflecting the issue's last editor instead of a
+comment's author) to a real ACC member, then checks whether they're also
+a real Revizto license member (`_resolveReviztoReporterEmail`, already
+proven live for comments) — if so, every diff-comment this webhook
+handler posts is attributed to them; falls back to the project owner
+(unchanged behavior) otherwise. Resolved once per webhook call and reused
+across all six field types, rather than re-resolved per field.
+
+**Revizto → ACC field changes are intentionally NOT covered by this fix**
+(a deliberate phase-1 scope decision, not an oversight) — unlike a single
+new comment or attachment, a full issue resync re-sends the entire
+computed payload every 2-minute cycle regardless of what specifically
+changed, so there's no clean "this one field change = this one person"
+signal the way `createdBy`/`updatedBy` provide on the ACC side. Revisit
+if this direction turns out to matter enough to be worth the fuzzier
+heuristic (e.g. attributing to whoever authored the latest diff-type
+comment) that would be needed.
+
+**Pre-existing bug fixed in passing, unrelated to the above**: this
+function's final `return` referenced an undefined `newStatus` variable,
+throwing a `ReferenceError` on literally every successful webhook
+delivery since this function was written. Harmless in practice — the
+route handler that calls this only logs the error, and all the real sync
+work (status/assignee/watchers/priority/due-date/title) had already
+completed by that point — but it polluted logs with a crash that looked
+far worse than what was actually happening. Now returns
+`resolution.targetStatusName` (undefined for an ambiguous status, same as
+before — just no longer a crash).
+
 **Needs a one-time backfill for existing projects**: this required adding
 the Revizto project's **numeric ID** (separate from the UUID used
 everywhere else — `GET /issue/{uuid}/comments/date` oddly wants the
