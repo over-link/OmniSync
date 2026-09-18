@@ -51,6 +51,7 @@ window.addEventListener('app:ready', async (e) => {
   currentRevizto = e.detail.revizto;
   currentAcc = e.detail.acc;
   document.getElementById('revizto-region-hidden').value = e.detail.revizto.region || 'virginia';
+  await loadSyncEnabledSetting();
   await loadLicenseAndHubOptions();
   await Promise.all([
     currentRevizto.connected && currentRevizto.licenseId ? loadReviztoProjectOptions() : Promise.resolve(),
@@ -58,6 +59,46 @@ window.addEventListener('app:ready', async (e) => {
   ]);
   await loadProjects();
   await loadActiveProjectOptions();
+});
+
+// ─── Global sync pause toggle (not per-project) ────────────────────
+// Checked = syncing enabled (normal operation) — kept this polarity
+// rather than a "paused" checkbox so checked still means "on/green",
+// same convention as every other toggle on this page.
+
+function _renderSyncEnabledLabel(enabled) {
+  document.getElementById('sync-enabled-label').textContent = enabled
+    ? 'Automatic syncing — ON'
+    : 'Automatic syncing — PAUSED';
+}
+
+async function loadSyncEnabledSetting() {
+  const resultEl = document.getElementById('sync-enabled-result');
+  resultEl.textContent = '';
+  try {
+    const { paused } = await api('/api/settings/sync-paused');
+    document.getElementById('sync-enabled-toggle').checked = !paused;
+    _renderSyncEnabledLabel(!paused);
+  } catch (err) {
+    resultEl.textContent = err.message;
+  }
+}
+
+document.getElementById('sync-enabled-toggle').addEventListener('change', async (e) => {
+  const resultEl = document.getElementById('sync-enabled-result');
+  const enabled = e.target.checked;
+  try {
+    await api('/api/settings/sync-paused', {
+      method: 'POST',
+      body: JSON.stringify({ paused: !enabled }),
+    });
+    _renderSyncEnabledLabel(enabled);
+    resultEl.textContent = 'Saved ✓';
+  } catch (err) {
+    e.target.checked = !enabled; // revert, the save didn't actually take
+    _renderSyncEnabledLabel(!enabled);
+    resultEl.textContent = err.message;
+  }
 });
 
 // ─── Shared project selector (warnings + field mapping) ───────────

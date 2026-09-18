@@ -337,4 +337,17 @@ ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS acc_issue_missing_since TIMESTAMPT
 -- cycle rather than guessing off no baseline.
 ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_synced_revizto_fields JSONB;
 
+-- Small global (not per-project) key/value settings store. Currently just
+-- one row: "sync_paused", an admin-only kill switch for automatic
+-- background syncing (the 2-minute auto-resync/poll cycle, and incoming
+-- ACC webhook processing) — added so the app can be tested without
+-- hammering Revizto/ACC's APIs all day every day, without needing to
+-- touch Render env vars or suspend the whole service. See
+-- services/appSettings.js. Manual actions (Link & push selected, etc.)
+-- are deliberately NOT gated by this — see the toggle's own UI copy.
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 -- connect-pg-simple creates its own "session" table automatically on first run.

@@ -30,6 +30,31 @@
       ⚠️&nbsp;<span id="setup-top-warning-text"></span> — see Field mapping → Mapping warnings
     </button>
 
+    <!-- Global, not per-project — applies to the whole app regardless of
+         which project is selected below. Admin-only kill switch for the
+         automatic background sync (2-minute poll cycle + incoming ACC
+         webhooks), added so the app can be tested without constantly
+         calling Revizto/ACC's APIs. Manual actions (Link & push selected,
+         etc.) still work while paused — see the hint text. -->
+    <div class="card">
+      <label class="ios-toggle">
+        <input type="checkbox" id="sync-enabled-toggle" />
+        <span class="ios-toggle-track"><span class="ios-toggle-thumb"></span></span>
+        <span id="sync-enabled-label">Automatic syncing</span>
+      </label>
+      <p class="hint">
+        When off, the 2-minute auto-resync (Revizto→ACC push, ACC→Revizto
+        comment/attachment polling, auto-sync-by-filter) and incoming ACC
+        webhook processing are both skipped — nothing runs in the
+        background, so the app stops calling Revizto/ACC's APIs
+        automatically. Manual actions (e.g. "Link & push selected" on the
+        Issues page) still work either way, since those are a deliberate
+        click, not background activity. Applies to the whole app, not just
+        the project selected below.
+      </p>
+      <span id="sync-enabled-result" class="result-text"></span>
+    </div>
+
     <!-- Today this only scopes Field mapping/Auto sync/Issue linking below
          (one shared DB). Under the planned redesign this becomes the real
          project switcher — each project's own DB, own team/mappings/issues

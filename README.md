@@ -1066,6 +1066,40 @@ filters already draw from.
 **Migration needed**: `projects.auto_sync_enabled`, new
 `auto_sync_filters` table. Run `npm run migrate`.
 
+### Pausing automatic syncing (testing)
+
+Admin-only toggle at the top of the Setup page ("Automatic syncing" —
+applies globally, not scoped to the project selected below it), added so
+the app can be tested/left running without constantly calling Revizto's
+and ACC's APIs. Backed by a single global (not per-project) key/value
+table, `app_settings` (`services/appSettings.js`) — deliberately not a
+`projects` column, since this is meant as one whole-app kill switch, not
+a per-project setting.
+
+When off, two things are skipped:
+- `pollService.pollAllProjects` — the entire 2-minute cycle: the
+  Revizto→ACC auto-resync, auto-sync-by-filter, and the ACC→Revizto
+  comment/attachment polling all live in this one function, so gating it
+  at the top covers all of them in one place.
+- Incoming ACC webhook deliveries (`_handleAccWebhookRequest`) — still
+  acknowledged with `200 ok` immediately (Autodesk expects a fast
+  response regardless), just not acted on.
+
+**Deliberately does NOT block manual, on-demand actions** — "Link & push
+selected" and similar explicit button clicks on the Issues page still
+work while paused. The toggle exists to stop the app quietly hammering
+both APIs in the background, not to prevent someone from testing a
+specific manual action on purpose.
+
+The daily ACC keepalive cron (`keepAccConnectionsAlive`, see "Autodesk
+revokes an idle refresh token" above) is **not** gated by this — it's one
+cheap call per connected user per day, not the "all day every day"
+background activity this toggle targets, and turning it off would
+actively work against its own purpose (preventing idle token
+revocation) during exactly the kind of extended pause this toggle is for.
+
+**Migration needed**: new `app_settings` table. Run `npm run migrate`.
+
 ## Webhooks — registering the ACC side
 
 Registration is now **automatic**: `routes/index.js`'s `_autoRegisterWebhook`

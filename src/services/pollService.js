@@ -12,9 +12,14 @@
 const cron = require('node-cron');
 const pool = require('../db/pool');
 const syncService = require('./syncService');
+const appSettings = require('./appSettings');
 const { ReconnectRequiredError, getValidAccToken } = require('./authManager');
 
 async function pollAllProjects() {
+  if (await appSettings.isSyncPaused()) {
+    console.log('[poll] Sync is paused (Setup page toggle) — skipping this cycle.');
+    return;
+  }
   const { rows: projects } = await pool.query('SELECT * FROM projects WHERE owner_user_id IS NOT NULL');
   for (const project of projects) {
     try {

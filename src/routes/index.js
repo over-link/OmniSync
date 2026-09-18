@@ -8,6 +8,7 @@ const accService = require('../services/accService');
 const reviztoService = require('../services/reviztoService');
 const tokenStore = require('../services/tokenStore');
 const fieldMapping = require('../services/fieldMapping');
+const appSettings = require('../services/appSettings');
 const { ReconnectRequiredError } = require('../services/authManager');
 
 // ─── Revizto license browser (for the license dropdown) ─────────────
@@ -456,6 +457,21 @@ router.post('/api/projects/:id/issues/:reviztoIssueId/unlink', requireLogin, asy
   res.json({ ok: true });
 });
 
+// Global (not per-project) kill switch for automatic background syncing —
+// the 2-minute auto-resync/poll cycle and incoming ACC webhook processing.
+// Deliberately does NOT block manual, on-demand actions (Link & push
+// selected, etc.) — those are a deliberate click, not the app quietly
+// making API calls in the background, which is the actual thing this
+// toggle exists to stop while testing.
+router.get('/api/settings/sync-paused', requireAdmin, async (req, res) => {
+  res.json({ paused: await appSettings.isSyncPaused() });
+});
+
+router.post('/api/settings/sync-paused', requireAdmin, async (req, res) => {
+  await appSettings.setSyncPaused(!!req.body.paused);
+  res.json({ paused: !!req.body.paused });
+});
+
 // ─── Sync (on-demand) ────────────────────────────────────────────────
 
 router.get('/api/projects/:id/revizto-issues', requireLogin, async (req, res) => {
@@ -545,6 +561,11 @@ async function _handleAccWebhookRequest(req, res) {
   res.status(200).send('ok'); // ack immediately; ACC expects a fast response
 
   console.log(`[webhook] Received on ${req.path}`);
+
+  if (await appSettings.isSyncPaused()) {
+    console.log('[webhook] Sync is paused (Setup page toggle) — ignoring this delivery.');
+    return;
+  }
 
   // Confirmed from a real webhook delivery: scope is nested under
   // hook.scope.project, not top-level hookScope.project as originally
