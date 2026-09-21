@@ -350,4 +350,32 @@ CREATE TABLE IF NOT EXISTS app_settings (
   value TEXT NOT NULL
 );
 
+-- Durable, queryable audit trail — "who did what, when" across both
+-- directions, so a client asking "why does issue #47 look wrong" can be
+-- answered with a query instead of digging through Render's server logs
+-- (ephemeral, unstructured, and only as long as the platform retains
+-- them). One row per meaningful sync event: a field change (with old/new
+-- values), a comment, an attachment, a link/unlink, or an error. See
+-- services/auditLog.js. Open to any signed-in user to read (not
+-- admin-gated) via the "Log files" nav tab — this is meant as a shared,
+-- visible trail for the whole team, not an admin-only tool.
+CREATE TABLE IF NOT EXISTS audit_log (
+  id BIGSERIAL PRIMARY KEY,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  revizto_issue_id TEXT,
+  acc_issue_id TEXT,
+  direction TEXT, -- 'revizto_to_acc' | 'acc_to_revizto' | NULL (not directional, e.g. manual unlink)
+  action TEXT NOT NULL, -- 'field_change' | 'comment' | 'attachment' | 'link' | 'unlink' | 'error'
+  field_name TEXT, -- only set for action = 'field_change'
+  old_value TEXT,
+  new_value TEXT,
+  attributed_email TEXT, -- the real person this event is attributed to, when known
+  outcome TEXT NOT NULL DEFAULT 'success', -- 'success' | 'error'
+  detail TEXT -- free text: error message, or a short human-readable summary
+);
+CREATE INDEX IF NOT EXISTS audit_log_project_created_idx ON audit_log(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS audit_log_revizto_issue_idx ON audit_log(revizto_issue_id);
+CREATE INDEX IF NOT EXISTS audit_log_acc_issue_idx ON audit_log(acc_issue_id);
+
 -- connect-pg-simple creates its own "session" table automatically on first run.

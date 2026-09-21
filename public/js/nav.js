@@ -13,6 +13,7 @@ const ADMIN_ONLY_PATHS = ['/setup', '/team'];
 
 const NAV_LINKS = [
   { href: '/issues', label: 'Issues', adminOnly: false },
+  { href: '/logs', label: 'Log files', adminOnly: false },
   { href: '/account', label: 'My Connections', adminOnly: false },
   { href: '/setup', label: 'Project Setup', adminOnly: true },
   { href: '/team', label: 'Team', adminOnly: true },

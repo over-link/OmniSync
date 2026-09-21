@@ -64,6 +64,9 @@ reminder before expiry once this goes beyond a prototype.
   issues on the left and their linked ACC counterpart on the right (synced
   rows highlighted green), select unlinked issues and link them. Open to
   Standard and Admin alike.
+- **`/logs`** ("Log files") — the audit trail: every field change,
+  comment, attachment, link/unlink, and error, with who it's attributed
+  to and when. See "Audit log" below. Open to Standard and Admin alike.
 - **Analytics** — placeholder nav link, not built yet.
 
 Navigation is a shared left sidebar (`public/js/nav.js`), loaded first on
@@ -140,6 +143,66 @@ stats don't carry an admin-only dependency.
 
 **Migration needed**: `sync_map.last_error`/`last_error_at` columns
 (idempotent `ALTER TABLE`). Run `npm run migrate`.
+
+## Audit log ("Log files" page) — durable, queryable "who did what, when"
+
+Before this, the only record of a sync event was `sync_map.last_error`
+(overwritten by the next event, no history) and Render's own server
+logs — ephemeral, unstructured, and gone once the platform rotates them
+out. Added specifically so "why does issue #47 look wrong" can be
+answered with a query instead of digging through logs, and so there's a
+real trail to point to for data-security/auditability purposes.
+
+**One row per meaningful sync event** — a field change (with old/new
+values), a comment, an attachment, a link/unlink, or an error — written
+by `services/auditLog.js` to a new `audit_log` table. Every write goes
+through `syncService._audit`, a thin wrapper that swallows logging
+failures so a DB hiccup while writing an audit row never takes down the
+actual sync work it's describing.
+
+**Field-change rows reuse the same attribution work already built for
+both directions**, rather than being a separate mechanism:
+- **Revizto → ACC** (phase 2): `pushIssueToAcc` already diffs the current
+  Revizto field values against `sync_map.last_synced_revizto_fields` to
+  decide whether to attribute the push to a specific person (see
+  "Field-change attribution (Revizto → ACC), phase 2" above) — the same
+  diff is what gets logged, one row per changed field, old value and new
+  value both captured.
+- **ACC → Revizto** (phase 1): each of the six `reviztoService.
+  updateIssue*` functions (status/assignee/watchers/priority/deadline/
+  title) now returns `{ ok: true, diff }` on a real write instead of just
+  a bare truthy/falsy result — `diff` is the exact `{ fieldName: { old,
+  new } }` shape already posted to Revizto as a diff comment (see
+  `_postDiffComment`), so `handleAccWebhook` logs straight from it via
+  `_auditFieldChangeFromDiff` rather than recomputing anything. This was
+  a non-breaking change: every one of these six functions has exactly one
+  caller (`handleAccWebhook`), and none of them inspected the old return
+  value for anything beyond truthiness, confirmed by checking every call
+  site before changing the shape.
+
+Comments and attachments log from the same points already doing the real
+member attribution (`_pushLatestCommentToAcc`, `pollAccCommentsForProject`,
+`_pushLatestFileAttachmentToAcc`, `_pushMarkupImageToAcc`,
+`pollAccAttachmentsForProject`). Link/unlink log from `recordLink`,
+`unlinkIssue` (manual), and `_handlePossibleAccIssueGone` (self-heal, once
+the grace period actually expires). Errors log from `recordSyncError`,
+the same single funnel every error already goes through — deliberately
+**not** instrumenting `clearSyncError`, since it's called unconditionally
+on every successful sync regardless of whether there was a prior error,
+and would just flood the log with "no error" noise.
+
+**Open to any signed-in user, not admin-gated** (`GET /api/audit-log`,
+`requireLogin`) — the `/logs` page ("Log files" in the sidebar) is meant
+as a shared, visible trail for the whole team, same access level as the
+Issues page, not an admin-only tool. Optionally filtered by project
+(`?projectId=`), paginated (`?limit=&offset=`, default 100/page, capped
+at 500).
+
+**Migration needed**: new `audit_log` table (`id`, `created_at`,
+`project_id`, `revizto_issue_id`, `acc_issue_id`, `direction`, `action`,
+`field_name`, `old_value`, `new_value`, `attributed_email`, `outcome`,
+`detail`), indexed on `(project_id, created_at)`, `revizto_issue_id`, and
+`acc_issue_id`. Run `npm run migrate`.
 
 ## Assignee & watchers (re-enabled)
 

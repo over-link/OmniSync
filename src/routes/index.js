@@ -9,6 +9,7 @@ const reviztoService = require('../services/reviztoService');
 const tokenStore = require('../services/tokenStore');
 const fieldMapping = require('../services/fieldMapping');
 const appSettings = require('../services/appSettings');
+const auditLog = require('../services/auditLog');
 const { ReconnectRequiredError } = require('../services/authManager');
 
 // ─── Revizto license browser (for the license dropdown) ─────────────
@@ -97,6 +98,10 @@ router.get('/team', (req, res) => {
 
 router.get('/issues', (req, res) => {
   res.sendFile(path.join(__dirname, '../../public/issues.html'));
+});
+
+router.get('/logs', (req, res) => {
+  res.sendFile(path.join(__dirname, '../../public/logs.html'));
 });
 
 // ─── Projects (Revizto project <-> ACC project pairing) ────────────
@@ -470,6 +475,18 @@ router.get('/api/settings/sync-paused', requireAdmin, async (req, res) => {
 router.post('/api/settings/sync-paused', requireAdmin, async (req, res) => {
   await appSettings.setSyncPaused(!!req.body.paused);
   res.json({ paused: !!req.body.paused });
+});
+
+// ─── Audit log ("Log files" page) ──────────────────────────────────────
+// Open to any signed-in user (requireLogin, not requireAdmin) — meant as
+// a shared, visible trail for the whole team, same access level as the
+// Issues page. `projectId` optionally filters to one project.
+router.get('/api/audit-log', requireLogin, async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+  const offset = parseInt(req.query.offset, 10) || 0;
+  const projectId = req.query.projectId ? Number(req.query.projectId) : null;
+  const entries = await auditLog.list({ projectId, limit, offset });
+  res.json({ entries });
 });
 
 // ─── Sync (on-demand) ────────────────────────────────────────────────

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Log files — Revizto ↔ ACC Sync</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <div id="sidebar-mount"></div>
+  <div id="app" class="container container-wide">
+    <header class="app-header">
+      <div>
+        <h1>Log files</h1>
+        <p class="app-sub">A durable, queryable trail of every field change, comment, attachment, link/unlink, and error this app has made — who it's attributed to, and when. Open to everyone, not just admins.</p>
+      </div>
+    </header>
+
+    <div id="signed-out-notice" class="card hidden">
+      <p>Sign in on the <a href="/account">My Connections page</a> first.</p>
+    </div>
+
+    <div id="logs-app" class="hidden">
+      <div class="card">
+        <label for="log-project-select">Project</label>
+        <select id="log-project-select">
+          <option value="">All projects</option>
+        </select>
+        <button id="log-refresh-btn" class="btn secondary">Refresh</button>
+      </div>
+
+      <div class="card board-card">
+        <div class="log-header">
+          <span>When</span>
+          <span>Project</span>
+          <span>Action</span>
+          <span>Detail</span>
+          <span>Attributed to</span>
+          <span>Outcome</span>
+        </div>
+        <div id="log-rows"></div>
+        <div id="log-empty" class="log-empty hidden">No log entries yet.</div>
+      </div>
+
+      <div class="card" style="text-align:center;">
+        <button id="log-load-more-btn" class="btn secondary">Load more</button>
+        <span id="log-load-more-hint" class="hint"></span>
+      </div>
+    </div>
+  </div>
+  <script src="/js/nav.js"></script>
+  <script src="/js/logs.js"></script>
+</body>
+</html>

@@ -9,6 +9,45 @@ const accService = require('./accService');
 const reviztoService = require('./reviztoService');
 const fieldMapping = require('./fieldMapping');
 const tokenStore = require('./tokenStore');
+const auditLog = require('./auditLog');
+
+/**
+ * Wraps an auditLog.record call so a logging failure (DB hiccup, etc.)
+ * never takes down the actual sync work it's describing — the audit
+ * trail is a record OF the sync, not a dependency of it.
+ */
+async function _audit(entry) {
+  try {
+    await auditLog.record(entry);
+  } catch (err) {
+    console.warn('[audit] Could not record audit log entry (skipping):', err.message);
+  }
+}
+
+/**
+ * Logs one field_change row from a { fieldName: { old, new } } diff
+ * object — the exact shape every reviztoService updateIssue* function
+ * returns as `.diff` on a real (non-no-op) write (see updateIssueStatus's
+ * doc comment). Used by handleAccWebhook for the ACC -> Revizto direction,
+ * the phase-1 counterpart to pushIssueToAcc's own phase-2 field-change
+ * logging above.
+ */
+async function _auditFieldChangeFromDiff(project, reviztoIssueId, accIssueId, diff, attributedEmail) {
+  if (!diff) return;
+  const [fieldName] = Object.keys(diff);
+  if (!fieldName) return;
+  await _audit({
+    projectId: project.id,
+    reviztoIssueId,
+    accIssueId,
+    direction: 'acc_to_revizto',
+    action: 'field_change',
+    fieldName,
+    oldValue: JSON.stringify(diff[fieldName].old ?? null),
+    newValue: JSON.stringify(diff[fieldName].new ?? null),
+    attributedEmail,
+  });
+}
 
 // ─── sync_map helpers ────────────────────────────────────────────────
 
@@ -36,6 +75,7 @@ async function recordLink(projectId, reviztoIssueId, accIssueId) {
        acc_issue_id = EXCLUDED.acc_issue_id, last_synced_at = now(), last_error = NULL, last_error_at = NULL`,
     [projectId, String(reviztoIssueId), accIssueId]
   );
+  await _audit({ projectId, reviztoIssueId, accIssueId, action: 'link', detail: 'Issue linked' });
 }
 
 /**
@@ -95,6 +135,14 @@ async function _handlePossibleAccIssueGone(project, reviztoIssueId, accIssueId, 
       `[sync] ACC issue ${accIssueId} still unreachable after ${ACC_ISSUE_GONE_GRACE_MS / 60000}+ min (${reasonLabel}) — auto-unlinking Revizto issue ${reviztoIssueId}.`
     );
     await clearLink(project.id, reviztoIssueId);
+    await _audit({
+      projectId: project.id,
+      reviztoIssueId,
+      accIssueId,
+      action: 'unlink',
+      outcome: 'error',
+      detail: `Auto-unlinked (self-heal): ${reasonLabel}`,
+    });
     return true;
   }
   if (!missingSince) {
@@ -130,6 +178,14 @@ async function _clearAccIssueMissingFlag(project, reviztoIssueId) {
 async function unlinkIssue(userId, project, reviztoIssueId, reporterEmail) {
   const accIssueId = await getAccIdForRevizto(project.id, reviztoIssueId);
   await clearLink(project.id, reviztoIssueId);
+  await _audit({
+    projectId: project.id,
+    reviztoIssueId,
+    accIssueId,
+    action: 'unlink',
+    attributedEmail: reporterEmail || null,
+    detail: 'Manually unlinked',
+  });
   if (!accIssueId) return; // wasn't actually linked — nothing to notify
 
   try {
@@ -167,6 +223,7 @@ async function recordSyncError(projectId, reviztoIssueId, message) {
     'UPDATE sync_map SET last_error = $3, last_error_at = now() WHERE project_id = $1 AND revizto_issue_id = $2',
     [projectId, String(reviztoIssueId), message]
   );
+  await _audit({ projectId, reviztoIssueId, action: 'error', outcome: 'error', detail: message });
 }
 
 // ─── assignee resolution (email -> Autodesk user ID) ─────────────────
@@ -589,15 +646,19 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
   // snapshot to diff against) and only once comments actually loaded.
   const currentFieldSnapshot = _snapshotReviztoFields(reviztoIssue);
   let preferredPushUserId = null;
+  let changedFieldKeys = [];
+  let previousFieldSnapshot = null;
+  let fieldEditorEmail = null;
   if (existingAccId) {
     const { rows: snapshotRows } = await pool.query(
       'SELECT last_synced_revizto_fields FROM sync_map WHERE project_id = $1 AND revizto_issue_id = $2',
       [project.id, String(reviztoIssue.id)]
     );
-    const changedKeys = _changedReviztoFieldKeys(currentFieldSnapshot, snapshotRows[0]?.last_synced_revizto_fields || null);
-    if (changedKeys.length) {
-      const editorEmail = _findReviztoFieldEditorEmail(sharedComments, changedKeys);
-      preferredPushUserId = editorEmail ? await _findAccUserIdForEmail(editorEmail) : null;
+    previousFieldSnapshot = snapshotRows[0]?.last_synced_revizto_fields || null;
+    changedFieldKeys = _changedReviztoFieldKeys(currentFieldSnapshot, previousFieldSnapshot);
+    if (changedFieldKeys.length) {
+      fieldEditorEmail = _findReviztoFieldEditorEmail(sharedComments, changedFieldKeys);
+      preferredPushUserId = fieldEditorEmail ? await _findAccUserIdForEmail(fieldEditorEmail) : null;
     }
   }
 
@@ -641,6 +702,20 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
     String(reviztoIssue.id),
     JSON.stringify(currentFieldSnapshot),
   ]);
+
+  for (const key of changedFieldKeys) {
+    await _audit({
+      projectId: project.id,
+      reviztoIssueId: reviztoIssue.id,
+      accIssueId,
+      direction: 'revizto_to_acc',
+      action: 'field_change',
+      fieldName: key,
+      oldValue: JSON.stringify(previousFieldSnapshot?.[key] ?? null),
+      newValue: JSON.stringify(currentFieldSnapshot[key]),
+      attributedEmail: fieldEditorEmail,
+    });
+  }
 
   // Tracking-category status and/or stamp with no admin mapping
   // configured (defaulted to ACC "Open" / the project's default subtype
@@ -735,6 +810,15 @@ async function _pushMarkupImageToAcc(userId, project, reviztoIssue, accIssueId, 
       String(reviztoIssue.id),
       trackingId,
     ]);
+    await _audit({
+      projectId: project.id,
+      reviztoIssueId: reviztoIssue.id,
+      accIssueId,
+      direction: 'revizto_to_acc',
+      action: 'attachment',
+      attributedEmail: markupComment?.author?.email || null,
+      detail: 'Markup image',
+    });
   } catch (err) {
     console.warn(`[sync] Could not upload markup image for issue ${reviztoIssue.id} (skipping):`, err.message);
   }
@@ -804,6 +888,15 @@ async function _pushLatestFileAttachmentToAcc(userId, project, reviztoIssue, acc
       'UPDATE sync_map SET last_pushed_file_comment_uuid = $3, last_pushed_file_attachment_acc_id = $4 WHERE project_id = $1 AND revizto_issue_id = $2',
       [project.id, String(reviztoIssue.id), latestFile.uuid, result.attachmentId]
     );
+    await _audit({
+      projectId: project.id,
+      reviztoIssueId: reviztoIssue.id,
+      accIssueId,
+      direction: 'revizto_to_acc',
+      action: 'attachment',
+      attributedEmail: uploaderEmail,
+      detail: latestFile.filename || 'File attachment',
+    });
 
     // Explanatory comment, same parity as the ACC->Revizto direction's
     // "Attachment added via ACC sync by <name>" (pollAccAttachmentsForProject)
@@ -936,6 +1029,15 @@ async function _pushLatestCommentToAcc(userId, project, reviztoIssue, accIssueId
       'UPDATE sync_map SET last_pushed_comment_uuid = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
       [project.id, String(reviztoIssue.id), latest.uuid]
     );
+    await _audit({
+      projectId: project.id,
+      reviztoIssueId: reviztoIssue.id,
+      accIssueId,
+      direction: 'revizto_to_acc',
+      action: 'comment',
+      attributedEmail: authorEmail,
+      newValue: latest.text || null,
+    });
   } catch (err) {
     console.warn(`[sync] Could not push latest comment for issue ${reviztoIssue.id} (skipping):`, err.response?.data || err.message);
   }
@@ -1252,6 +1354,7 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
       await recordSyncError(project.id, reviztoIssueId, `${statusResult.reason} Configure a status mapping on the Setup page.`);
     } else {
       await clearSyncError(project.id, reviztoIssueId);
+      await _auditFieldChangeFromDiff(project, reviztoIssueId, accIssueId, statusResult?.diff, effectiveReporterEmail);
       // Keep ACC's two status fields consistent with whichever one
       // actually drove this resolution (see _resolveReviztoStatusFromAcc
       // for the full priority — primary wins outright when unambiguous,
@@ -1286,7 +1389,8 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
     if (assignedToId) {
       const email = emailByAutodeskId[assignedToId];
       if (email) {
-        await reviztoService.updateIssueAssignee(userId, project.revizto_region, project.revizto_project_uuid, reviztoIssueId, email, effectiveReporterEmail);
+        const assigneeResult = await reviztoService.updateIssueAssignee(userId, project.revizto_region, project.revizto_project_uuid, reviztoIssueId, email, effectiveReporterEmail);
+        await _auditFieldChangeFromDiff(project, reviztoIssueId, accIssueId, assigneeResult?.diff, effectiveReporterEmail);
       } else {
         console.warn('[webhook] Could not resolve ACC assignee to an email (not found in project members):', assignedToId);
       }
@@ -1296,7 +1400,8 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
     if (watcherIds.length) {
       const watcherEmails = watcherIds.map((id) => emailByAutodeskId[id]).filter(Boolean);
       if (watcherEmails.length) {
-        await reviztoService.updateIssueWatchers(userId, project.revizto_region, project.revizto_project_uuid, reviztoIssueId, watcherEmails, effectiveReporterEmail);
+        const watchersResult = await reviztoService.updateIssueWatchers(userId, project.revizto_region, project.revizto_project_uuid, reviztoIssueId, watcherEmails, effectiveReporterEmail);
+        await _auditFieldChangeFromDiff(project, reviztoIssueId, accIssueId, watchersResult?.diff, effectiveReporterEmail);
       }
     }
   } catch (err) {
@@ -1336,7 +1441,7 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
         // "working as intended" in the logs.
         console.warn(`[webhook] Could not resolve "Issue Priority" definition/dataType for value resolution (found definition: ${JSON.stringify(priorityDef) || 'none'}) — sending raw value "${priorityAttr.value}" as-is.`);
       }
-      await reviztoService.updateIssuePriority(
+      const priorityResult = await reviztoService.updateIssuePriority(
         userId,
         project.revizto_region,
         project.revizto_project_uuid,
@@ -1344,6 +1449,7 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
         priorityValue,
         effectiveReporterEmail
       );
+      await _auditFieldChangeFromDiff(project, reviztoIssueId, accIssueId, priorityResult?.diff, effectiveReporterEmail);
     }
   } catch (err) {
     console.warn('[webhook] Could not sync priority back to Revizto (skipping):', err.response?.data?.message || err.message);
@@ -1378,6 +1484,7 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
           'Deadline changed via ACC sync',
           effectiveReporterEmail
         );
+        await _auditFieldChangeFromDiff(project, reviztoIssueId, accIssueId, changed.diff, effectiveReporterEmail);
       }
     }
   } catch (err) {
@@ -1406,6 +1513,7 @@ async function handleAccWebhook(userId, project, payload, reporterEmail) {
           'Title changed via ACC sync',
           effectiveReporterEmail
         );
+        await _auditFieldChangeFromDiff(project, reviztoIssueId, accIssueId, changed.diff, effectiveReporterEmail);
       }
     }
   } catch (err) {
@@ -1828,6 +1936,15 @@ async function pollAccCommentsForProject(userId, project, reporterEmail) {
         'UPDATE sync_map SET last_pulled_acc_comment_id = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
         [project.id, row.revizto_issue_id, latestId]
       );
+      await _audit({
+        projectId: project.id,
+        reviztoIssueId: row.revizto_issue_id,
+        accIssueId: row.acc_issue_id,
+        direction: 'acc_to_revizto',
+        action: 'comment',
+        attributedEmail: author?.email || null,
+        newValue: commentText,
+      });
     } catch (err) {
       console.warn(`[poll] Could not check ACC comments for issue ${row.acc_issue_id} (skipping):`, err.response?.data?.detail || err.message);
     }
@@ -1948,6 +2065,15 @@ async function pollAccAttachmentsForProject(userId, project, reporterEmail) {
         'UPDATE sync_map SET last_pulled_acc_attachment_id = $3, last_pulled_acc_attachment_comment_uuid = $4 WHERE project_id = $1 AND revizto_issue_id = $2',
         [project.id, row.revizto_issue_id, latestId, uploadResult?.commentUuid || null]
       );
+      await _audit({
+        projectId: project.id,
+        reviztoIssueId: row.revizto_issue_id,
+        accIssueId: row.acc_issue_id,
+        direction: 'acc_to_revizto',
+        action: 'attachment',
+        attributedEmail: author?.email || null,
+        detail: fileName,
+      });
     } catch (err) {
       console.warn(`[poll] Could not check ACC attachments for issue ${row.acc_issue_id} (skipping):`, err.response?.data?.detail || err.message);
     }

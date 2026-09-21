@@ -247,6 +247,32 @@ body {
 .bridge-connector { color: var(--blueprint); font-family: var(--font-mono); text-align: center; }
 .link-checkbox { font-size: 0.85rem; color: var(--muted); }
 .board-select-all-bar { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0.4rem; border-bottom: 1px solid var(--line); }
+
+/* ── Log files (audit trail) ───────────────────────────────────── */
+.log-header, .log-row {
+  display: grid;
+  grid-template-columns: 150px 130px 110px 1fr 180px 80px;
+  gap: 0.75rem;
+  align-items: start;
+  padding: 0.55rem 0.4rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.85rem;
+}
+.log-header {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--blueprint);
+  font-weight: 600;
+}
+.log-row:last-child { border-bottom: none; }
+.log-row.log-row-error { background: var(--danger-dim); border-radius: 6px; }
+.log-row .log-timestamp { font-family: var(--font-mono); font-size: 0.78rem; color: var(--muted); }
+.log-row .log-field-change { word-break: break-word; }
+.log-row .log-old { color: var(--muted); text-decoration: line-through; }
+.log-row .log-new { color: var(--blueprint); font-weight: 600; }
+.log-empty { padding: 1.5rem 0.4rem; color: var(--muted); text-align: center; }
 #board-actions { margin-top: 0.9rem; display: flex; align-items: center; gap: 0.75rem; }
 
 /* ── Cards / steps ──────────────────────────────────────────────── */

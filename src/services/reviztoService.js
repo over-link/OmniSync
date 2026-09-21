@@ -223,11 +223,14 @@ async function _postDiffComment(userId, region, projectUuid, issueUuid, diff, re
 }
 
 /**
- * Returns { ok: true } on a successful write, { ok: true, noop: true }
+ * Returns { ok: true, diff } on a successful write, { ok: true, noop: true }
  * when the issue is already on that status, or { ok: false, reason }
  * when newStatusName doesn't resolve to a status belonging to this
  * issue's own workflow — callers should surface `reason` as a visible
- * sync warning rather than treat it the same as a silent no-op.
+ * sync warning rather than treat it the same as a silent no-op. `diff`
+ * (added for audit-log purposes — see syncService.handleAccWebhook) is
+ * the same { fieldName: { old, new } } shape posted to Revizto, so a
+ * caller can log exactly what changed without recomputing it.
  */
 async function updateIssueStatus(userId, region, projectUuid, issueId, newStatusName, reporterEmail) {
   const issue = await getIssue(userId, region, projectUuid, issueId);
@@ -241,8 +244,9 @@ async function updateIssueStatus(userId, region, projectUuid, issueId, newStatus
   }
   if (oldStatusUuid === newStatusUuid) return { ok: true, noop: true }; // avoid empty-diff rejection
 
-  await _postDiffComment(userId, region, projectUuid, issue.uuid, { customStatus: { old: oldStatusUuid, new: newStatusUuid } }, reporterEmail);
-  return { ok: true };
+  const diff = { customStatus: { old: oldStatusUuid, new: newStatusUuid } };
+  await _postDiffComment(userId, region, projectUuid, issue.uuid, diff, reporterEmail);
+  return { ok: true, diff };
 }
 
 /**
@@ -251,18 +255,22 @@ async function updateIssueStatus(userId, region, projectUuid, issueId, newStatus
  * is a plain UUID), so the same { fieldName: { old, new } } shape is a
  * reasonable bet, but this hasn't been confirmed against real Revizto
  * docs the way status was. Test and report back if it doesn't work.
+ * Returns null on a no-op, { ok: true, diff } otherwise (diff: for the
+ * audit log, same shape posted to Revizto — see updateIssueStatus).
  */
 async function updateIssueAssignee(userId, region, projectUuid, issueId, newAssigneeEmail, reporterEmail) {
   const issue = await getIssue(userId, region, projectUuid, issueId);
   const oldAssignee = unwrap(issue.assignee) || null;
   if (oldAssignee === newAssigneeEmail) return null; // no-op
-  return _postDiffComment(userId, region, projectUuid, issue.uuid, { assignee: { old: oldAssignee, new: newAssigneeEmail } }, reporterEmail);
+  const diff = { assignee: { old: oldAssignee, new: newAssigneeEmail } };
+  await _postDiffComment(userId, region, projectUuid, issue.uuid, diff, reporterEmail);
+  return { ok: true, diff };
 }
 
 /**
  * Updates an issue's watchers (full replacement, not additive). Same
  * UNCONFIRMED caveat as updateIssueAssignee — extrapolated pattern, not
- * confirmed docs.
+ * confirmed docs. Same null-on-no-op / { ok: true, diff } shape.
  */
 async function updateIssueWatchers(userId, region, projectUuid, issueId, newWatcherEmails, reporterEmail) {
   const issue = await getIssue(userId, region, projectUuid, issueId);
@@ -270,7 +278,9 @@ async function updateIssueWatchers(userId, region, projectUuid, issueId, newWatc
   const sameSet =
     oldWatchers.length === newWatcherEmails.length && oldWatchers.every((w) => newWatcherEmails.includes(w));
   if (sameSet) return null; // no-op
-  return _postDiffComment(userId, region, projectUuid, issue.uuid, { watchers: { old: oldWatchers, new: newWatcherEmails } }, reporterEmail);
+  const diff = { watchers: { old: oldWatchers, new: newWatcherEmails } };
+  await _postDiffComment(userId, region, projectUuid, issue.uuid, diff, reporterEmail);
+  return { ok: true, diff };
 }
 
 /**
@@ -285,7 +295,9 @@ async function updateIssuePriority(userId, region, projectUuid, issueId, newPrio
   const issue = await getIssue(userId, region, projectUuid, issueId);
   const oldPriority = unwrap(issue.priority) || null;
   if (oldPriority === newPriority) return null; // no-op
-  return _postDiffComment(userId, region, projectUuid, issue.uuid, { priority: { old: oldPriority, new: newPriority } }, reporterEmail);
+  const diff = { priority: { old: oldPriority, new: newPriority } };
+  await _postDiffComment(userId, region, projectUuid, issue.uuid, diff, reporterEmail);
+  return { ok: true, diff };
 }
 
 /**
@@ -315,7 +327,9 @@ async function updateIssueDeadline(userId, region, projectUuid, issueId, newDueD
   const oldDatePart = oldDeadline ? oldDeadline.slice(0, 10) : null;
   if (oldDatePart === newDueDate) return null; // no-op, already this date
   const newDeadline = `${newDueDate} 12:00:00`;
-  return _postDiffComment(userId, region, projectUuid, issue.uuid, { deadline: { old: oldDeadline, new: newDeadline } }, reporterEmail);
+  const diff = { deadline: { old: oldDeadline, new: newDeadline } };
+  await _postDiffComment(userId, region, projectUuid, issue.uuid, diff, reporterEmail);
+  return { ok: true, diff };
 }
 
 /**
@@ -331,7 +345,9 @@ async function updateIssueTitle(userId, region, projectUuid, issueId, newTitle, 
   const issue = await getIssue(userId, region, projectUuid, issueId);
   const oldTitle = unwrap(issue.title) || null;
   if (oldTitle === newTitle) return null; // no-op
-  return _postDiffComment(userId, region, projectUuid, issue.uuid, { title: { old: oldTitle, new: newTitle } }, reporterEmail);
+  const diff = { title: { old: oldTitle, new: newTitle } };
+  await _postDiffComment(userId, region, projectUuid, issue.uuid, diff, reporterEmail);
+  return { ok: true, diff };
 }
 
 async function addComment(userId, region, projectUuid, issueId, text, reporterEmail) {
