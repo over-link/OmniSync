@@ -636,18 +636,58 @@ response itself). **My Connections previously showed the wrong expiry
 for ACC** — `acc.expiresAt`, the ACCESS token's own ~60-minute expiry —
 which made every connection look like it was "expiring any minute," even
 a perfectly healthy one being refreshed daily by the keepalive cron.
-Fixed to show `refreshExpiresAt` instead, the same "reconnect by" framing
-already used for Revizto. Real data confirmed the keepalive cron is
-genuinely working in production: two of four connected users' tokens had
-been refreshed the same day this was checked, while the other two —
-untouched since their original connect over five weeks earlier — had
-already gone dead, exactly matching "can't revive an already-dead
-connection" above; those two need an actual fresh reconnect, not a code
-fix.
+Fixed to show `refreshExpiresAt` instead. Real data confirmed the
+keepalive cron is genuinely working in production: two of four connected
+users' tokens had been refreshed the same day this was checked, while the
+other two — untouched since their original connect over five weeks
+earlier — had already gone dead, exactly matching "can't revive an
+already-dead connection" above; those two need an actual fresh reconnect,
+not a code fix.
 
 **Migration needed**: `acc_tokens.refresh_expires_at` (idempotent
 `ALTER TABLE`, backfilled from existing rows' `updated_at + 15 days` as a
 reasonable estimate). Run `npm run migrate`.
+
+### Revizto gets its own keepalive cron too — nobody should need to manually reconnect, barring a real failure
+
+Explicit goal: a user should never need to manually reconnect just
+because they didn't happen to use the app enough — only when something
+genuinely goes wrong (a Revizto/ACC-side issue, a revoked grant). ACC
+already had this covered (`keepAccConnectionsAlive` above); Revizto
+didn't — its connection only stayed alive if the person happened to
+personally visit a page that pulls real Revizto data (e.g. Issues) often
+enough to keep triggering a refresh before the ~1-month window ran out.
+Someone who barely touched the app, or whose usage happened to route
+through another connection (e.g. viewing a project they don't own), could
+go quietly dead on the calendar alone.
+
+`pollService.keepReviztoConnectionsAlive` closes this the same way ACC's
+already closed: a daily cron (`REVIZTO_KEEPALIVE_CRON`, default
+`0 4 * * *` — staggered an hour after ACC's purely to avoid both batch
+jobs landing in the same minute, not a functional requirement) calls
+`getValidReviztoToken` for every connected user regardless of personal
+activity. **Confirmed working by real testing**: run once against real
+production data, it correctly refreshed a connection that had been idle
+18 days (extending its window a further 30 days from that moment) and
+cleanly logged-and-skipped two already-dead connections without taking
+down the rest of the batch — the exact same "can't revive an
+already-dead connection, needs an actual reconnect" behavior as ACC.
+
+**My Connections deliberately shows no expiry date at all**, for either
+ACC or Revizto — just a plain "Connected." An earlier version of this
+page showed "reconnect by `<date>`," but with both connections now
+cron-maintained regardless of personal usage, there's no date the user
+actually needs to act on; showing one anyway just invited "do I need to
+do something by then?" confusion for a number that, in the healthy case,
+never matters. `refreshExpiresAt` is still returned by `/auth/me` and
+still genuinely matters server-side (it's the real deadline the cron has
+to beat), just not surfaced as user-facing copy anymore. The Revizto
+connect button now also toggles to "Reconnect Revizto" once connected,
+same as ACC's button already did — previously it always said "Connect
+Revizto" regardless of actual connection state.
+
+No migration needed — reuses `revizto_tokens.refresh_expires_at`, which
+already existed.
 
 GET comments' response shape is now confirmed from real data:
 `{id, issueId, body, createdBy, createdAt, updatedAt, deletedAt, ...}` —

@@ -17,20 +17,22 @@ function render({ user, acc, revizto }) {
   document.getElementById('whoami').textContent = `Signed in as ${user.email}`;
   document.getElementById('connections-section').classList.remove('hidden');
 
-  // Shows the REFRESH token's ~15-day window (reconnect-by, same idea as
-  // Revizto below), not the access token's own ~60-min expiry — that one
-  // always looks like "expiring any minute" even on a perfectly healthy,
-  // actively-refreshing connection, which read as broken to every user.
-  document.getElementById('acc-status').textContent = acc.connected
-    ? `Connected (reconnect by ${new Date(acc.refreshExpiresAt).toLocaleDateString()})`
-    : 'Not connected';
+  // No expiry date shown by design — both ACC and Revizto now have a
+  // daily server-side keepalive cron (pollService.keepAccConnectionsAlive/
+  // keepReviztoConnectionsAlive) that refreshes every connection
+  // automatically regardless of personal app usage, so there's no
+  // meaningful action for the user to take by any particular date; showing
+  // one anyway just invited confusion ("do I need to do something?").
+  // refreshExpiresAt is still returned by /auth/me and still genuinely
+  // matters server-side (it's the real deadline the cron has to beat) —
+  // just not something worth surfacing here as user-facing copy.
+  document.getElementById('acc-status').textContent = acc.connected ? 'Connected' : 'Not connected';
   document.getElementById('acc-status').className = 'badge ' + (acc.connected ? 'badge-success' : 'badge-neutral');
   document.getElementById('acc-connect-btn').textContent = acc.connected ? 'Reconnect ACC' : 'Connect ACC';
 
-  document.getElementById('revizto-status').textContent = revizto.connected
-    ? `Connected (reconnect by ${new Date(revizto.refreshExpiresAt).toLocaleDateString()})`
-    : 'Not connected';
+  document.getElementById('revizto-status').textContent = revizto.connected ? 'Connected' : 'Not connected';
   document.getElementById('revizto-status').className = 'badge ' + (revizto.connected ? 'badge-success' : 'badge-neutral');
+  document.getElementById('revizto-connect-btn').textContent = revizto.connected ? 'Reconnect Revizto' : 'Connect Revizto';
 }
 
 async function refreshMe() {

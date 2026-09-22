@@ -13,7 +13,7 @@ const cron = require('node-cron');
 const pool = require('../db/pool');
 const syncService = require('./syncService');
 const appSettings = require('./appSettings');
-const { ReconnectRequiredError, getValidAccToken } = require('./authManager');
+const { ReconnectRequiredError, getValidAccToken, getValidReviztoToken } = require('./authManager');
 
 async function pollAllProjects() {
   if (await appSettings.isSyncPaused()) {
@@ -82,6 +82,33 @@ async function keepAccConnectionsAlive() {
   }
 }
 
+/**
+ * Revizto's own counterpart to keepAccConnectionsAlive above — same
+ * reasoning, same mechanism, just Revizto's confirmed-activity-based
+ * refresh window (~1 month per successful refresh, see reviztoAuth's
+ * `refresh_expires_at` and the README's "Revizto refresh token expiry"
+ * note) instead of ACC's fixed 15-day one. Before this, a Revizto
+ * connection only stayed alive if the person happened to personally use
+ * a Revizto-data page (e.g. Issues) often enough — someone who barely
+ * touched the app but never needed to would still eventually go dead on
+ * the calendar alone. This closes that gap the same way ACC's already
+ * closed it: nobody should need to manually reconnect just because they
+ * didn't happen to click around enough, only when something genuinely
+ * goes wrong (Revizto/ACC server-side issues, a revoked grant, etc.).
+ */
+async function keepReviztoConnectionsAlive() {
+  const { rows } = await pool.query(
+    `SELECT r.user_id, u.email FROM revizto_tokens r JOIN users u ON u.id = r.user_id`
+  );
+  for (const row of rows) {
+    try {
+      await getValidReviztoToken(row.user_id);
+    } catch (err) {
+      console.warn(`[poll] Could not keep Revizto connection alive for ${row.email || row.user_id} (reconnect needed):`, err.message);
+    }
+  }
+}
+
 function startPolling() {
   if (process.env.POLL_ENABLED === 'false') {
     console.log('[poll] Automatic re-sync of linked issues disabled (POLL_ENABLED=false)');
@@ -94,6 +121,12 @@ function startPolling() {
   const keepAliveSchedule = process.env.ACC_KEEPALIVE_CRON || '0 3 * * *'; // once daily by default
   console.log(`[poll] ACC connection keep-alive enabled: ${keepAliveSchedule}`);
   cron.schedule(keepAliveSchedule, keepAccConnectionsAlive);
+
+  // Staggered an hour after ACC's by default, purely to avoid both large
+  // batch jobs landing in the same minute — not a functional requirement.
+  const reviztoKeepAliveSchedule = process.env.REVIZTO_KEEPALIVE_CRON || '0 4 * * *';
+  console.log(`[poll] Revizto connection keep-alive enabled: ${reviztoKeepAliveSchedule}`);
+  cron.schedule(reviztoKeepAliveSchedule, keepReviztoConnectionsAlive);
 }
 
-module.exports = { startPolling, pollAllProjects, keepAccConnectionsAlive };
+module.exports = { startPolling, pollAllProjects, keepAccConnectionsAlive, keepReviztoConnectionsAlive };
