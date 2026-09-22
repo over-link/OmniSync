@@ -10,17 +10,37 @@ async function api(url, options = {}) {
 }
 
 let currentUserId = null;
+let isAdmin = false;
 
 window.addEventListener('app:ready', async (e) => {
-  if (!e.detail.user || e.detail.user.role !== 'admin') return;
+  if (!e.detail.user) return;
+  isAdmin = e.detail.user.role === 'admin';
   currentUserId = e.detail.user.id;
+
+  document.getElementById('header-role-badge').classList.toggle('hidden', !isAdmin);
+  document.getElementById('add-someone-card').classList.toggle('hidden', !isAdmin);
+  document.getElementById('invite-link-card').classList.toggle('hidden', !isAdmin);
+  _renderHeaderSub();
+
   await loadTeam();
-  await loadInviteLinks();
+  if (isAdmin) await loadInviteLinks();
 });
+
+// GET /api/team is requireLogin server-side (not requireAdmin) — any
+// signed-in user can read the roster/activity. Every action that
+// actually changes something (invite, invite links, role changes) stays
+// requireAdmin both server-side and here — non-admins just never see
+// those controls at all, rather than seeing them fail.
+function _renderHeaderSub() {
+  const subEl = document.getElementById('header-sub');
+  subEl.textContent = isAdmin
+    ? 'Invite people and set their role. Admin can manage project setup and team; Standard can view/sync issues and connect their own accounts.'
+    : 'The team roster and everyone’s activity, read-only. Ask an admin if you need someone added or a role changed.';
+}
 
 async function loadTeam() {
   const { members, emailConfigured } = await api('/api/team');
-  document.getElementById('email-config-notice').textContent = emailConfigured
+  if (isAdmin) document.getElementById('email-config-notice').textContent = emailConfigured
     ? 'Email sending is configured (SMTP).'
     : 'Email sending isn\u2019t configured yet (no SMTP_HOST/SMTP_USER/SMTP_PASS set) — "Add" still grants access immediately, it just won\u2019t send an email.';
 
@@ -29,12 +49,7 @@ async function loadTeam() {
     .map(
       (m) => `<tr data-id="${m.id}">
         <td>${m.email}</td>
-        <td>
-          <select class="role-select" ${m.id === currentUserId ? 'disabled title="Have another admin change your role"' : ''}>
-            <option value="standard" ${m.role === 'standard' ? 'selected' : ''}>Standard</option>
-            <option value="admin" ${m.role === 'admin' ? 'selected' : ''}>Admin</option>
-          </select>
-        </td>
+        <td>${_roleCellHtml(m)}</td>
         <td>${new Date(m.created_at).toLocaleDateString()}</td>
         <td>${m.last_login_at ? new Date(m.last_login_at).toLocaleString() : '<span class="hint">Never</span>'}</td>
         <td>${m.latest_activity_at ? new Date(m.latest_activity_at).toLocaleString() : '<span class="hint">None yet</span>'}</td>
@@ -57,6 +72,20 @@ async function loadTeam() {
       }
     });
   });
+}
+
+// Editable dropdown for admins (their own row disabled — have another
+// admin change your role), plain badge for everyone else — a standard
+// user has no route that would accept a role change anyway, so there's
+// no point showing a control that would just 403.
+function _roleCellHtml(m) {
+  if (!isAdmin) {
+    return `<span class="badge badge-${m.role === 'admin' ? 'warning' : 'neutral'}">${m.role}</span>`;
+  }
+  return `<select class="role-select" ${m.id === currentUserId ? 'disabled title="Have another admin change your role"' : ''}>
+    <option value="standard" ${m.role === 'standard' ? 'selected' : ''}>Standard</option>
+    <option value="admin" ${m.role === 'admin' ? 'selected' : ''}>Admin</option>
+  </select>`;
 }
 
 // ─── Chip-list email input ("Add someone") ─────────────────────────

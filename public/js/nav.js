@@ -2,10 +2,11 @@
  * public/js/nav.js
  * Loaded first on every page. Fetches auth state once, renders the left
  * sidebar with links visible based on role, redirects non-admins away
- * from admin-only pages (/setup, /team), redirects EVERYONE (admins
- * included) away from every page except /account until both ACC and
- * Revizto are connected, and dispatches an "app:ready" event so each
- * page's own script can proceed without re-fetching /auth/me.
+ * from admin-only pages (just /setup — /team is readable by anyone
+ * signed in now, see below), redirects EVERYONE (admins included) away
+ * from every page except /account until both ACC and Revizto are
+ * connected, and dispatches an "app:ready" event so each page's own
+ * script can proceed without re-fetching /auth/me.
  *
  * Client-side redirect here is a UX convenience, not the real security
  * boundary — every admin-only API route also checks server-side
@@ -14,15 +15,21 @@
  * the app's other API routes don't currently reject an unconnected
  * user's requests server-side, so this is a UX nudge onto /account, not
  * a hard security boundary the way requireAdmin is.
+ *
+ * /team itself is reachable by any signed-in user — its own script
+ * (team.js) renders a read-only view (no invite controls, no editable
+ * role dropdown) for non-admins, matching GET /api/team's requireLogin
+ * (not requireAdmin); every route that actually changes something there
+ * stays requireAdmin server-side, unaffected by this.
  */
-const ADMIN_ONLY_PATHS = ['/setup', '/team'];
+const ADMIN_ONLY_PATHS = ['/setup'];
 
 const NAV_LINKS = [
   { href: '/issues', label: 'Issues', adminOnly: false },
   { href: '/logs', label: 'Log files', adminOnly: false },
   { href: '/account', label: 'My Connections', adminOnly: false },
   { href: '/setup', label: 'Project Setup', adminOnly: true },
-  { href: '/team', label: 'Team', adminOnly: true },
+  { href: '/team', label: 'Team', adminOnly: false },
   // Mockup only — see README "Planned: multi-project workspaces". Will hold
   // license project-slot count/usage and per-project API-call tracking once
   // each project runs off its own DB.

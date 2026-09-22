@@ -11,13 +11,13 @@
 </head>
 <body>
   <div id="sidebar-mount"></div>
-  <div id="app" class="container">
+  <div id="app" class="container container-wide">
     <header class="app-header">
-      <h1>Team <span class="badge badge-warning">Admin</span></h1>
-      <p class="app-sub">Invite people and set their role. Admin can manage project setup and team; Standard can view/sync issues and connect their own accounts.</p>
+      <h1>Team <span id="header-role-badge" class="badge badge-warning">Admin</span></h1>
+      <p id="header-sub" class="app-sub">Invite people and set their role. Admin can manage project setup and team; Standard can view/sync issues and connect their own accounts.</p>
     </header>
 
-    <section class="card">
+    <section id="add-someone-card" class="card">
       <h2>Add someone</h2>
       <div id="email-config-notice" class="hint"></div>
       <form id="invite-form" class="invite-form">
@@ -34,7 +34,7 @@
       <div id="invite-result" class="result-text"></div>
     </section>
 
-    <section class="card">
+    <section id="invite-link-card" class="card">
       <h2>Invite link</h2>
       <p class="hint">
         A reusable link for a whole group at once — paste it into an email

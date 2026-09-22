@@ -82,6 +82,18 @@ for a small team, revisit if you end up with genuinely different admins per
 customer later). Admin can manage project setup and team; Standard can view/
 sync issues and connect their own ACC/Revizto.
 
+**The Team page itself is readable by anyone signed in, not admin-only** —
+`GET /api/team` is `requireLogin`. A standard user sees the same roster
+and activity columns an admin does, just without the "Add someone"/"Copy
+invite link" cards and with each row's role shown as a plain badge
+instead of an editable dropdown, rather than being blocked from the page
+entirely. Every route that actually changes something — inviting
+(`POST /api/team/invite`), generating or revoking an invite link, and
+changing someone's role (`PATCH /api/team/:id/role`) — stays
+`requireAdmin` server-side, confirmed by calling them directly as a
+standard user and getting a 403 back, not just by hiding the buttons in
+the UI.
+
 **The first person to ever sign in is auto-promoted to admin.** After that,
 existing admins manage roles from the Team page, or directly:
 ```sql

@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const pool = require('../db/pool');
-const { requireAdmin } = require('./auth');
+const { requireAdmin, requireLogin } = require('./auth');
 const emailService = require('../services/emailService');
 
 const VALID_ROLES = ['admin', 'standard'];
@@ -13,7 +13,13 @@ const VALID_ROLES = ['admin', 'standard'];
 // attachment/link/unlink) traced back to a specific person. Case-
 // insensitive join since email casing isn't guaranteed identical between
 // what's typed at sign-in and what's resolved from Revizto/ACC member data.
-router.get('/api/team', requireAdmin, async (req, res) => {
+//
+// requireLogin (not requireAdmin) — read access to the roster/activity is
+// open to any signed-in user; every route below that actually CHANGES
+// something (inviting, generating/revoking a link, changing a role)
+// stays requireAdmin. The Team page's own JS renders a read-only view
+// (no editable role dropdown, no invite controls) for non-admins.
+router.get('/api/team', requireLogin, async (req, res) => {
   const { rows } = await pool.query(`
     SELECT u.id, u.email, u.role, u.created_at, u.last_login_at, la.latest_activity_at
     FROM users u

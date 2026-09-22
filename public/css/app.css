@@ -294,7 +294,13 @@ body {
   margin-bottom: 0.4rem;
 }
 .card h2 { font-size: 1.05rem; font-weight: 600; margin: 0 0 0.9rem; }
-.hidden { display: none; }
+/* !important is deliberate: .hidden is a utility meant to unconditionally
+   win regardless of what else is combined with it — without it, an
+   equal-specificity class declared later in this file (e.g. .badge's own
+   `display: flex`) wins by source order instead, so `class="badge hidden"`
+   silently stayed visible. Confirmed by real testing on the Team page's
+   header role badge. */
+.hidden { display: none !important; }
 
 /* ── Form elements ──────────────────────────────────────────────── */
 input, select, textarea {
@@ -563,7 +569,11 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
   border-bottom: 1px solid var(--line);
 }
 .team-table td { padding: 0.6rem 0.4rem; border-bottom: 1px solid var(--line); }
-.invite-form { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-bottom: 1.25rem; }
+/* flex-direction: row explicitly overrides the generic `form { flex-direction:
+   column }` rule below (element selector, still wins on any property this
+   class doesn't set) — without it the chip box inherited a vertical main
+   axis, turning its flex-basis into a HEIGHT instead of a width. */
+.invite-form { display: flex; flex-direction: row; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-bottom: 1.25rem; }
 .invite-form label { display: flex; align-items: center; gap: 0.3rem; font-size: 0.85rem; color: var(--muted); font-weight: 500; }
 
 .invite-link-row {
