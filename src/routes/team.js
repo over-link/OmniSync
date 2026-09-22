@@ -6,8 +6,24 @@ const emailService = require('../services/emailService');
 
 const VALID_ROLES = ['admin', 'standard'];
 
+// last_login_at is its own column (set on every /auth/identify); latest
+// sync activity isn't stored separately — it's read live from audit_log,
+// which already records every real action (field change/comment/
+// attachment/link/unlink) traced back to a specific person. Case-
+// insensitive join since email casing isn't guaranteed identical between
+// what's typed at sign-in and what's resolved from Revizto/ACC member data.
 router.get('/api/team', requireAdmin, async (req, res) => {
-  const { rows } = await pool.query('SELECT id, email, role, created_at FROM users ORDER BY created_at ASC');
+  const { rows } = await pool.query(`
+    SELECT u.id, u.email, u.role, u.created_at, u.last_login_at, la.latest_activity_at
+    FROM users u
+    LEFT JOIN (
+      SELECT LOWER(attributed_email) AS email, MAX(created_at) AS latest_activity_at
+      FROM audit_log
+      WHERE attributed_email IS NOT NULL
+      GROUP BY LOWER(attributed_email)
+    ) la ON la.email = LOWER(u.email)
+    ORDER BY u.created_at ASC
+  `);
   res.json({ members: rows, emailConfigured: emailService.isConfigured() });
 });
 

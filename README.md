@@ -102,6 +102,33 @@ migration pattern noted at the top of `schema.sql`). Run `npm run migrate`
 after pulling this update. Also run `npm install` — `nodemailer` is a new
 dependency.
 
+### "Last login" / "Latest sync activity" columns — who's actually using this
+
+Two more columns on the Team page, added so an admin can tell who's
+actively using the app vs. dormant, without confusing either signal with
+something that isn't real usage:
+
+- **Last login** — `users.last_login_at`, set on every successful
+  `/auth/identify` (the app's own sign-in). Deliberately **not** reusing
+  `acc_tokens`' refresh timestamp for this — `pollService.
+  keepAccConnectionsAlive` touches that daily for every connected user
+  regardless of whether they've done anything, so it isn't a valid proxy
+  for real activity (see "Autodesk revokes an idle refresh token" above).
+- **Latest sync activity** — not a stored column at all; read live from
+  `audit_log` (`MAX(created_at) WHERE attributed_email = <this user's
+  email>`, case-insensitive). Since `audit_log` only ever records a REAL
+  action (a field change, comment, attachment, link/unlink, or error)
+  traced back to a specific person — not a routine no-op resync where
+  nothing actually changed — this single column already captures "when
+  did something this person did last actually happen," without needing a
+  separate mechanism to track connection usage on its own.
+
+Both show "Never"/"None yet" until a user's first real login or first
+piece of attributed activity after this shipped — there's no retroactive
+backfill, since neither signal existed before now.
+
+**Migration needed**: `users.last_login_at`. Run `npm run migrate`.
+
 ## Field names (confirmed from a real raw issue response)
 
 A real raw issue from Revizto's `issue-filter/filter` endpoint revealed

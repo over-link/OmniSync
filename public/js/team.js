@@ -35,6 +35,8 @@ async function loadTeam() {
           </select>
         </td>
         <td>${new Date(m.created_at).toLocaleDateString()}</td>
+        <td>${m.last_login_at ? new Date(m.last_login_at).toLocaleString() : '<span class="hint">Never</span>'}</td>
+        <td>${m.latest_activity_at ? new Date(m.latest_activity_at).toLocaleString() : '<span class="hint">None yet</span>'}</td>
         <td class="role-result"></td>
       </tr>`
     )

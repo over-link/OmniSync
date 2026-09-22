@@ -23,6 +23,17 @@ CREATE TABLE IF NOT EXISTS users (
 -- directly: UPDATE users SET role = 'admin' WHERE email = '...';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'standard';
 
+-- Last time this user actually signed in (routes/auth.js's /auth/identify,
+-- the app's own login), for the Team page's "who's actually using this"
+-- visibility. Deliberately NOT reusing acc_tokens' refresh timestamp for
+-- this — pollService.keepAccConnectionsAlive touches that daily for every
+-- connected user regardless of real activity, so it isn't a valid proxy.
+-- "Latest sync activity" (the other half of that visibility) isn't a
+-- separate column — it's read live from audit_log (MAX(created_at) WHERE
+-- attributed_email = this user's email), since that table already is the
+-- record of every real action traced back to a specific person.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
+
 -- Log of team invites — the actual access grant is just the users row
 -- existing with a role; this table is a record of who invited whom and
 -- whether an email was actually sent (vs. just added to the list).

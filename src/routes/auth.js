@@ -36,8 +36,8 @@ router.post('/auth/identify', async (req, res) => {
   if (!email) return res.status(400).json({ error: 'email required' });
 
   const { rows } = await pool.query(
-    `INSERT INTO users (email) VALUES ($1)
-     ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email
+    `INSERT INTO users (email, last_login_at) VALUES ($1, now())
+     ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email, last_login_at = now()
      RETURNING id, email, role`,
     [email.toLowerCase().trim()]
   );
