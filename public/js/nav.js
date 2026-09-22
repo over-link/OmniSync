@@ -2,12 +2,18 @@
  * public/js/nav.js
  * Loaded first on every page. Fetches auth state once, renders the left
  * sidebar with links visible based on role, redirects non-admins away
- * from admin-only pages (/setup, /team), and dispatches an "app:ready"
- * event so each page's own script can proceed without re-fetching /auth/me.
+ * from admin-only pages (/setup, /team), redirects EVERYONE (admins
+ * included) away from every page except /account until both ACC and
+ * Revizto are connected, and dispatches an "app:ready" event so each
+ * page's own script can proceed without re-fetching /auth/me.
  *
  * Client-side redirect here is a UX convenience, not the real security
  * boundary — every admin-only API route also checks server-side
- * (requireAdmin), which is what actually protects the data.
+ * (requireAdmin), which is what actually protects the data. The
+ * connections gate is enforced the same way client-side only for now —
+ * the app's other API routes don't currently reject an unconnected
+ * user's requests server-side, so this is a UX nudge onto /account, not
+ * a hard security boundary the way requireAdmin is.
  */
 const ADMIN_ONLY_PATHS = ['/setup', '/team'];
 
@@ -44,16 +50,21 @@ async function loadNav() {
 
   const path = window.location.pathname;
   const isAdmin = user?.role === 'admin';
+  const fullyConnected = !!user && acc.connected && revizto.connected;
 
-  if (ADMIN_ONLY_PATHS.includes(path)) {
-    if (!user) {
-      window.location.replace('/account');
-      return;
-    }
-    if (!isAdmin) {
-      window.location.replace('/issues');
-      return;
-    }
+  // Nobody gets past My Connections until both ACC and Revizto are
+  // connected — applies to everyone, admins included. /account itself is
+  // always reachable regardless, since that's where connecting happens;
+  // this also naturally covers "not signed in at all" for every other
+  // page, since fullyConnected requires a signed-in user first.
+  if (path !== '/account' && !fullyConnected) {
+    window.location.replace('/account');
+    return;
+  }
+
+  if (ADMIN_ONLY_PATHS.includes(path) && !isAdmin) {
+    window.location.replace('/issues');
+    return;
   }
 
   const mount = document.getElementById('sidebar-mount');

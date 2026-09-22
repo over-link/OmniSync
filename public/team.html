@@ -21,15 +21,37 @@
       <h2>Add someone</h2>
       <div id="email-config-notice" class="hint"></div>
       <form id="invite-form" class="invite-form">
-        <input id="invite-email" type="email" placeholder="teammate@company.com" required />
+        <div id="invite-email-chipbox" class="chipbox">
+          <span id="invite-email-chips" class="chip-list"></span>
+          <input id="invite-email-input" type="text" class="chipbox-input" placeholder="teammate@company.com — paste a whole list at once" />
+        </div>
         <select id="invite-role">
           <option value="standard">Standard</option>
           <option value="admin">Admin</option>
         </select>
-        <label><input type="checkbox" id="invite-send-email" /> Send them an invite email</label>
         <button type="submit" class="btn">Add</button>
       </form>
       <div id="invite-result" class="result-text"></div>
+    </section>
+
+    <section class="card">
+      <h2>Invite link</h2>
+      <p class="hint">
+        A reusable link for a whole group at once — paste it into an email
+        or chat message yourself instead of sending individual invites.
+        Anyone who opens it and signs in gets access at the role below.
+        Signing up now requires a valid invite link (or the "Add someone"
+        form above) — the app no longer accepts arbitrary self-signup.
+      </p>
+      <div class="field-row">
+        <select id="invite-link-role">
+          <option value="standard">Standard</option>
+          <option value="admin">Admin</option>
+        </select>
+        <button id="copy-invite-link-btn" class="btn secondary">Copy invite link</button>
+      </div>
+      <div id="invite-link-result" class="result-text"></div>
+      <div id="invite-links-list"></div>
     </section>
 
     <section class="card">

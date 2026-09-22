@@ -34,6 +34,27 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'standard'
 -- record of every real action traced back to a specific person.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
 
+-- Shareable, reusable invite links ("Copy invite link" on the Team page) —
+-- one link per role, handed out to a whole group at once (e.g. pasted
+-- into an email/Slack message yourself) rather than the app sending
+-- individual invite emails. A brand-new signup (routes/auth.js's
+-- /auth/identify) now REQUIRES a valid, non-revoked code here to create
+-- an account at all — closes the previously-open "anyone who finds the
+-- URL can self-signup" gap now that there's a real invite mechanism.
+-- Existing users signing back in, and the very first user ever (bootstrap
+-- admin), are exempt — see /auth/identify's own comment. `revoked_at`
+-- lets an admin invalidate a link that was shared too widely without
+-- losing its history; a revoked link is just replaced by generating a
+-- new one for that role, not deleted.
+CREATE TABLE IF NOT EXISTS invite_links (
+  id            SERIAL PRIMARY KEY,
+  code          TEXT UNIQUE NOT NULL,
+  role          TEXT NOT NULL DEFAULT 'standard',
+  created_by    INTEGER REFERENCES users(id),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at    TIMESTAMPTZ
+);
+
 -- Log of team invites — the actual access grant is just the users row
 -- existing with a role; this table is a record of who invited whom and
 -- whether an email was actually sent (vs. just added to the list).

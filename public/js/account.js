@@ -34,12 +34,23 @@ async function refreshMe() {
 
 window.addEventListener('app:ready', (e) => render(e.detail));
 
+// Carries a ?invite=<code> from a shared invite link (see Team page's
+// "Copy invite link") through to /auth/identify — only actually needed
+// for a brand-new signup (an existing user signing back in ignores it
+// server-side), but harmless to always include.
+const inviteCode = new URLSearchParams(location.search).get('invite');
+
 document.getElementById('identify-btn').addEventListener('click', async () => {
   const email = document.getElementById('email-input').value.trim();
+  const whoamiEl = document.getElementById('whoami');
   if (!email) return;
-  await api('/auth/identify', { method: 'POST', body: JSON.stringify({ email }) });
-  await refreshMe();
-  location.reload(); // refresh sidebar too, now that we're signed in
+  try {
+    await api('/auth/identify', { method: 'POST', body: JSON.stringify({ email, invite: inviteCode }) });
+    await refreshMe();
+    location.reload(); // refresh sidebar too, now that we're signed in
+  } catch (err) {
+    whoamiEl.textContent = err.message;
+  }
 });
 
 document.getElementById('revizto-connect-btn').addEventListener('click', () => {

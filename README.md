@@ -88,13 +88,22 @@ existing admins manage roles from the Team page, or directly:
 UPDATE users SET role = 'admin' WHERE email = 'someone@company.com';
 ```
 
-**Inviting**: adding someone via the Team page grants access immediately
-(their `users` row is created/updated with that role) — sending them an
-email is a separate, optional step on top, via generic SMTP
-(`SMTP_HOST`/`SMTP_USER`/`SMTP_PASS` in `.env`; works with Gmail, SendGrid,
-Postmark, Resend's SMTP relay, or your own mail server — not locked to one
-vendor). If SMTP isn't configured, "Add" still works fully; it just tells
-you the email wasn't sent rather than silently failing.
+**Inviting**: two ways, both on the Team page. "Add someone" grants
+access immediately (their `users` row is created/updated with that
+role) — the field accepts **one email or many at once**: paste a whole
+list (one per line, or comma/semicolon-separated, however it comes out
+of an email client or spreadsheet) and each one is added in turn, with a
+per-email result line for anything that fails. A notification email is
+always attempted too via generic SMTP (`SMTP_HOST`/`SMTP_USER`/
+`SMTP_PASS` in `.env`; works with Gmail, SendGrid, Postmark, Resend's
+SMTP relay, or your own mail server — not locked to one vendor, and no
+separate opt-in checkbox — "Add" is the one action). If SMTP isn't
+configured, "Add" still grants access fully; it just tells you the email
+wasn't sent rather than silently failing. "Copy invite
+link" instead generates one shareable, reusable link per role that you
+send out yourself (email, Slack, however) to a whole group at once — see
+"Invite links" below for the full mechanism, including how this also
+closed a real open-signup gap.
 
 **Migration needed**: `users.role` and the `invites` log table are new
 (added via idempotent `ALTER TABLE`/`CREATE TABLE IF NOT EXISTS`, per the
@@ -128,6 +137,64 @@ piece of attributed activity after this shipped — there's no retroactive
 backfill, since neither signal existed before now.
 
 **Migration needed**: `users.last_login_at`. Run `npm run migrate`.
+
+### Invite links — shareable, reusable, and now required to sign up at all
+
+Previously, adding someone meant the admin typing their exact email into
+the "Add someone" form (still there, still works, unchanged) — fine for
+one person at a time, more friction for onboarding a whole group at
+once. The Team page now also has a **"Copy invite link"** section: pick
+a role, click, and the link (`/account?invite=<code>`) is copied to your
+clipboard — paste it into an email or chat message yourself and send it
+to as many people as you want. It's a **reusable, shared** link, not a
+single-use per-person token: the same code works for everyone it's sent
+to, matching "email it to a group" rather than "generate N individual
+invites." `POST /api/team/invite-links` reuses an existing active link
+for that role if one already exists rather than piling up duplicates
+every time the button is clicked; **Revoke** invalidates one (e.g. if it
+leaked somewhere it shouldn't have) without deleting its row, and the
+next "Copy invite link" click for that role then generates a fresh code.
+
+**Closes a real, previously-open gap**: before this, `/auth/identify`
+had no access control at all — anyone who found the app's URL could type
+in any email and get a `standard`-role account immediately, no invite
+needed (this was called out as an intentional, acceptable gap in "Known
+limitations" for a small trusted team, but stops being fine once there's
+a real invite mechanism to lean on instead). Now, creating a **brand
+new** account requires a valid, non-revoked code from `invite_links`. Two
+exemptions, both necessary for the app to still be usable:
+- **The very first user ever** (empty `users` table) still needs no
+  code — bootstraps as admin exactly as before, since nobody could ever
+  generate the first invite link otherwise.
+- **An existing user signing back in** never needs a code — this only
+  gates the creation of a brand-new account, not returning to one that
+  already exists. Same for anyone the admin adds directly via the "Add
+  someone" form, which is a separate, already-`requireAdmin`-gated path
+  untouched by this change.
+
+**Migration needed**: new `invite_links` table (`id`, `code`, `role`,
+`created_by`, `created_at`, `revoked_at`). Run `npm run migrate`.
+
+### Connections gate — every page except My Connections requires both accounts connected
+
+`public/js/nav.js` (loaded first on every page) now redirects to
+`/account` from anywhere else — Issues, Setup, Team, Log files, all of
+it — unless the signed-in user has **both** ACC and Revizto connected.
+Applies to everyone, admins included, no carve-out. This closes the gap
+where a freshly invited person (via the link above) could land on, say,
+the Issues page immediately after signing in, before ever connecting
+either account, and just see an empty/broken board with no clear next
+step — now they're kept on My Connections until both are actually done.
+
+This is a **client-side UX redirect, not a new server-side security
+boundary** — same caveat as the existing admin-only-path redirect it
+sits next to. The app's other API routes don't currently reject requests
+from an unconnected user server-side; this only changes what page you
+land on. `requireAdmin` remains the real enforcement for admin-only
+routes, unchanged by this.
+
+No migration needed — reads the same `acc`/`revizto` connection status
+`/auth/me` already returned before this.
 
 ## Field names (confirmed from a real raw issue response)
 
@@ -1368,7 +1435,13 @@ as the project's owner.
   Autodesk's actual signing scheme — confirm the current APS webhook docs
   before relying on this in production.
 - **App identity (login) is intentionally minimal** — email only, no
-  password/verification. Fine for a small trusted team, not for public signup.
+  password/verification, no proof the person entering an email actually
+  controls that inbox. Signup itself now requires a valid invite link
+  (see "Invite links" above) rather than being fully open, but that only
+  gates *who can create an account at all* — it doesn't verify identity
+  once someone has a valid code. Fine for a small trusted team; replace
+  with real auth (Clerk/Auth0/etc.) before this matters for real
+  customers.
 
 ## Deployment
 

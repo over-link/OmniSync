@@ -31,28 +31,50 @@ async function requireAdmin(req, res, next) {
 
 // ─── 1. App identity ────────────────────────────────────────────────
 
+// Signing back in (email already has a users row) never needs an invite
+// code — this only gates brand-new account creation. Two exemptions from
+// needing a code at all: the very first user ever (bootstrap admin, same
+// as before) and, obviously, anyone already in `users`. Everyone else
+// creating a NEW account needs a valid, non-revoked code from
+// invite_links (see "Copy invite link" on the Team page) — closes what
+// was previously open self-signup for anyone who found the URL.
 router.post('/auth/identify', async (req, res) => {
-  const { email } = req.body;
+  const email = req.body.email?.toLowerCase().trim();
+  const inviteCode = req.body.invite?.trim() || null;
   if (!email) return res.status(400).json({ error: 'email required' });
 
-  const { rows } = await pool.query(
-    `INSERT INTO users (email, last_login_at) VALUES ($1, now())
-     ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email, last_login_at = now()
-     RETURNING id, email, role`,
-    [email.toLowerCase().trim()]
-  );
-  let user = rows[0];
+  const { rows: existingRows } = await pool.query('SELECT id, email, role FROM users WHERE email = $1', [email]);
+  let user = existingRows[0];
 
-  // Bootstrap: if this is the very first user ever created, auto-promote
-  // to admin so someone can actually access project setup and the team
-  // page. Everyone after that is 'standard' unless invited as admin or
-  // promoted later.
-  if (user.role !== 'admin') {
+  if (user) {
+    await pool.query('UPDATE users SET last_login_at = now() WHERE id = $1', [user.id]);
+  } else {
     const { rows: countRows } = await pool.query('SELECT count(*) FROM users');
-    if (Number(countRows[0].count) === 1) {
-      await pool.query("UPDATE users SET role = 'admin' WHERE id = $1", [user.id]);
-      user = { ...user, role: 'admin' };
+    const isFirstEverUser = Number(countRows[0].count) === 0;
+
+    // Bootstrap: the very first user ever created becomes admin
+    // immediately, no invite needed — otherwise nobody could ever create
+    // the first invite link in the first place.
+    let role = 'admin';
+    if (!isFirstEverUser) {
+      if (!inviteCode) {
+        return res.status(403).json({ error: 'An invite link is required to sign up. Ask a team admin for one.' });
+      }
+      const { rows: linkRows } = await pool.query(
+        'SELECT role FROM invite_links WHERE code = $1 AND revoked_at IS NULL',
+        [inviteCode]
+      );
+      if (!linkRows[0]) {
+        return res.status(403).json({ error: 'This invite link is invalid or has been revoked. Ask a team admin for a new one.' });
+      }
+      role = linkRows[0].role;
     }
+
+    const { rows: createdRows } = await pool.query(
+      'INSERT INTO users (email, role, last_login_at) VALUES ($1, $2, now()) RETURNING id, email, role',
+      [email, role]
+    );
+    user = createdRows[0];
   }
 
   req.session.userId = user.id;

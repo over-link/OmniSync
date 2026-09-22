@@ -297,7 +297,7 @@ body {
 .hidden { display: none; }
 
 /* ── Form elements ──────────────────────────────────────────────── */
-input, select {
+input, select, textarea {
   font-family: var(--font-sans);
   font-size: 0.9rem;
   padding: 0.5rem 0.65rem;
@@ -306,12 +306,65 @@ input, select {
   background: var(--surface);
   color: var(--ink);
 }
-input:focus, select:focus, button:focus, a:focus {
+input:focus, select:focus, textarea:focus, button:focus, a:focus {
   outline: 2px solid var(--blueprint);
   outline-offset: 1px;
 }
 input[type="text"], input[type="email"], select { min-width: 220px; }
 .field-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+
+/* ── Chip-list email input (Team page "Add someone") ──────────────
+   Paste a whole list — from a spreadsheet, Word doc, email "To:" field,
+   however it's separated — and each parsed address becomes its own
+   removable chip, so it's unambiguous exactly who's queued to be added
+   before clicking Add. */
+.chipbox {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 320px;
+  flex: 1 1 320px;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.chipbox:focus-within { outline: 2px solid var(--blueprint); outline-offset: 1px; }
+.chip-list { display: contents; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--blueprint-dim);
+  color: var(--blueprint);
+  font-size: 0.82rem;
+  font-weight: 500;
+  padding: 0.2rem 0.3rem 0.2rem 0.55rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.chip-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 0.1rem 0.3rem;
+  border-radius: 50%;
+}
+.chip-remove:hover { background: rgba(0, 0, 0, 0.08); }
+.chipbox-input {
+  flex: 1 1 160px;
+  min-width: 160px;
+  border: none;
+  outline: none;
+  padding: 0.25rem 0.2rem;
+  background: transparent;
+  font-size: 0.9rem;
+}
+.chipbox-input:focus { outline: none; }
 
 button, .btn {
   font-family: var(--font-sans);
@@ -512,6 +565,23 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
 .team-table td { padding: 0.6rem 0.4rem; border-bottom: 1px solid var(--line); }
 .invite-form { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-bottom: 1.25rem; }
 .invite-form label { display: flex; align-items: center; gap: 0.3rem; font-size: 0.85rem; color: var(--muted); font-weight: 500; }
+
+.invite-link-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.4rem;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.invite-link-row:last-child { border-bottom: none; }
+.invite-link-url {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  flex: 1 1 auto;
+}
 
 /* ── Field mapping ──────────────────────────────────────────────── */
 .mapping-row {

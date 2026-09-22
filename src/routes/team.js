@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const crypto = require('crypto');
 const pool = require('../db/pool');
 const { requireAdmin } = require('./auth');
 const emailService = require('../services/emailService');
@@ -77,6 +78,51 @@ router.patch('/api/team/:id/role', requireAdmin, async (req, res) => {
   const { rows } = await pool.query('UPDATE users SET role = $2 WHERE id = $1 RETURNING id, email, role', [req.params.id, role]);
   if (!rows[0]) return res.status(404).json({ error: 'User not found' });
   res.json({ member: rows[0] });
+});
+
+// ─── Invite links ("Copy invite link", one per role) ──────────────────
+// Shareable and reusable by design — meant to be pasted into an email/
+// Slack message to a whole group at once, not a single-use, single-
+// recipient token. See invite_links in schema.sql and /auth/identify for
+// how a code is actually redeemed on signup.
+
+router.get('/api/team/invite-links', requireAdmin, async (req, res) => {
+  const { rows } = await pool.query(
+    'SELECT id, code, role, created_at FROM invite_links WHERE revoked_at IS NULL ORDER BY created_at DESC'
+  );
+  res.json({ links: rows });
+});
+
+// Reuses an existing active link for that role if one already exists,
+// rather than piling up a new one every time this is clicked — "Copy
+// invite link" is meant to be idempotent from the admin's perspective.
+router.post('/api/team/invite-links', requireAdmin, async (req, res) => {
+  const finalRole = VALID_ROLES.includes(req.body.role) ? req.body.role : 'standard';
+  const { rows: existing } = await pool.query(
+    'SELECT id, code, role, created_at FROM invite_links WHERE role = $1 AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1',
+    [finalRole]
+  );
+  if (existing[0]) return res.json({ link: existing[0] });
+
+  const code = crypto.randomBytes(24).toString('base64url');
+  const { rows } = await pool.query(
+    'INSERT INTO invite_links (code, role, created_by) VALUES ($1, $2, $3) RETURNING id, code, role, created_at',
+    [code, finalRole, req.session.userId]
+  );
+  res.json({ link: rows[0] });
+});
+
+// Invalidates a link (e.g. shared with the wrong group) without deleting
+// its row — a fresh "Copy invite link" click for that role generates a
+// brand new code afterward, since the revoked one no longer counts as
+// "existing" above.
+router.post('/api/team/invite-links/:id/revoke', requireAdmin, async (req, res) => {
+  const { rows } = await pool.query(
+    'UPDATE invite_links SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL RETURNING id',
+    [req.params.id]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'Invite link not found or already revoked' });
+  res.json({ ok: true });
 });
 
 module.exports = router;
