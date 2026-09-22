@@ -477,7 +477,7 @@ router.post('/api/settings/sync-paused', requireAdmin, async (req, res) => {
   res.json({ paused: !!req.body.paused });
 });
 
-// ─── Audit log ("Log files" page) ──────────────────────────────────────
+// ─── Audit log ("Activity Log" page) ────────────────────────────────────
 // Open to any signed-in user (requireLogin, not requireAdmin) — meant as
 // a shared, visible trail for the whole team, same access level as the
 // Issues page. `projectId` optionally filters to one project.

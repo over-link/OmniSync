@@ -184,28 +184,46 @@ async function loadMappingWarnings(projectId) {
 let reviztoLicenseOptions = []; // {uuid, name, region, frozen}
 let accHubOptions = []; // {id, name}
 let editingLicenseHub = false;
+// Set when the hub/license list itself failed to load (as opposed to
+// just being empty) — /auth/me now only reports connected: true when the
+// refresh token is genuinely still valid, so this should mostly catch
+// transient failures (a real Autodesk/Revizto-side hiccup, rate limit,
+// or — for ACC specifically — Custom Integration not yet approved, see
+// README) rather than a dead connection, which nav.js's connections gate
+// now catches earlier. Surfaced so a raw hub/license ID never silently
+// stands in for "we don't actually know the name" with no explanation.
+let accHubLoadError = null;
+let reviztoLicenseLoadError = null;
 
 async function loadLicenseAndHubOptions() {
   if (currentRevizto.connected) {
     try {
       const { licenses } = await api('/api/revizto/licenses');
       reviztoLicenseOptions = licenses;
-    } catch {
+      reviztoLicenseLoadError = null;
+    } catch (err) {
       reviztoLicenseOptions = [];
+      reviztoLicenseLoadError = err.message;
+      console.warn('[setup] Could not load Revizto licenses:', err);
     }
   } else {
     reviztoLicenseOptions = [];
+    reviztoLicenseLoadError = null;
   }
 
   if (currentAcc.connected) {
     try {
       const { hubs } = await api('/api/acc/hubs');
       accHubOptions = hubs;
-    } catch {
+      accHubLoadError = null;
+    } catch (err) {
       accHubOptions = [];
+      accHubLoadError = err.message;
+      console.warn('[setup] Could not load ACC hubs:', err);
     }
   } else {
     accHubOptions = [];
+    accHubLoadError = null;
   }
 
   renderLicenseHubRow();
@@ -226,11 +244,18 @@ function renderLicenseHubRow() {
   if (hasSaved && !editingLicenseHub) {
     const license = reviztoLicenseOptions.find((l) => String(l.uuid) === String(currentRevizto.licenseId));
     const hub = accHubOptions.find((h) => String(h.id) === String(currentAcc.hubId));
+    // Falls back to the raw ID only when the list loaded fine but this
+    // particular one just isn't in it (e.g. lost access to that specific
+    // hub/license) — if the list itself failed to load, says so instead
+    // of showing an ID that reads as meaningless gibberish with no
+    // explanation.
+    const licenseLabel = license ? license.name : reviztoLicenseLoadError ? `(name unavailable: ${reviztoLicenseLoadError})` : currentRevizto.licenseId;
+    const hubLabel = hub ? hub.name : accHubLoadError ? `(name unavailable: ${accHubLoadError})` : currentAcc.hubId;
     container.innerHTML = `${columnHeadersHtml}
       <div class="pairing-row">
-        <span class="pairing-row-name">${license ? license.name : currentRevizto.licenseId}</span>
+        <span class="pairing-row-name">${licenseLabel}</span>
         <span class="pairing-dot connected" title="License and hub both set"></span>
-        <span class="pairing-row-name">${hub ? hub.name : currentAcc.hubId}</span>
+        <span class="pairing-row-name">${hubLabel}</span>
         <button type="button" class="btn secondary" id="modify-license-hub-btn">Modify</button>
       </div>`;
     document.getElementById('modify-license-hub-btn').addEventListener('click', () => {

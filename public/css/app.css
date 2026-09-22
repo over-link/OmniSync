@@ -248,7 +248,7 @@ body {
 .link-checkbox { font-size: 0.85rem; color: var(--muted); }
 .board-select-all-bar { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0.4rem; border-bottom: 1px solid var(--line); }
 
-/* ── Log files (audit trail) ───────────────────────────────────── */
+/* ── Activity Log (audit trail) ────────────────────────────────── */
 .log-header, .log-row {
   display: grid;
   grid-template-columns: 150px 130px 110px 1fr 180px 80px;

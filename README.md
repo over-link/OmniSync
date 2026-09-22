@@ -64,7 +64,7 @@ reminder before expiry once this goes beyond a prototype.
   issues on the left and their linked ACC counterpart on the right (synced
   rows highlighted green), select unlinked issues and link them. Open to
   Standard and Admin alike.
-- **`/logs`** ("Log files") — the audit trail: every field change,
+- **`/logs`** ("Activity Log") — the audit trail: every field change,
   comment, attachment, link/unlink, and error, with who it's attributed
   to and when. See "Audit log" below. Open to Standard and Admin alike.
 - **Analytics** — placeholder nav link, not built yet.
@@ -190,7 +190,7 @@ exemptions, both necessary for the app to still be usable:
 ### Connections gate — every page except My Connections requires both accounts connected
 
 `public/js/nav.js` (loaded first on every page) now redirects to
-`/account` from anywhere else — Issues, Setup, Team, Log files, all of
+`/account` from anywhere else — Issues, Setup, Team, Activity Log, all of
 it — unless the signed-in user has **both** ACC and Revizto connected.
 Applies to everyone, admins included, no carve-out. This closes the gap
 where a freshly invited person (via the link above) could land on, say,
@@ -250,7 +250,7 @@ stats don't carry an admin-only dependency.
 **Migration needed**: `sync_map.last_error`/`last_error_at` columns
 (idempotent `ALTER TABLE`). Run `npm run migrate`.
 
-## Audit log ("Log files" page) — durable, queryable "who did what, when"
+## Audit log ("Activity Log" page) — durable, queryable "who did what, when"
 
 Before this, the only record of a sync event was `sync_map.last_error`
 (overwritten by the next event, no history) and Render's own server
@@ -298,7 +298,7 @@ on every successful sync regardless of whether there was a prior error,
 and would just flood the log with "no error" noise.
 
 **Open to any signed-in user, not admin-gated** (`GET /api/audit-log`,
-`requireLogin`) — the `/logs` page ("Log files" in the sidebar) is meant
+`requireLogin`) — the `/logs` page ("Activity Log" in the sidebar) is meant
 as a shared, visible trail for the whole team, same access level as the
 Issues page, not an admin-only tool. Optionally filtered by project
 (`?projectId=`), paginated (`?limit=&offset=`, default 100/page, capped
@@ -688,6 +688,63 @@ Revizto" regardless of actual connection state.
 
 No migration needed — reuses `revizto_tokens.refresh_expires_at`, which
 already existed.
+
+### `/auth/me` "Connected" now means the token is actually still valid, not just present
+
+Real bug, found from a genuine user report ("Setup page says I need to
+reconnect ACC even though My Connections shows Connected") and confirmed
+by reproducing it live: `/auth/me` reported `connected: true` for ACC/
+Revizto purely based on whether a token row existed in `acc_tokens`/
+`revizto_tokens`, regardless of whether the refresh token inside it was
+actually still usable. A row can outlive its own refresh token going
+genuinely dead (idle past its window, or revoked) — Setup page's hub-name
+lookup genuinely tries to use the token and correctly detected the dead
+connection (a real 409 from Autodesk: "The refresh token is invalid or
+expired"), while `/auth/me` kept reporting the same account as connected.
+Two pages, two different answers, for the same real state.
+
+Fixed: both `acc.connected`/`revizto.connected` now check
+`refresh_expires_at > now()`, not just row existence. Since both
+providers now have a daily keepalive cron keeping a *healthy* connection's
+`refresh_expires_at` rolling forward indefinitely (see above), this only
+flips to `false` once a connection has genuinely gone dead — not from
+routine idle time. This also means `nav.js`'s connections gate (see
+above) now correctly catches a dead connection too, redirecting to My
+Connections instead of letting the person wander into Setup/Issues/etc.
+with a connection that looks fine but silently fails on first real use.
+Verified live: a known-dead account now shows "Not connected" everywhere
+and gets redirected as expected; a healthy account is unaffected.
+
+Setup page's own hub/license-name fallback was also hardened as a second
+layer: if the hub/license list genuinely fails to load, it now shows
+`(name unavailable: <reason>)` instead of silently falling back to the
+raw hub/license ID with no explanation — which, being a base64/UUID-style
+string, reads as meaningless "random text" with zero indication anything
+went wrong.
+
+**A second, more concerning bug found while verifying the above, now also
+fixed**: `getValidAccToken`/`getValidReviztoToken` had no protection
+against two near-simultaneous calls for the same user both deciding a
+refresh was needed. Both ACC's and Revizto's refresh tokens are
+single-use and rotating — using one invalidates it and issues a new one —
+so two overlapping refresh attempts race: one wins and saves a new
+refresh token, the other's attempt (holding the now-already-spent old
+one) fails, and depending on timing that failure can permanently kill a
+connection that was perfectly healthy a moment earlier. **Confirmed real,
+not theoretical** — watched exactly this happen to a genuinely healthy
+ACC connection mid-session during live testing (two overlapping requests
+for the same user). Fixed with a per-user, per-provider in-memory lock
+(`authManager._withRefreshLock`) — a plain `Map` is sufficient since this
+app runs as a single Node process, not clustered. A second caller that
+arrives while a refresh is already in flight for that user just awaits
+the same in-flight promise instead of starting its own; a caller that
+arrives just after one completes re-checks the freshly-saved token before
+deciding a refresh is still needed, rather than trusting a possibly-stale
+value it read earlier. Verified with a mocked concurrency test (5
+simultaneous calls for the same user): exactly one real refresh happened,
+all 5 callers received the same valid token.
+
+No migration needed — this is purely in-process locking, nothing stored.
 
 GET comments' response shape is now confirmed from real data:
 `{id, issueId, body, createdBy, createdAt, updatedAt, deletedAt, ...}` —

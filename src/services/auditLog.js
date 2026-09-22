@@ -3,7 +3,7 @@
  * Durable, queryable "who did what, when" trail — see schema.sql's
  * audit_log table for the full rationale. `record` is called from
  * syncService at each point a field change, comment, attachment,
- * link/unlink, or error actually happens; `list` backs the "Log files"
+ * link/unlink, or error actually happens; `list` backs the "Activity Log"
  * page (open to any signed-in user, not admin-gated).
  *
  * Deliberately fire-and-forget from the caller's perspective in spirit —
@@ -47,7 +47,7 @@ async function record({
 }
 
 /**
- * Paginated, optionally-filtered read for the Log files page. `projectId`
+ * Paginated, optionally-filtered read for the Activity Log page. `projectId`
  * filters to one project; omit for "all projects this user can see" (the
  * page itself decides what to pass — every signed-in user can read this,
  * same as the rest of the app's non-admin pages).

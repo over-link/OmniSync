@@ -26,7 +26,7 @@ const ADMIN_ONLY_PATHS = ['/setup'];
 
 const NAV_LINKS = [
   { href: '/issues', label: 'Issues', adminOnly: false },
-  { href: '/logs', label: 'Log files', adminOnly: false },
+  { href: '/logs', label: 'Activity Log', adminOnly: false },
   { href: '/account', label: 'My Connections', adminOnly: false },
   { href: '/setup', label: 'Project Setup', adminOnly: true },
   { href: '/team', label: 'Team', adminOnly: false },

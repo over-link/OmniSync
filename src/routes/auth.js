@@ -94,9 +94,26 @@ router.get('/auth/me', async (req, res) => {
   req.session.role = role;
   const accTokens = await tokenStore.getAccTokens(req.session.userId);
   const reviztoTokens = await tokenStore.getReviztoTokens(req.session.userId);
+
+  // "Connected" means the refresh token is actually still usable, not
+  // just "a row exists in the DB" — a row can outlive its own refresh
+  // token going genuinely dead (idle past its window, or revoked
+  // server-side), and until this fix this page kept showing "Connected"
+  // for those regardless. Confirmed by real testing: Setup page's own
+  // hub-name lookup correctly detected a dead ACC connection (a live
+  // 409 "refresh token is invalid or expired" from Autodesk) while this
+  // route still reported connected: true for the same account — two
+  // pages disagreeing about the same account's real state. Both keepalive
+  // crons (pollService.keepAccConnectionsAlive/
+  // keepReviztoConnectionsAlive) keep refresh_expires_at rolling forward
+  // for a healthy connection, so this only flips to false once a
+  // connection has genuinely gone dead, not from routine idle time.
+  const accStillValid = !!accTokens && new Date(accTokens.refresh_expires_at) > new Date();
+  const reviztoStillValid = !!reviztoTokens && new Date(reviztoTokens.refresh_expires_at) > new Date();
+
   res.json({
     user: { id: req.session.userId, email: req.session.userEmail, role },
-    acc: accTokens
+    acc: accStillValid
       ? {
           connected: true,
           // expiresAt is the short-lived ACCESS token's own ~60-min
@@ -110,7 +127,7 @@ router.get('/auth/me', async (req, res) => {
           hubId: accTokens.default_hub_id,
         }
       : { connected: false },
-    revizto: reviztoTokens
+    revizto: reviztoStillValid
       ? {
           connected: true,
           refreshExpiresAt: reviztoTokens.refresh_expires_at,
