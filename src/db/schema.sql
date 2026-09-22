@@ -410,4 +410,19 @@ CREATE INDEX IF NOT EXISTS audit_log_project_created_idx ON audit_log(project_id
 CREATE INDEX IF NOT EXISTS audit_log_revizto_issue_idx ON audit_log(revizto_issue_id);
 CREATE INDEX IF NOT EXISTS audit_log_acc_issue_idx ON audit_log(acc_issue_id);
 
+-- acc_tokens.expires_at is the ACCESS token's own short ~60-minute expiry
+-- (confirmed from Autodesk's APS docs) — always looks like "expiring any
+-- minute now" even on a perfectly healthy connection, which is exactly
+-- what the My Connections page was showing for every user and reading
+-- as broken. The actually meaningful window is the REFRESH token's, which
+-- Autodesk's docs confirm is single-use and rotating with a fixed 15-day
+-- life (not returned in the token response itself, so computed locally at
+-- save time — same approach already used for Revizto's own
+-- refresh_expires_at in reviztoAuth.js, just a 15-day constant instead of
+-- ~monthly). Backfilled from existing rows' updated_at (their last known
+-- successful save) + 15 days, a reasonable estimate for anyone already
+-- connected rather than leaving it NULL until their next refresh.
+ALTER TABLE acc_tokens ADD COLUMN IF NOT EXISTS refresh_expires_at TIMESTAMPTZ;
+UPDATE acc_tokens SET refresh_expires_at = updated_at + INTERVAL '15 days' WHERE refresh_expires_at IS NULL;
+
 -- connect-pg-simple creates its own "session" table automatically on first run.

@@ -96,7 +96,20 @@ router.get('/auth/me', async (req, res) => {
   const reviztoTokens = await tokenStore.getReviztoTokens(req.session.userId);
   res.json({
     user: { id: req.session.userId, email: req.session.userEmail, role },
-    acc: accTokens ? { connected: true, expiresAt: accTokens.expires_at, hubId: accTokens.default_hub_id } : { connected: false },
+    acc: accTokens
+      ? {
+          connected: true,
+          // expiresAt is the short-lived ACCESS token's own ~60-min
+          // expiry — kept for anything that still reads it, but
+          // refreshExpiresAt (the REFRESH token's real ~15-day window,
+          // matching Revizto's own refreshExpiresAt) is what the UI
+          // should actually show; expiresAt alone made a perfectly
+          // healthy connection look like it was expiring any minute.
+          expiresAt: accTokens.expires_at,
+          refreshExpiresAt: accTokens.refresh_expires_at,
+          hubId: accTokens.default_hub_id,
+        }
+      : { connected: false },
     revizto: reviztoTokens
       ? {
           connected: true,

@@ -601,24 +601,53 @@ falls back to whichever connection the sync was already running as if
 their personal connection fails for any reason (not connected, or their
 connection has gone idle-dead — see below).
 
-**Why this needed a second piece: Autodesk revokes an idle refresh
-token.** Confirmed by real testing: a real, previously-working ACC
-connection came back `grant revoked due to idle timeout` after roughly 3
-weeks of not being used — which would otherwise make per-user attribution
+**Why this needed a second piece: Autodesk's refresh token isn't
+long-lived on its own.** Confirmed from Autodesk's own APS docs (not
+just inferred from a revocation error, as originally written here): a
+3-legged refresh token is **single-use and rotating, fixed at 15 days**
+— using it invalidates it and returns a new one valid for another 15
+days, so a connection that's never refreshed goes dead after 15 days of
+being untouched, and this would otherwise make per-user attribution
 silently stop working for anyone who doesn't happen to touch
-ACC-connected features often. Fixed with `pollService.
-keepAccConnectionsAlive`, a new daily cron job (`ACC_KEEPALIVE_CRON`,
-default `0 3 * * *`) that calls `getValidAccToken` for every connected
-user regardless of whether they've used anything — a refresh counts as
-activity to Autodesk, resetting the idle clock, so this alone keeps every
-connection alive indefinitely with zero engagement required from that
-person. Cheap to run often: `getValidAccToken` only actually calls
-Autodesk when the cached access token (short-lived, ~1hr) has already
-expired, so most daily runs for an active connection are a local no-op.
-**This can't revive an already-dead connection** — confirmed by testing,
-two real connections that had already gone idle before this job existed
-needed a fresh reconnect (My Connections page), not just a refresh
-attempt, to work again.
+ACC-connected features often. (Earlier revisions of this note described
+this as Autodesk "revoking an idle refresh token after ~3 weeks," based
+on a real `grant revoked due to idle timeout` error seen in testing —
+consistent with the 15-day window, just less precise than what Autodesk's
+docs actually state.) Fixed with `pollService.keepAccConnectionsAlive`, a
+daily cron job (`ACC_KEEPALIVE_CRON`, default `0 3 * * *`) that calls
+`getValidAccToken` for every connected user regardless of whether they've
+used anything — a refresh both extends life and rotates in a fresh
+refresh token, so as long as this runs at least once every 15 days per
+connection, it keeps rolling forward indefinitely with zero engagement
+required from that person. Cheap to run often: `getValidAccToken` only
+actually calls Autodesk when the cached access token (short-lived, ~1hr)
+has already expired, so most daily runs for an active connection are a
+local no-op. **This can't revive an already-dead connection** — confirmed
+by testing, connections that had already gone dead before this job
+existed (or whose refresh token died for some other reason before the
+job ever got to them) needed a fresh reconnect (My Connections page), not
+just a refresh attempt, to work again.
+
+**`acc_tokens.refresh_expires_at`** tracks this real ~15-day window
+(computed locally at save time — same approach already used for
+Revizto's own `refresh_expires_at`, just a 15-day constant instead of
+~monthly, since Autodesk doesn't return a refresh-token TTL in the
+response itself). **My Connections previously showed the wrong expiry
+for ACC** — `acc.expiresAt`, the ACCESS token's own ~60-minute expiry —
+which made every connection look like it was "expiring any minute," even
+a perfectly healthy one being refreshed daily by the keepalive cron.
+Fixed to show `refreshExpiresAt` instead, the same "reconnect by" framing
+already used for Revizto. Real data confirmed the keepalive cron is
+genuinely working in production: two of four connected users' tokens had
+been refreshed the same day this was checked, while the other two —
+untouched since their original connect over five weeks earlier — had
+already gone dead, exactly matching "can't revive an already-dead
+connection" above; those two need an actual fresh reconnect, not a code
+fix.
+
+**Migration needed**: `acc_tokens.refresh_expires_at` (idempotent
+`ALTER TABLE`, backfilled from existing rows' `updated_at + 15 days` as a
+reasonable estimate). Run `npm run migrate`.
 
 GET comments' response shape is now confirmed from real data:
 `{id, issueId, body, createdBy, createdAt, updatedAt, deletedAt, ...}` —
@@ -1428,9 +1457,22 @@ as the project's owner.
   JSON response, matching the old app's working code — but we haven't seen a
   raw response from Revizto's docs to confirm field names. Check the first
   real exchange response and adjust `_parseTokenResponse` if needed.
-- **Revizto refresh token expiry (monthly, flat vs. inactivity-based) is unconfirmed.**
-  The docs say "valid for 1 month" with no mention of resetting on use. Confirm
-  with Revizto support/your API contact.
+- ~~Revizto refresh token expiry (monthly, flat vs. inactivity-based) is
+  unconfirmed.~~ **Confirmed activity-based, not a flat calendar deadline**
+  — real production data (four accounts, checked 2026-09-22): two users
+  active roughly weekly had their refresh window rolling forward from
+  their most recent actual use (not their original connect date), while
+  two dormant since 8/14 had already gone dead on schedule from that
+  fixed point. `reviztoAuth._parseTokenResponse` already computes
+  `refresh_expires_at` as `now + 1 month` on every successful refresh
+  (not just at initial connect), which is exactly the mechanism this
+  evidence confirms actually matches Revizto's real behavior — regular
+  use (anything that exercises a Revizto-authenticated call while the
+  cached ~1hr access token has expired) keeps pushing the window forward
+  indefinitely, same shape as ACC's own keepalive, just without a
+  dedicated cron forcing it — an active user's ordinary usage does the
+  job on its own. A truly idle account still goes dead after ~1 month, no
+  different from ACC without its keepalive cron.
 - **Title is now bidirectional too** (`updateIssueTitle`, same diff-comment
   mechanism as status/assignee/watchers/priority/due date) — so every field
   in the mapping table above except description (Revizto has none) now

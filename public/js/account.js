@@ -17,7 +17,13 @@ function render({ user, acc, revizto }) {
   document.getElementById('whoami').textContent = `Signed in as ${user.email}`;
   document.getElementById('connections-section').classList.remove('hidden');
 
-  document.getElementById('acc-status').textContent = acc.connected ? `Connected (expires ${new Date(acc.expiresAt).toLocaleString()})` : 'Not connected';
+  // Shows the REFRESH token's ~15-day window (reconnect-by, same idea as
+  // Revizto below), not the access token's own ~60-min expiry — that one
+  // always looks like "expiring any minute" even on a perfectly healthy,
+  // actively-refreshing connection, which read as broken to every user.
+  document.getElementById('acc-status').textContent = acc.connected
+    ? `Connected (reconnect by ${new Date(acc.refreshExpiresAt).toLocaleDateString()})`
+    : 'Not connected';
   document.getElementById('acc-status').className = 'badge ' + (acc.connected ? 'badge-success' : 'badge-neutral');
   document.getElementById('acc-connect-btn').textContent = acc.connected ? 'Reconnect ACC' : 'Connect ACC';
 

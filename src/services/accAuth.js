@@ -11,6 +11,16 @@ const CLIENT_ID = process.env.APS_CLIENT_ID;
 const CLIENT_SECRET = process.env.APS_CLIENT_SECRET;
 const CALLBACK_URL = process.env.APS_CALLBACK_URL;
 
+// Confirmed from Autodesk's own APS docs: 3-legged refresh tokens are
+// single-use and rotating, fixed at 15 days — not returned as a TTL in
+// the token response itself (unlike expires_in for the access token), so
+// computed locally at save time. Same approach already used for
+// Revizto's own refresh_expires_at (reviztoAuth.js), just a different
+// constant. Refreshed correctly (see getValidAccToken/keepAccConnectionsAlive)
+// this window keeps rolling forward indefinitely rather than being a
+// hard cap.
+const REFRESH_TOKEN_LIFE_MS = 15 * 24 * 60 * 60 * 1000;
+
 function getAuthUrl(state) {
   const params = new URLSearchParams({
     response_type: 'code',
@@ -31,6 +41,7 @@ function _parseTokenResponse(data) {
     access_token: data.access_token,
     refresh_token: data.refresh_token,
     expires_at: new Date(Date.now() + data.expires_in * 1000 - 60_000),
+    refresh_expires_at: new Date(Date.now() + REFRESH_TOKEN_LIFE_MS),
   };
 }
 

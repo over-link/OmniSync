@@ -17,18 +17,19 @@ async function getAccTokens(userId) {
   return rows[0] || null;
 }
 
-async function saveAccTokens(userId, { access_token, refresh_token, expires_at, autodesk_user_id, autodesk_email }) {
+async function saveAccTokens(userId, { access_token, refresh_token, expires_at, refresh_expires_at, autodesk_user_id, autodesk_email }) {
   await pool.query(
-    `INSERT INTO acc_tokens (user_id, access_token, refresh_token, expires_at, autodesk_user_id, autodesk_email, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, now())
+    `INSERT INTO acc_tokens (user_id, access_token, refresh_token, expires_at, refresh_expires_at, autodesk_user_id, autodesk_email, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, now())
      ON CONFLICT (user_id) DO UPDATE SET
        access_token = EXCLUDED.access_token,
        refresh_token = EXCLUDED.refresh_token,
        expires_at = EXCLUDED.expires_at,
+       refresh_expires_at = EXCLUDED.refresh_expires_at,
        autodesk_user_id = COALESCE(EXCLUDED.autodesk_user_id, acc_tokens.autodesk_user_id),
        autodesk_email = COALESCE(EXCLUDED.autodesk_email, acc_tokens.autodesk_email),
        updated_at = now()`,
-    [userId, access_token, refresh_token, expires_at, autodesk_user_id || null, autodesk_email || null]
+    [userId, access_token, refresh_token, expires_at, refresh_expires_at, autodesk_user_id || null, autodesk_email || null]
   );
 }
 
