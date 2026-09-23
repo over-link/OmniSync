@@ -11,7 +11,7 @@
 </head>
 <body>
   <div id="sidebar-mount"></div>
-  <div id="app" class="container container-wide">
+  <div id="app" class="container container-wide container-log">
     <header class="app-header">
       <div>
         <h1>Activity Log</h1>
@@ -33,6 +33,7 @@
       </div>
 
       <div class="card board-card">
+        <div class="log-table">
         <div class="log-header">
           <span>When</span>
           <span>Project</span>
@@ -44,6 +45,7 @@
           <span>Outcome</span>
         </div>
         <div id="log-rows"></div>
+        </div>
         <div id="log-empty" class="log-empty hidden">No log entries yet.</div>
       </div>
 

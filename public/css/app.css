@@ -249,18 +249,31 @@ body {
 .board-select-all-bar { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0.4rem; border-bottom: 1px solid var(--line); }
 
 /* ── Activity Log (audit trail) ────────────────────────────────── */
+/* Eight columns don't fit the standard wide container, so this page gets
+   its own wider one, and below that the table scrolls sideways inside its
+   card (.log-table) rather than squeezing Detail down to nothing. */
+/* min-width: 0 — as a flex child of body, the container otherwise refuses
+   to shrink below the table's min-width and the whole page scrolls. */
+.container-log { max-width: 1320px; min-width: 0; }
+.log-table { overflow-x: auto; }
 .log-header, .log-row {
   display: grid;
-  grid-template-columns: 150px 130px 80px 70px 110px 1fr 160px 80px;
-  gap: 0.75rem;
+  grid-template-columns: 118px 96px 78px 60px 100px minmax(200px, 1fr) 132px 72px;
+  min-width: 920px;
+  gap: 0.6rem;
   align-items: start;
   padding: 0.55rem 0.4rem;
   border-bottom: 1px solid var(--line);
   font-size: 0.85rem;
 }
+/* Grid items default to min-width: auto, which lets one long unbroken
+   value (a URL, an email) push its column wider than the track. */
+.log-header > span, .log-row > span { min-width: 0; overflow-wrap: anywhere; }
+.log-header > span { overflow-wrap: normal; white-space: nowrap; }
+.log-row .badge { white-space: nowrap; overflow-wrap: normal; }
 .log-header {
   font-family: var(--font-mono);
-  font-size: 0.95rem;
+  font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--blueprint);
