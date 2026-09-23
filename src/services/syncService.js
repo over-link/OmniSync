@@ -549,6 +549,37 @@ function _findReviztoFieldEditorEmail(comments, changedKeys) {
   return null;
 }
 
+/**
+ * Narrows a full toAccIssue payload to just the fields whose value differs
+ * from `accIssue` (a GET issue response). Values are compared as strings
+ * (ACC returns e.g. the numeric "Revizto ID" field as "6", and null for
+ * an empty text field), watchers ignoring order, and custom attributes
+ * per attributeDefinitionId. A comparison that's too strict just sends a
+ * field that didn't need sending — same as the old full-payload behavior
+ * — so this errs toward treating unknown shapes as changed.
+ */
+function _diffAgainstAccIssue(payload, accIssue) {
+  const same = (a, b) => String(a ?? '') === String(b ?? '');
+  const patch = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (key === 'customAttributes' || key === 'watchers' || key === 'assignedToType') continue;
+    if (!same(value, accIssue[key])) patch[key] = value;
+  }
+  if (payload.assignedTo !== undefined && (patch.assignedTo !== undefined || !same(payload.assignedToType, accIssue.assignedToType))) {
+    patch.assignedTo = payload.assignedTo;
+    patch.assignedToType = payload.assignedToType;
+  }
+  if (payload.watchers && JSON.stringify([...payload.watchers].sort()) !== JSON.stringify([...(accIssue.watchers || [])].sort())) {
+    patch.watchers = payload.watchers;
+  }
+  if (payload.customAttributes) {
+    const current = new Map((accIssue.customAttributes || []).map((a) => [a.attributeDefinitionId, a.value]));
+    const changed = payload.customAttributes.filter((a) => !current.has(a.attributeDefinitionId) || !same(a.value, current.get(a.attributeDefinitionId)));
+    if (changed.length) patch.customAttributes = changed;
+  }
+  return patch;
+}
+
 // ─── Push: Revizto issue -> ACC (create or update) ────────────────────
 
 async function pushIssueToAcc(userId, project, reviztoIssue) {
@@ -663,9 +694,24 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
   }
 
   let accIssueId;
+  let accAlreadyMatched = false;
   if (existingAccId) {
     try {
-      await _withAccUserFallback(preferredPushUserId, userId, (uid) => accService.updateIssue(uid, project, existingAccId, payload));
+      // Only PATCH what actually differs from ACC's current state. Sending
+      // the full payload every cycle made whoever ran the push (usually
+      // the project owner, since most cycles have no editor to attribute)
+      // ACC's "last updated by" every 2 minutes, overwriting a real
+      // editor's attribution minutes after it landed — and echoed changes
+      // that originated in ACC straight back to ACC under the owner's
+      // name. The GET also keeps _handlePossibleAccIssueGone's self-heal
+      // working on cycles where there's nothing to PATCH.
+      const currentAccIssue = await accService.getIssue(userId, project, existingAccId);
+      const patch = _diffAgainstAccIssue(payload, currentAccIssue);
+      if (Object.keys(patch).length) {
+        await _withAccUserFallback(preferredPushUserId, userId, (uid) => accService.updateIssue(uid, project, existingAccId, patch));
+      } else {
+        accAlreadyMatched = true;
+      }
       accIssueId = existingAccId;
       await _clearAccIssueMissingFlag(project, reviztoIssue.id);
     } catch (err) {
@@ -703,7 +749,10 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
     JSON.stringify(currentFieldSnapshot),
   ]);
 
-  for (const key of changedFieldKeys) {
+  // If ACC already had every value, the Revizto-side "change" was this
+  // app relaying an ACC edit into Revizto (already logged as
+  // acc_to_revizto by handleAccWebhook) — not a Revizto edit to log again.
+  for (const key of accAlreadyMatched ? [] : changedFieldKeys) {
     await _audit({
       projectId: project.id,
       reviztoIssueId: reviztoIssue.id,

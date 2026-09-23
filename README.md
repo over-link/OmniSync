@@ -847,6 +847,26 @@ and file attachments. Falls back to the project's default connection
 fetched, no matching diff comment is found (e.g. the change predates this
 feature), or the resolved editor has no personal ACC connection.
 
+**Confirmed working live** (Revizto #6 / ACC #208): priority-only and
+status-only edits made in Revizto show the real editor in ACC's activity
+feed. It also needed one fix: the update now sends **only the fields
+that differ from ACC's current state** (`_diffAgainstAccIssue`, compared
+against a GET of the ACC issue), and skips the PATCH entirely when
+nothing differs. Before this, every 2-minute cycle re-sent the full
+payload as the project owner even with nothing changed, so ACC's "last
+updated by" flipped back to the owner minutes after a correctly
+attributed edit, and an ACC-side edit relayed into Revizto was echoed
+straight back to ACC (and into the Activity Log) as an owner's "Revizto
+edit". When ACC already matches, that cycle's changed fields aren't
+logged as `revizto_to_acc` rows either, since they came from ACC.
+
+One unexplained 403 was seen on the very first live test (priority and
+status changed together): the editor's own ACC PATCH was refused, and the
+push fell back to the owner. It didn't reproduce on any later test,
+including moving the issue into and out of Completed. The fallback now logs ACC's
+full error body, so if it recurs, search the logs for `ACC action as user
+... failed`.
+
 **Cold start**: `last_synced_revizto_fields` is `NULL` for every issue
 until its first push after this feature ships — that first push has
 nothing to diff against, so it just establishes the baseline
