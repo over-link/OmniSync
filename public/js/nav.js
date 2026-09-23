@@ -95,6 +95,15 @@ async function loadNav() {
     `;
   }
 
+  // Wait until every page script has run before announcing. /auth/me can
+  // come back while the browser is still downloading the page's own
+  // script (issues.js, loaded after nav.js and multiselect.js) — the
+  // event then fired with nothing listening yet, and the page stayed
+  // blank until reloaded. DOMContentLoaded fires only after all of the
+  // page's ordinary <script> tags have executed.
+  if (document.readyState === 'loading') {
+    await new Promise((resolve) => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
+  }
   window.dispatchEvent(new CustomEvent('app:ready', { detail: { user, acc, revizto } }));
 }
 
