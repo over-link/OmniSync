@@ -425,4 +425,17 @@ CREATE INDEX IF NOT EXISTS audit_log_acc_issue_idx ON audit_log(acc_issue_id);
 ALTER TABLE acc_tokens ADD COLUMN IF NOT EXISTS refresh_expires_at TIMESTAMPTZ;
 UPDATE acc_tokens SET refresh_expires_at = updated_at + INTERVAL '15 days' WHERE refresh_expires_at IS NULL;
 
+-- ACC's human-readable issue number (displayId, e.g. #208) per ACC issue
+-- UUID, for the Activity Log's "ACC #" column — audit_log only stores the
+-- UUID. Deliberately its own table rather than a sync_map column: an
+-- unlink deletes the sync_map row, but older log rows about that issue
+-- should still show its number. Filled in by syncService as issues are
+-- pushed/fetched, so existing linked issues pick it up within a cycle.
+CREATE TABLE IF NOT EXISTS acc_issue_numbers (
+  project_id   INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  acc_issue_id TEXT NOT NULL,
+  display_id   TEXT NOT NULL,
+  PRIMARY KEY (project_id, acc_issue_id)
+);
+
 -- connect-pg-simple creates its own "session" table automatically on first run.

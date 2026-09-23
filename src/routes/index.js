@@ -486,7 +486,7 @@ router.get('/api/audit-log', requireLogin, async (req, res) => {
   const offset = parseInt(req.query.offset, 10) || 0;
   const projectId = req.query.projectId ? Number(req.query.projectId) : null;
   const entries = await auditLog.list({ projectId, limit, offset });
-  res.json({ entries });
+  res.json({ entries: await syncService.labelAuditEntries(entries) });
 });
 
 // ─── Sync (on-demand) ────────────────────────────────────────────────

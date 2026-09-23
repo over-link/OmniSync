@@ -251,7 +251,7 @@ body {
 /* ── Activity Log (audit trail) ────────────────────────────────── */
 .log-header, .log-row {
   display: grid;
-  grid-template-columns: 150px 130px 110px 1fr 180px 80px;
+  grid-template-columns: 150px 130px 80px 70px 110px 1fr 160px 80px;
   gap: 0.75rem;
   align-items: start;
   padding: 0.55rem 0.4rem;

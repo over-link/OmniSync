@@ -550,6 +550,85 @@ function _findReviztoFieldEditorEmail(comments, changedKeys) {
 }
 
 /**
+ * Adds human-readable labels to Activity Log rows for display, without
+ * touching what's stored: `attributed_name` (the person's Revizto license
+ * name) and, for customStatus field changes, `old_label`/`new_label` (the
+ * status name in place of Revizto's raw status UUID). Looked up through
+ * each project's OWNER's Revizto connection, not the viewer's — so every
+ * viewer sees the same labels, including one with no Revizto license
+ * selected (or no Revizto connection at all). Every lookup is best-effort
+ * — on failure the page just shows the raw email/UUID as before.
+ */
+async function labelAuditEntries(entries) {
+  const projectIds = [...new Set(entries.map((e) => e.project_id).filter(Boolean))];
+  if (!projectIds.length) return entries;
+  const { rows: projects } = await pool.query('SELECT * FROM projects WHERE id = ANY($1)', [projectIds]);
+
+  const statusNameByUuid = {};
+  const nameByEmail = {};
+  const needsStatuses = new Set(entries.filter((e) => e.field_name === 'customStatus').map((e) => e.project_id));
+  const loadedLicenses = new Set();
+  for (const project of projects.filter((p) => p.owner_user_id)) {
+    const ownerId = project.owner_user_id;
+    if (needsStatuses.has(project.id)) {
+      try {
+        const settings = await reviztoService.getWorkflowSettings(ownerId, project.revizto_region, project.revizto_project_uuid);
+        // Deleted statuses included on purpose — older log rows can still
+        // reference a status that's since been removed from the workflow.
+        for (const s of settings.statuses || []) statusNameByUuid[s.uuid] = s.name;
+      } catch (err) {
+        console.warn(`[audit] Could not load Revizto status names for "${project.name}":`, err.message);
+      }
+    }
+    const ownerTokens = await tokenStore.getReviztoTokens(ownerId).catch(() => null);
+    if (ownerTokens?.license_id && !loadedLicenses.has(ownerTokens.license_id)) {
+      loadedLicenses.add(ownerTokens.license_id);
+      try {
+        const members = await reviztoService.getLicenseMembers(ownerId, project.revizto_region, ownerTokens.license_id, true);
+        Object.assign(nameByEmail, reviztoService.buildMemberNameLookup(members));
+      } catch (err) {
+        console.warn('[audit] Could not load license member names:', err.message);
+      }
+    }
+  }
+
+  const statusLabel = (raw) => {
+    try {
+      const uuid = JSON.parse(raw);
+      return uuid && statusNameByUuid[uuid] ? JSON.stringify(statusNameByUuid[uuid]) : raw;
+    } catch {
+      return raw;
+    }
+  };
+  return entries.map((e) => ({
+    ...e,
+    attributed_name: e.attributed_email ? nameByEmail[e.attributed_email.toLowerCase()] || null : null,
+    ...(e.field_name === 'customStatus' ? { old_label: statusLabel(e.old_value), new_label: statusLabel(e.new_value) } : {}),
+  }));
+}
+
+/**
+ * Caches each ACC issue's human-readable number (displayId) for the
+ * Activity Log's "ACC #" column — see schema.sql's acc_issue_numbers.
+ * Best-effort: a failure here (e.g. the table not migrated yet) must never
+ * take down the sync work it rides along with.
+ */
+async function _rememberAccIssueNumbers(projectId, accIssues) {
+  const rows = accIssues.filter((i) => i?.id && i.displayId != null);
+  if (!rows.length) return;
+  try {
+    await pool.query(
+      `INSERT INTO acc_issue_numbers (project_id, acc_issue_id, display_id)
+       SELECT $1, * FROM unnest($2::text[], $3::text[])
+       ON CONFLICT (project_id, acc_issue_id) DO UPDATE SET display_id = EXCLUDED.display_id`,
+      [projectId, rows.map((i) => i.id), rows.map((i) => String(i.displayId))]
+    );
+  } catch (err) {
+    console.warn('[sync] Could not save ACC issue numbers for the Activity Log:', err.message);
+  }
+}
+
+/**
  * Narrows a full toAccIssue payload to just the fields whose value differs
  * from `accIssue` (a GET issue response). Values are compared as strings
  * (ACC returns e.g. the numeric "Revizto ID" field as "6", and null for
@@ -706,6 +785,7 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
       // name. The GET also keeps _handlePossibleAccIssueGone's self-heal
       // working on cycles where there's nothing to PATCH.
       const currentAccIssue = await accService.getIssue(userId, project, existingAccId);
+      await _rememberAccIssueNumbers(project.id, [currentAccIssue]);
       const patch = _diffAgainstAccIssue(payload, currentAccIssue);
       if (Object.keys(patch).length) {
         await _withAccUserFallback(preferredPushUserId, userId, (uid) => accService.updateIssue(uid, project, existingAccId, patch));
@@ -735,6 +815,7 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
     }
   } else {
     const created = await accService.createIssue(userId, project, payload);
+    await _rememberAccIssueNumbers(project.id, [created]);
     await recordLink(project.id, reviztoIssue.id, created.id);
     accIssueId = created.id;
   }
@@ -1713,6 +1794,7 @@ async function getIssuesBoard(userId, project) {
   ]);
   const linkMap = new Map(linkRows.map((r) => [String(r.revizto_issue_id), r.acc_issue_id]));
   const accIssueById = accIssues ? new Map(accIssues.map((i) => [i.id, i])) : null;
+  if (accIssues) await _rememberAccIssueNumbers(project.id, accIssues);
 
   const board = [];
   for (const issue of issues) {
@@ -2151,4 +2233,5 @@ module.exports = {
   getSyncStats,
   pollAccCommentsForProject,
   pollAccAttachmentsForProject,
+  labelAuditEntries,
 };

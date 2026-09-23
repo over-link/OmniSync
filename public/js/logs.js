@@ -38,10 +38,25 @@ async function loadProjectOptions() {
   }
 }
 
+// Internal field keys (Revizto's diff-comment keys) -> what people call them.
+const FIELD_LABELS = {
+  customStatus: 'Status',
+  assignee: 'Assignee',
+  watchers: 'Watchers',
+  priority: 'Priority',
+  deadline: 'Due date',
+  title: 'Title',
+};
+
 function _fieldChangeHtml(entry) {
-  const old = entry.old_value != null ? _prettyValue(entry.old_value) : '(none)';
-  const next = entry.new_value != null ? _prettyValue(entry.new_value) : '(none)';
-  return `<span class="log-field-change"><strong>${entry.field_name}</strong>: <span class="log-old">${old}</span> → <span class="log-new">${next}</span></span>`;
+  // old_label/new_label: server-resolved display values (e.g. a status
+  // name instead of Revizto's raw status UUID) — see labelAuditEntries.
+  const oldRaw = entry.old_label ?? entry.old_value;
+  const newRaw = entry.new_label ?? entry.new_value;
+  const old = oldRaw != null ? _escape(_prettyValue(oldRaw)) : '(none)';
+  const next = newRaw != null ? _escape(_prettyValue(newRaw)) : '(none)';
+  const field = _escape(FIELD_LABELS[entry.field_name] || entry.field_name);
+  return `<span class="log-field-change"><strong>${field}</strong>: <span class="log-old">${old}</span> → <span class="log-new">${next}</span></span>`;
 }
 
 function _prettyValue(raw) {
@@ -88,12 +103,22 @@ function _rowHtml(entry) {
       ? '<span class="badge badge-danger">error</span>'
       : '<span class="badge badge-success">ok</span>';
 
+  const reviztoNum = entry.revizto_issue_id ? `#${_escape(entry.revizto_issue_id)}` : '—';
+  const accNum = entry.acc_display_id ? `#${_escape(entry.acc_display_id)}` : '—';
+  // Name from the Revizto license when known; the email stays available
+  // on hover, and is shown as-is for people not on the license.
+  const person = entry.attributed_name
+    ? `<span title="${_escape(entry.attributed_email)}">${_escape(entry.attributed_name)}</span>`
+    : entry.attributed_email ? _escape(entry.attributed_email) : '—';
+
   return `<div class="log-row${entry.outcome === 'error' ? ' log-row-error' : ''}">
     <span class="log-timestamp">${when}</span>
     <span>${_escape(project)}</span>
+    <span>${reviztoNum}</span>
+    <span>${accNum}</span>
     <span>${action}${subline}</span>
     <span>${detail}</span>
-    <span>${entry.attributed_email ? _escape(entry.attributed_email) : '—'}</span>
+    <span>${person}</span>
     <span>${outcomeBadge}</span>
   </div>`;
 }
