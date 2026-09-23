@@ -5,6 +5,7 @@
  * state survives restarts and works across multiple server instances.
  */
 require('dotenv').config();
+require('./services/httpRetry').install();
 const express = require('express');
 const session = require('express-session');
 const pgSession = require('connect-pg-simple')(session);
