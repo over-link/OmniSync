@@ -914,6 +914,13 @@ async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, 
     _findFallbackSubtypeId(subtypeLookup);
 
   const payload = { title: String(title), description: String(description), status, issueSubtypeId: subtypeId };
+  // ACC creates issues unpublished (visible only to their creator) unless
+  // told otherwise — every synced issue should be visible to the whole
+  // project. Also publishes already-linked unpublished issues on their
+  // next push, since syncService's diff sees published: false != true.
+  // Skipped for Draft (the unmapped-status fallback above): ACC treats
+  // drafts as unpublished by definition, so don't ask for both at once.
+  if (status !== 'draft') payload.published = true;
   // ACC's API likely wants dueDate either a real date string or omitted
   // entirely — sending an explicit `null` for a string field is a
   // plausible cause of the "must be string" validation error seen on
