@@ -968,7 +968,12 @@ async function _withAccUserFallback(preferredUserId, fallbackUserId, fn) {
     try {
       return await fn(preferredUserId);
     } catch (err) {
-      console.warn(`[sync] ACC action as user ${preferredUserId} failed (falling back to ${fallbackUserId}):`, err.response?.data?.detail || err.message);
+      // Full response body, not just `detail` — a real 403 here came back
+      // with no `detail` at all, leaving only "status code 403" to go on.
+      console.warn(
+        `[sync] ACC action as user ${preferredUserId} failed (falling back to ${fallbackUserId}): ${err.message}`,
+        err.response?.data ? JSON.stringify(err.response.data) : ''
+      );
     }
   }
   return fn(fallbackUserId);
