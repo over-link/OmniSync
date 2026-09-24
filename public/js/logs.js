@@ -9,9 +9,12 @@ async function api(url, options = {}) {
   return data;
 }
 
-const PAGE_SIZE = 100;
-let currentOffset = 0;
+const PAGE_SIZE = 50;
+let currentPage = 1;
 let currentProjectId = '';
+// Bumped on every load, so a slow earlier response (e.g. from clicking
+// Next twice quickly) can't overwrite the page actually asked for last.
+let loadSeq = 0;
 
 window.addEventListener('app:ready', async (e) => {
   if (!e.detail.user) {
@@ -20,8 +23,25 @@ window.addEventListener('app:ready', async (e) => {
   }
   document.getElementById('logs-app').classList.remove('hidden');
   await loadProjectOptions();
-  await loadEntries({ reset: true });
+  await loadEntries();
 });
+
+// <input type="date"> gives "YYYY-MM-DD" with no timezone. Build the
+// boundary in the viewer's OWN timezone (new Date(y, m, d) is local
+// midnight), so "7/15 – 7/22" means 12:00 AM 7/15 through the end of
+// 7/22 on their clock — `to` is sent as the start of the NEXT day and
+// the server treats it as exclusive.
+function _localDayStart(value, addDays = 0) {
+  if (!value) return null;
+  const [y, m, d] = value.split('-').map(Number);
+  return new Date(y, m - 1, d + addDays);
+}
+
+function _dateRange() {
+  const fromValue = document.getElementById('log-from-date').value;
+  const toValue = document.getElementById('log-to-date').value;
+  return { from: _localDayStart(fromValue), to: _localDayStart(toValue, 1), fromValue, toValue };
+}
 
 async function loadProjectOptions() {
   const select = document.getElementById('log-project-select');
@@ -129,37 +149,87 @@ function _escape(str) {
   return div.innerHTML;
 }
 
-async function loadEntries({ reset } = {}) {
+async function loadEntries() {
   const rowsEl = document.getElementById('log-rows');
   const emptyEl = document.getElementById('log-empty');
-  const loadMoreBtn = document.getElementById('log-load-more-btn');
-  const loadMoreHint = document.getElementById('log-load-more-hint');
+  const statusEl = document.getElementById('log-status');
+  const hintEl = document.getElementById('log-date-hint');
+  const seq = ++loadSeq;
 
-  if (reset) {
-    currentOffset = 0;
+  const { from, to, fromValue, toValue } = _dateRange();
+  if (from && to && from >= to) {
+    hintEl.textContent = '"From" is after "To" — pick a From date on or before the To date.';
     rowsEl.innerHTML = '';
+    emptyEl.classList.add('hidden');
+    statusEl.classList.add('hidden');
+    document.getElementById('log-pager').classList.add('hidden');
+    return;
   }
+  hintEl.textContent = '';
 
-  const params = new URLSearchParams({ limit: PAGE_SIZE, offset: currentOffset });
+  const params = new URLSearchParams({ limit: PAGE_SIZE, offset: (currentPage - 1) * PAGE_SIZE });
   if (currentProjectId) params.set('projectId', currentProjectId);
+  if (from) params.set('from', from.toISOString());
+  if (to) params.set('to', to.toISOString());
 
-  loadMoreHint.textContent = 'Loading…';
+  statusEl.textContent = 'Loading…';
+  statusEl.classList.remove('hidden');
   try {
-    const { entries } = await api(`/api/audit-log?${params.toString()}`);
-    rowsEl.insertAdjacentHTML('beforeend', entries.map(_rowHtml).join(''));
-    currentOffset += entries.length;
-    emptyEl.classList.toggle('hidden', currentOffset > 0);
-    loadMoreBtn.classList.toggle('hidden', entries.length < PAGE_SIZE);
-    loadMoreHint.textContent = '';
+    const { entries, total } = await api(`/api/audit-log?${params.toString()}`);
+    if (seq !== loadSeq) return; // a newer load has started since
+    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    if (currentPage > totalPages) {
+      // e.g. the range shrank the log — jump to the new last page.
+      currentPage = totalPages;
+      return loadEntries();
+    }
+    rowsEl.innerHTML = entries.map(_rowHtml).join('');
+    statusEl.classList.add('hidden');
+    emptyEl.textContent = fromValue || toValue ? 'No activity in this date range.' : 'No log entries yet.';
+    emptyEl.classList.toggle('hidden', total > 0);
+    _renderPager(total, totalPages);
   } catch (err) {
-    loadMoreHint.textContent = err.message;
+    if (seq !== loadSeq) return;
+    statusEl.textContent = err.message;
   }
+}
+
+function _renderPager(total, totalPages) {
+  const pager = document.getElementById('log-pager');
+  pager.classList.toggle('hidden', totalPages <= 1);
+  if (totalPages <= 1) return;
+  const first = (currentPage - 1) * PAGE_SIZE + 1;
+  const last = Math.min(currentPage * PAGE_SIZE, total);
+  document.getElementById('log-page-info').textContent = `Page ${currentPage} of ${totalPages} · ${first}–${last} of ${total}`;
+  document.getElementById('log-prev-btn').disabled = currentPage <= 1;
+  document.getElementById('log-next-btn').disabled = currentPage >= totalPages;
+}
+
+// Any change to what's being looked at starts back on page 1.
+function _reload() {
+  currentPage = 1;
+  loadEntries();
+}
+
+function _goToPage(page) {
+  currentPage = page;
+  loadEntries();
+  document.querySelector('.board-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 document.getElementById('log-project-select').addEventListener('change', (e) => {
   currentProjectId = e.target.value;
-  loadEntries({ reset: true });
+  _reload();
+});
+document.getElementById('log-from-date').addEventListener('change', _reload);
+document.getElementById('log-to-date').addEventListener('change', _reload);
+document.getElementById('log-clear-dates-btn').addEventListener('click', () => {
+  document.getElementById('log-from-date').value = '';
+  document.getElementById('log-to-date').value = '';
+  _reload();
 });
 
-document.getElementById('log-refresh-btn').addEventListener('click', () => loadEntries({ reset: true }));
-document.getElementById('log-load-more-btn').addEventListener('click', () => loadEntries({ reset: false }));
+// Refresh keeps the current page — new activity arrives at the top.
+document.getElementById('log-refresh-btn').addEventListener('click', () => loadEntries());
+document.getElementById('log-prev-btn').addEventListener('click', () => _goToPage(currentPage - 1));
+document.getElementById('log-next-btn').addEventListener('click', () => _goToPage(currentPage + 1));

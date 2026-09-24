@@ -52,13 +52,8 @@ async function record({
  * page itself decides what to pass — every signed-in user can read this,
  * same as the rest of the app's non-admin pages).
  */
-async function list({ projectId = null, limit = 100, offset = 0 } = {}) {
-  const params = [];
-  let where = '';
-  if (projectId) {
-    params.push(projectId);
-    where = `WHERE audit_log.project_id = $${params.length}`;
-  }
+async function list({ projectId = null, from = null, to = null, limit = 100, offset = 0 } = {}) {
+  const { where, params } = _filters({ projectId, from, to });
   params.push(limit, offset);
   // acc_display_id: ACC's human-readable issue number. Rows without an
   // acc_issue_id of their own (e.g. errors) borrow it from the issue's
@@ -82,4 +77,38 @@ async function list({ projectId = null, limit = 100, offset = 0 } = {}) {
   return rows;
 }
 
-module.exports = { record, list };
+/**
+ * Total matching rows for the same filters as `list`, so the page can
+ * show "Page X of Y" instead of an open-ended "Load more".
+ */
+async function count({ projectId = null, from = null, to = null } = {}) {
+  const { where, params } = _filters({ projectId, from, to });
+  const { rows } = await pool.query(`SELECT count(*)::int AS total FROM audit_log ${where}`, params);
+  return rows[0].total;
+}
+
+/**
+ * Shared WHERE clause for list/count. `from` is inclusive and `to` is
+ * exclusive, both Date instances — the page sends the start of the first
+ * day and the start of the day AFTER the last one, in the viewer's own
+ * timezone, so a "7/15 – 7/22" range covers all of 7/22 locally.
+ */
+function _filters({ projectId, from, to }) {
+  const params = [];
+  const clauses = [];
+  if (projectId) {
+    params.push(projectId);
+    clauses.push(`audit_log.project_id = $${params.length}`);
+  }
+  if (from) {
+    params.push(from);
+    clauses.push(`audit_log.created_at >= $${params.length}`);
+  }
+  if (to) {
+    params.push(to);
+    clauses.push(`audit_log.created_at < $${params.length}`);
+  }
+  return { where: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', params };
+}
+
+module.exports = { record, list, count };

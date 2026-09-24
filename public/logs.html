@@ -24,12 +24,26 @@
     </div>
 
     <div id="logs-app" class="hidden">
-      <div class="card">
-        <label for="log-project-select">Project</label>
-        <select id="log-project-select">
-          <option value="">All projects</option>
-        </select>
-        <button id="log-refresh-btn" class="btn secondary">Refresh</button>
+      <div class="card log-filters">
+        <div class="filter-group">
+          <label for="log-project-select">Project</label>
+          <select id="log-project-select">
+            <option value="">All projects</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label for="log-from-date">From</label>
+          <input type="date" id="log-from-date" />
+        </div>
+        <div class="filter-group">
+          <label for="log-to-date">To</label>
+          <input type="date" id="log-to-date" />
+        </div>
+        <div class="log-filter-actions">
+          <button id="log-clear-dates-btn" class="btn secondary" type="button">Clear dates</button>
+          <button id="log-refresh-btn" class="btn secondary" type="button">Refresh</button>
+        </div>
+        <span id="log-date-hint" class="hint"></span>
       </div>
 
       <div class="card board-card">
@@ -47,11 +61,12 @@
         <div id="log-rows"></div>
         </div>
         <div id="log-empty" class="log-empty hidden">No log entries yet.</div>
-      </div>
-
-      <div class="card" style="text-align:center;">
-        <button id="log-load-more-btn" class="btn secondary">Load more</button>
-        <span id="log-load-more-hint" class="hint"></span>
+        <div id="log-status" class="log-empty hidden"></div>
+        <div id="log-pager" class="board-pager hidden">
+          <button type="button" id="log-prev-btn" class="btn secondary">‹ Previous</button>
+          <span id="log-page-info" class="hint"></span>
+          <button type="button" id="log-next-btn" class="btn secondary">Next ›</button>
+        </div>
       </div>
     </div>
   </div>

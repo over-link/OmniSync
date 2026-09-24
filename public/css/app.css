@@ -305,6 +305,11 @@ body {
 .log-row .log-old { color: var(--muted); text-decoration: line-through; }
 .log-row .log-new { color: var(--blueprint); font-weight: 600; }
 .log-empty { padding: 1.5rem 0.4rem; color: var(--muted); text-align: center; }
+.log-filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.75rem 1.25rem; }
+.log-filters .filter-group label { margin: 0; }
+.log-filter-actions { display: flex; gap: 0.6rem; }
+#log-date-hint { flex-basis: 100%; margin: 0; }
+#log-date-hint:empty { display: none; }
 #board-actions { margin-top: 0.9rem; display: flex; align-items: center; gap: 0.75rem; }
 
 /* ── Cards / steps ──────────────────────────────────────────────── */

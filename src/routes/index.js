@@ -485,8 +485,19 @@ router.get('/api/audit-log', requireLogin, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
   const offset = parseInt(req.query.offset, 10) || 0;
   const projectId = req.query.projectId ? Number(req.query.projectId) : null;
-  const entries = await auditLog.list({ projectId, limit, offset });
-  res.json({ entries: await syncService.labelAuditEntries(entries) });
+  // Optional date range, as ISO timestamps (see auditLog._filters) —
+  // anything unparseable is ignored rather than erroring the whole page.
+  const parseDate = (v) => {
+    const d = v ? new Date(v) : null;
+    return d && !Number.isNaN(d.getTime()) ? d : null;
+  };
+  const from = parseDate(req.query.from);
+  const to = parseDate(req.query.to);
+  const [entries, total] = await Promise.all([
+    auditLog.list({ projectId, from, to, limit, offset }),
+    auditLog.count({ projectId, from, to }),
+  ]);
+  res.json({ entries: await syncService.labelAuditEntries(entries), total });
 });
 
 // ─── Sync (on-demand) ────────────────────────────────────────────────
