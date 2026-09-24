@@ -26,6 +26,9 @@ let currentSort = _loadSort();
 // Revizto IDs ticked for "Link & push selected". Kept outside the DOM so
 // ticks survive paging — each page only renders its own 50 checkboxes.
 const selectedIds = new Set();
+// Every unlinked issue matching the active filters, across all pages —
+// what Select all / Deselect all acts on. Refreshed by renderBoard.
+let linkableIds = new Set();
 
 function _loadSort() {
   try {
@@ -235,7 +238,7 @@ function renderBoard() {
 
   // Drop selections that are no longer linkable (just linked, or gone
   // after a refresh) so the tally and "Link & push" match what's real.
-  const linkableIds = new Set(filtered.filter((i) => !i.linked).map((i) => String(i.id)));
+  linkableIds = new Set(filtered.filter((i) => !i.linked).map((i) => String(i.id)));
   for (const id of [...selectedIds]) if (!linkableIds.has(id)) selectedIds.delete(id);
 
   if (!filtered.length) {
@@ -307,17 +310,15 @@ function _renderPager(total, totalPages) {
   document.getElementById('page-next-btn').disabled = currentPage >= totalPages;
 }
 
-// Tally counts every selected issue across ALL pages (selectedIds), while
-// Select all / Deselect all acts on just the checkboxes on this page —
-// the label flips to "Deselect all" once every one of them is ticked.
+// Tally and Select all / Deselect all both cover every page, not just
+// the one showing — the label flips to "Deselect all" once every
+// linkable issue (unlinked + matching the filters) is ticked.
 function updateSelectedCount() {
-  const checkboxes = [...document.querySelectorAll('#board-rows input[type="checkbox"]')];
-  const pageAllChecked = checkboxes.length && checkboxes.every((cb) => cb.checked);
-  document.getElementById('selected-count').textContent = `${selectedIds.size} selected`;
+  const allSelected = linkableIds.size > 0 && selectedIds.size === linkableIds.size;
+  document.getElementById('selected-count').textContent = `${selectedIds.size} of ${linkableIds.size} selected`;
   const selectAllBtn = document.getElementById('select-all-btn');
-  selectAllBtn.textContent = pageAllChecked ? 'Deselect all on page' : 'Select all on page';
-  // Other pages can still have unlinked issues when this one has none.
-  selectAllBtn.disabled = !checkboxes.length;
+  selectAllBtn.textContent = allSelected ? 'Deselect all' : 'Select all';
+  selectAllBtn.disabled = !linkableIds.size;
 }
 
 document.getElementById('board-rows').addEventListener('change', (e) => {
@@ -328,13 +329,12 @@ document.getElementById('board-rows').addEventListener('change', (e) => {
 });
 
 document.getElementById('select-all-btn').addEventListener('click', () => {
-  const checkboxes = [...document.querySelectorAll('#board-rows input[type="checkbox"]')];
-  const shouldCheck = !(checkboxes.length && checkboxes.every((cb) => cb.checked));
-  for (const cb of checkboxes) {
-    cb.checked = shouldCheck;
-    if (shouldCheck) selectedIds.add(cb.value);
-    else selectedIds.delete(cb.value);
-  }
+  const shouldCheck = selectedIds.size < linkableIds.size;
+  selectedIds.clear();
+  if (shouldCheck) for (const id of linkableIds) selectedIds.add(id);
+  // Sync this page's visible checkboxes; other pages pick it up from
+  // selectedIds when they render.
+  for (const cb of document.querySelectorAll('#board-rows input[type="checkbox"]')) cb.checked = shouldCheck;
   updateSelectedCount();
 });
 
