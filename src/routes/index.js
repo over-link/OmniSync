@@ -343,7 +343,7 @@ router.post('/api/projects/:id/register-webhook', requireAdmin, async (req, res)
 });
 
 // Open to any signed-in user — shows on the Issues page for everyone, and
-// later the Analytics page. Not admin-gated, unlike mapping-warnings below.
+// later the Dashboards page. Not admin-gated, unlike mapping-warnings below.
 router.get('/api/projects/:id/stats', requireLogin, async (req, res) => {
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });

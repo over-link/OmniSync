@@ -2010,7 +2010,7 @@ async function autoLinkMatchingIssues(userId, project) {
  * Sync health stats for a project — issue counts on both sides, how many
  * are linked, how many linked issues currently have an unresolved sync
  * error. Open to any user (not admin-only) since this shows on the
- * Issues page for everyone, and later the Analytics page.
+ * Issues page for everyone, and later the Dashboards page.
  */
 async function getSyncStats(userId, project) {
   const [reviztoIssues, accIssues, syncRows] = await Promise.all([

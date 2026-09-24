@@ -67,7 +67,7 @@ reminder before expiry once this goes beyond a prototype.
 - **`/logs`** ("Activity Log") — the audit trail: every field change,
   comment, attachment, link/unlink, and error, with who it's attributed
   to and when. See "Audit log" below. Open to Standard and Admin alike.
-- **Analytics** — placeholder nav link, not built yet.
+- **Dashboards** — placeholder nav link, not built yet.
 
 Navigation is a shared left sidebar (`public/js/nav.js`), loaded first on
 every page — it fetches auth state once, renders links based on role, and
@@ -236,7 +236,7 @@ data settled it where docs examples alone didn't.
 - **Stats** (Revizto count, ACC count, linked/synced, errors) — a compact
   pill strip next to the project picker on the **Issues page**, visible to
   any signed-in user. `GET /api/projects/:id/stats`, `requireLogin` (not
-  admin-gated) — same endpoint a future Analytics page would reuse.
+  admin-gated) — same endpoint a future Dashboards page would reuse.
 - **Mapping warnings** (in-use statuses/stamps with no configured mapping)
   — a dedicated card at the **top of the Setup page**, above everything
   else, so an admin sees it immediately on landing. `GET
@@ -1570,7 +1570,7 @@ shared Setup page listing pairings.
   layer stays shared; only the data backing each project's instance splits
   out.
 - **License Administration** — new left-nav tab (`nav.js`, currently
-  `disabled` like Analytics) for viewing/managing how many project slots the
+  `disabled` like Dashboards) for viewing/managing how many project slots the
   license allows and how many are in use, gating "+ New Project" once full.
 
 None of the above is implemented server-side. The visible pieces are
@@ -1584,7 +1584,7 @@ its old job only), and the "License Administration" nav item (disabled).
 content or pages behind it.** Lower priority than the multi-project work
 above; phase 3.
 
-New left-nav tab (`nav.js`, currently `disabled` like Analytics and License
+New left-nav tab (`nav.js`, currently `disabled` like Dashboards and License
 Administration), open to all users (not admin-gated). Planned topics:
 
 - Best practices

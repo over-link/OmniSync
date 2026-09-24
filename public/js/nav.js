@@ -34,7 +34,7 @@ const NAV_LINKS = [
   // license project-slot count/usage and per-project API-call tracking once
   // each project runs off its own DB.
   { href: '#', label: 'License Administration', adminOnly: true, disabled: true },
-  { href: '#', label: 'Analytics', adminOnly: false, disabled: true },
+  { href: '#', label: 'Dashboards', adminOnly: false, disabled: true },
   // Mockup only — see README "Planned: Help Center (phase 3)". Topics:
   // best practices, FAQ, video tutorials, contact support. Open to
   // everyone (not admin-gated), unlike the two entries above it.
