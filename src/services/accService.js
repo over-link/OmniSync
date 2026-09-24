@@ -38,6 +38,21 @@ async function getIssues(userId, project, filters = {}) {
   return issues;
 }
 
+/**
+ * A specific set of ACC issues via the list endpoint's filter[id]
+ * (comma-separated, confirmed live) — one call per 50 IDs, keeping the
+ * URL comfortably short, instead of one GET per issue. Each result has
+ * the full issue shape plus commentCount/attachmentCount. Deleted or
+ * inaccessible issues are simply absent.
+ */
+async function getIssuesByIds(userId, project, issueIds) {
+  const issues = [];
+  for (let i = 0; i < issueIds.length; i += 50) {
+    issues.push(...(await getIssues(userId, project, { 'filter[id]': issueIds.slice(i, i + 50).join(',') })));
+  }
+  return issues;
+}
+
 async function getIssue(userId, project, issueId) {
   const { token, baseURL } = await _client(userId, project);
   const { data } = await axios.get(`${baseURL}/issues/${issueId}`, {
@@ -539,6 +554,7 @@ async function downloadAttachmentFile(userId, storageUrn) {
 module.exports = {
   getIssues,
   getIssue,
+  getIssuesByIds,
   createIssue,
   updateIssue,
   addComment,

@@ -75,6 +75,21 @@ async function getIssues(userId, region, projectUuid, filters = {}) {
   return allIssues;
 }
 
+/**
+ * Full data for a specific set of issues, in as few calls as possible —
+ * one filter request per 100 IDs rather than one getIssue per issue.
+ * Confirmed live: the same `id` filter getIssue uses accepts a list.
+ * Issues that no longer exist are simply absent from the result.
+ */
+async function getIssuesByIds(userId, region, projectUuid, issueIds) {
+  const ids = issueIds.map(String);
+  const issues = [];
+  for (let i = 0; i < ids.length; i += 100) {
+    issues.push(...(await getIssues(userId, region, projectUuid, { alwaysFiltersDTO: [{ type: 'id', expr: 1, value: ids.slice(i, i + 100) }] })));
+  }
+  return issues;
+}
+
 async function getIssue(userId, region, projectUuid, issueId) {
   const response = await request(userId, region, 'POST', `/project/${projectUuid}/issue-filter/filter`, {
     body: {
@@ -1049,6 +1064,7 @@ async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, 
 module.exports = {
   getIssues,
   getIssue,
+  getIssuesByIds,
   updateIssueStatus,
   updateIssueAssignee,
   updateIssueWatchers,

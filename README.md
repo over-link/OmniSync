@@ -1252,6 +1252,50 @@ Revizto→ACC direction can return the favor and recognize *this* comment.
 `sync_map.last_pulled_acc_attachment_comment_uuid` (idempotent
 `ALTER TABLE`). Run `npm run migrate`.
 
+## Poll schedule and change detection (API call budget)
+
+The 2-minute poll used to re-check every linked issue every cycle: about
+14 API calls per issue (Revizto issue + comments, ~9 ACC setup lookups
+rebuilt per issue, ACC issue + comments + attachments), so ~180 calls
+per cycle at 13 issues and ~14,000 at 1,000. Now:
+
+- **One bulk fetch per side per cycle** (`syncService.prefetchLinkedIssues`):
+  Revizto issues by ID (`reviztoService.getIssuesByIds`, the `id` filter
+  accepts a list, 100 per call) and ACC issues by ID
+  (`accService.getIssuesByIds`, `filter[id]` comma-separated, 50 per
+  call). Both confirmed live.
+- **Unchanged issues are skipped.** Revizto → ACC compares the issue's
+  own `updated` (any field) and `commented` (any comment; attachments
+  and markups are comments) timestamps with `sync_map.last_seen_revizto_*`.
+  The ACC comment/attachment polls compare ACC's `commentCount`/
+  `attachmentCount` with `sync_map.last_seen_acc_*_count`. Markers are
+  written only after a successful pass, so a failure retries next cycle.
+- **ACC setup lookups are built once per cycle** (`_buildPushContext`),
+  and only if at least one issue changed.
+- **Measured on the live project (13 issues):** first pass 57 calls,
+  then **2 calls** per quiet cycle (one bulk call per side).
+
+**Schedule** (`pollService.pollTick`, times in `SYNC_TIMEZONE`, default
+America/Los_Angeles):
+- **6 AM–6 PM:** changed-only cycles every 2 minutes.
+- **6 PM:** a **full check** of every linked issue, ignoring the markers,
+  as a safety net for anything a timestamp or count didn't reflect (e.g.
+  an ACC comment deleted and another added between cycles). Runs once per
+  day, any time from 6 PM to midnight if missed, and the date is stored in
+  `app_settings.last_full_check_date` so a restart doesn't repeat it.
+- **6 PM–6 AM:** no polling, unless `app_settings.poll_24_7 = 'true'`
+  (no UI yet; intended for a paid tier). The first 6 AM cycle catches up
+  on anything changed overnight. **ACC webhooks keep working overnight**:
+  an ACC edit that isn't applied to Revizto would otherwise be overwritten
+  by the next full check.
+- Cycles never overlap: a tick that fires while one is still running is
+  skipped.
+
+**Known trade-off:** a comment/markup/attachment push that fails inside
+an otherwise successful issue push is logged, not retried every cycle as
+before. It's retried by the 6 PM full check, or sooner if the issue
+changes again.
+
 ## Syncing issues (updated model)
 
 **Linking is manual; staying in sync is automatic.**

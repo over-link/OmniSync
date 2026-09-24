@@ -15,18 +15,89 @@ const syncService = require('./syncService');
 const appSettings = require('./appSettings');
 const { ReconnectRequiredError, getValidAccToken, getValidReviztoToken } = require('./authManager');
 
-async function pollAllProjects() {
-  if (await appSettings.isSyncPaused()) {
-    console.log('[poll] Sync is paused (Setup page toggle) — skipping this cycle.');
+// Polling hours and the daily full check, in the team's local time (all
+// of today's users are on Pacific time). Outside ACTIVE hours the
+// 2-minute cycle does nothing unless 24/7 polling is on (appSettings.
+// isPoll247 — meant for a paid tier later). ACC's webhook for field
+// changes made in ACC keeps working around the clock regardless: a
+// dropped ACC edit would otherwise be overwritten by the next full check.
+const SYNC_TIMEZONE = process.env.SYNC_TIMEZONE || 'America/Los_Angeles';
+const ACTIVE_START_HOUR = 6; // 6 AM
+const ACTIVE_END_HOUR = 18; // 6 PM (exclusive)
+// End of the working day — the last cycle before the overnight pause
+// re-checks every linked issue, ignoring change markers, as a safety net
+// for anything a timestamp or count didn't reflect (see pushLinkedIssues).
+const FULL_CHECK_HOUR = 18;
+
+function _localNow() {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', { timeZone: SYNC_TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23' })
+      .formatToParts(new Date())
+      .map((p) => [p.type, p.value])
+  );
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, hour: Number(parts.hour) };
+}
+
+let cycleRunning = false;
+let quietLoggedForDate = null;
+
+/**
+ * One 2-minute tick: decides whether this tick is a normal changed-only
+ * cycle, the day's full check, or nothing (paused / overnight). Never
+ * overlaps itself — a cycle still running when the next tick fires (e.g.
+ * a large project, or the full check) just makes that tick a no-op.
+ */
+async function pollTick() {
+  if (cycleRunning) {
+    console.log('[poll] Previous cycle still running — skipping this tick.');
     return;
   }
+  cycleRunning = true;
+  try {
+    if (await appSettings.isSyncPaused()) {
+      console.log('[poll] Sync is paused (Setup page toggle) — skipping this cycle.');
+      return;
+    }
+    const { date, hour } = _localNow();
+    // Due any time from 6 PM until midnight if it hasn't run today — so a
+    // restart or deploy right at 6 PM doesn't lose that day's check.
+    if (hour >= FULL_CHECK_HOUR && (await appSettings.getLastFullCheckDate()) !== date) {
+      console.log(`[poll] Daily full check (${SYNC_TIMEZONE} ${date}) — re-checking every linked issue.`);
+      await pollAllProjects({ full: true });
+      await appSettings.setLastFullCheckDate(date);
+      return;
+    }
+    const activeHours = hour >= ACTIVE_START_HOUR && hour < ACTIVE_END_HOUR;
+    if (!activeHours && !(await appSettings.isPoll247())) {
+      if (quietLoggedForDate !== date) {
+        console.log(`[poll] Outside polling hours (6 AM–6 PM ${SYNC_TIMEZONE}) — paused until 6 AM. ACC webhooks still apply.`);
+        quietLoggedForDate = date;
+      }
+      return;
+    }
+    await pollAllProjects({ full: false });
+  } catch (err) {
+    console.error('[poll] Cycle failed:', err.message);
+  } finally {
+    cycleRunning = false;
+  }
+}
+
+async function pollAllProjects({ full = false } = {}) {
   const { rows: projects } = await pool.query('SELECT * FROM projects WHERE owner_user_id IS NOT NULL');
   for (const project of projects) {
     try {
-      const results = await syncService.pushLinkedIssues(project.owner_user_id, project);
+      // One bulk look at both sides for every linked issue, shared by the
+      // push and both ACC polls below, which each skip issues that
+      // haven't changed since their last check (unless full).
+      const snapshot = await syncService.prefetchLinkedIssues(project.owner_user_id, project);
+      const results = await syncService.pushLinkedIssues(project.owner_user_id, project, { snapshot, full });
       if (results.length) {
         const errors = results.filter((r) => r.action === 'error');
-        console.log(`[poll] "${project.name}": ${results.length} linked issue(s) re-synced, ${errors.length} errors`);
+        const skipped = results.filter((r) => r.action === 'skipped');
+        console.log(
+          `[poll] "${project.name}": ${results.length - skipped.length} changed issue(s) re-synced, ${skipped.length} unchanged skipped, ${errors.length} errors${full ? ' (full check)' : ''}`
+        );
       }
 
       // Opt-in: only does anything if the admin turned on auto-sync-by-
@@ -42,8 +113,8 @@ async function pollAllProjects() {
       // same cycle as the push above.
       const { rows: ownerRows } = await pool.query('SELECT email FROM users WHERE id = $1', [project.owner_user_id]);
       const reporterEmail = ownerRows[0]?.email;
-      await syncService.pollAccCommentsForProject(project.owner_user_id, project, reporterEmail);
-      await syncService.pollAccAttachmentsForProject(project.owner_user_id, project, reporterEmail);
+      await syncService.pollAccCommentsForProject(project.owner_user_id, project, reporterEmail, { snapshot, full });
+      await syncService.pollAccAttachmentsForProject(project.owner_user_id, project, reporterEmail, { snapshot, full });
     } catch (err) {
       if (err instanceof ReconnectRequiredError) {
         console.warn(`[poll] Project "${project.name}" owner needs to reconnect ${err.provider}: ${err.reason}`);
@@ -116,7 +187,7 @@ function startPolling() {
   }
   const schedule = process.env.POLL_CRON || '*/2 * * * *'; // every 2 minutes by default
   console.log(`[poll] Automatic re-sync of linked issues enabled: ${schedule}`);
-  cron.schedule(schedule, pollAllProjects);
+  cron.schedule(schedule, pollTick);
 
   const keepAliveSchedule = process.env.ACC_KEEPALIVE_CRON || '0 3 * * *'; // once daily by default
   console.log(`[poll] ACC connection keep-alive enabled: ${keepAliveSchedule}`);
@@ -129,4 +200,4 @@ function startPolling() {
   cron.schedule(reviztoKeepAliveSchedule, keepReviztoConnectionsAlive);
 }
 
-module.exports = { startPolling, pollAllProjects, keepAccConnectionsAlive, keepReviztoConnectionsAlive };
+module.exports = { startPolling, pollTick, pollAllProjects, keepAccConnectionsAlive, keepReviztoConnectionsAlive };

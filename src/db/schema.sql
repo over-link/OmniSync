@@ -438,4 +438,18 @@ CREATE TABLE IF NOT EXISTS acc_issue_numbers (
   PRIMARY KEY (project_id, acc_issue_id)
 );
 
+-- Change markers for the 2-minute poll: what each linked issue looked
+-- like the last time it was fully processed, so a cycle can skip every
+-- issue where nothing moved instead of re-checking all of them (~14 API
+-- calls each). Revizto side: the issue's own `updated` (any field) and
+-- `commented` (last comment — attachments/markups are comments too)
+-- timestamps, stored as the raw strings Revizto returns. ACC side:
+-- commentCount/attachmentCount from the bulk issue list. NULL = never
+-- seen yet, which is treated as "changed" (first cycle is a full pass).
+-- See syncService.pushLinkedIssues / pollAccCommentsForProject.
+ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_seen_revizto_updated TEXT;
+ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_seen_revizto_commented TEXT;
+ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_seen_acc_comment_count INTEGER;
+ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_seen_acc_attachment_count INTEGER;
+
 -- connect-pg-simple creates its own "session" table automatically on first run.

@@ -661,17 +661,73 @@ function _diffAgainstAccIssue(payload, accIssue) {
 
 // ─── Push: Revizto issue -> ACC (create or update) ────────────────────
 
-async function pushIssueToAcc(userId, project, reviztoIssue) {
-  const existingAccId = await getAccIdForRevizto(project.id, reviztoIssue.id);
-
+/**
+ * Everything pushIssueToAcc needs that's the same for every issue in a
+ * project — ACC issue types, mappings, workflow settings, and the lookup
+ * resolvers (members, locations, custom fields). Building this once per
+ * poll cycle and sharing it across issues, instead of once per issue,
+ * turns ~9 ACC setup calls per issue into ~9 per cycle (the resolvers
+ * fetch lazily, on first use, and cache inside their closures).
+ * `issueContext` is mutated per issue by pushIssueToAcc — it only labels
+ * the "custom field isn't mapped" warning, and pushes run one at a time.
+ */
+async function _buildPushContext(userId, project) {
   const subtypes = await accService.getIssueSubtypes(userId, project);
-  const subtypeLookup = Object.fromEntries(subtypes.map((s) => [`${s.issueTypeTitle} > ${s.title}`, s.id]));
-
   const [customStatusMap, customTypeMap, workflowSettings] = await Promise.all([
     fieldMapping.getStatusMap(project.id),
     fieldMapping.getTypeMap(project.id),
     reviztoService.getWorkflowSettings(userId, project.revizto_region, project.revizto_project_uuid),
   ]);
+  const issueContext = {};
+  return {
+    subtypeLookup: Object.fromEntries(subtypes.map((s) => [`${s.issueTypeTitle} > ${s.title}`, s.id])),
+    customStatusMap,
+    customTypeMap,
+    workflowSettings,
+    issueContext,
+    // Resolves email -> Autodesk user ID for both assignee and watchers.
+    // Was disabled for a while after an earlier bug where a failure here
+    // (Construction Admin API access, separate from Issues API access)
+    // took down the whole push — that's fixed (see makeAssigneeResolver's
+    // try/catch), so this is safe to re-enable. Still genuinely unverified
+    // whether Construction Admin API requires the ACC Custom Integration
+    // the same way Data Management API discovery did — if this starts
+    // failing broadly, that's the first thing to check.
+    assigneeResolver: await makeAssigneeResolver(userId, project),
+    // Resolves Revizto's level name to an ACC location node ID, matching
+    // against the project's own configured Location Breakdown Structure.
+    locationResolver: await makeLocationResolver(userId, project),
+    // Resolves a custom field title (e.g. "Grid", "Room") to its ACC
+    // attribute definition ID — ACC has no native fields for these, unlike
+    // level/zone.
+    customAttributeResolver: await makeCustomAttributeResolver(userId, project, issueContext),
+    // Separate resolver for the "Revizto Status" field family (see
+    // makeReviztoStatusFieldResolver) — a project can have several of
+    // these, one per workflow, unlike customAttributeResolver's other
+    // fields which are always exactly one fixed title.
+    reviztoStatusFieldResolver: await makeReviztoStatusFieldResolver(userId, project),
+    // Filled in by pushLinkedIssues from its bulk ACC fetch, so the
+    // per-issue diff below doesn't need its own GET. Absent for one-off
+    // pushes (manual Link & push), which just GET as before.
+    accIssueById: null,
+  };
+}
+
+async function pushIssueToAcc(userId, project, reviztoIssue, ctx = null) {
+  const existingAccId = await getAccIdForRevizto(project.id, reviztoIssue.id);
+  if (!ctx) ctx = await _buildPushContext(userId, project);
+  const {
+    subtypeLookup,
+    customStatusMap,
+    customTypeMap,
+    workflowSettings,
+    assigneeResolver,
+    locationResolver,
+    customAttributeResolver,
+    reviztoStatusFieldResolver,
+  } = ctx;
+  ctx.issueContext.reviztoIssueId = reviztoIssue.id;
+  ctx.issueContext.accIssueId = existingAccId;
 
   // customStatusName is a plain, ready-to-use string Revizto returns
   // alongside the UUID version (customStatus) — confirmed from a real raw
@@ -683,35 +739,6 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
   // can define a same-named custom status that should map differently.
   const workflowUuid = reviztoService.resolveIssueWorkflowUuid(reviztoIssue, workflowSettings);
   const workflowLabel = workflowUuid ? reviztoService.getWorkflowLabel(workflowUuid, workflowSettings) : null;
-
-  // Resolves email -> Autodesk user ID for both assignee and watchers.
-  // Was disabled for a while after an earlier bug where a failure here
-  // (Construction Admin API access, separate from Issues API access)
-  // took down the whole push — that's fixed (see makeAssigneeResolver's
-  // try/catch), so this is safe to re-enable. Still genuinely unverified
-  // whether Construction Admin API requires the ACC Custom Integration
-  // the same way Data Management API discovery did — if this starts
-  // failing broadly, that's the first thing to check.
-  const assigneeResolver = await makeAssigneeResolver(userId, project);
-
-  // Resolves Revizto's level name to an ACC location node ID, matching
-  // against the project's own configured Location Breakdown Structure.
-  const locationResolver = await makeLocationResolver(userId, project);
-
-  // Resolves a custom field title (e.g. "Grid", "Room") to its ACC
-  // attribute definition ID — ACC has no native fields for these, unlike
-  // level/zone. issueContext is just so an "isn't mapped" warning can name
-  // this specific issue.
-  const customAttributeResolver = await makeCustomAttributeResolver(userId, project, {
-    reviztoIssueId: reviztoIssue.id,
-    accIssueId: existingAccId,
-  });
-
-  // Separate resolver for the "Revizto Status" field family (see
-  // makeReviztoStatusFieldResolver) — a project can have several of
-  // these, one per workflow, unlike customAttributeResolver's other
-  // fields which are always exactly one fixed title.
-  const reviztoStatusFieldResolver = await makeReviztoStatusFieldResolver(userId, project);
 
   const { payload, statusNeedsMapping, typeNeedsMapping } = await reviztoService.toAccIssue(reviztoIssue, {
     subtypeLookup,
@@ -784,7 +811,7 @@ async function pushIssueToAcc(userId, project, reviztoIssue) {
       // that originated in ACC straight back to ACC under the owner's
       // name. The GET also keeps _handlePossibleAccIssueGone's self-heal
       // working on cycles where there's nothing to PATCH.
-      const currentAccIssue = await accService.getIssue(userId, project, existingAccId);
+      const currentAccIssue = ctx.accIssueById?.get(existingAccId) || (await accService.getIssue(userId, project, existingAccId));
       await _rememberAccIssueNumbers(project.id, [currentAccIssue]);
       const patch = _diffAgainstAccIssue(payload, currentAccIssue);
       if (Object.keys(patch).length) {
@@ -1188,17 +1215,18 @@ async function pushAllOpenIssues(userId, project) {
  * rather than everything open in the project.
  */
 async function pushSelectedIssues(userId, project, issueIds) {
-  const wanted = new Set(issueIds.map(String));
-  const allIssues = await reviztoService.getIssues(userId, project.revizto_region, project.revizto_project_uuid);
-  const selected = allIssues.filter((issue) => wanted.has(String(issue.id)));
+  // Just the chosen issues, not the whole project's issue list.
+  const selected = await reviztoService.getIssuesByIds(userId, project.revizto_region, project.revizto_project_uuid, issueIds);
   return _pushIssueList(userId, project, selected);
 }
 
 async function _pushIssueList(userId, project, issues) {
   const results = [];
+  let ctx = null; // shared ACC lookups for the whole batch, see _buildPushContext
   for (const issue of issues) {
     try {
-      results.push({ reviztoId: issue.id, ...(await pushIssueToAcc(userId, project, issue)) });
+      if (!ctx) ctx = await _buildPushContext(userId, project);
+      results.push({ reviztoId: issue.id, ...(await pushIssueToAcc(userId, project, issue, ctx)) });
     } catch (err) {
       const message = err.response?.data?.errors?.[0]?.detail || err.message;
       console.error(`[sync] Failed to push Revizto issue ${issue.id} to ACC:`, JSON.stringify(err.response?.data) || err.message);
@@ -1218,14 +1246,79 @@ async function _pushIssueList(userId, project, issues) {
  * pushAllOpenIssues, this never creates new links; it only updates
  * issues the user has already chosen to link.
  */
-async function pushLinkedIssues(userId, project) {
-  const { rows } = await pool.query('SELECT revizto_issue_id FROM sync_map WHERE project_id = $1', [project.id]);
-  if (!rows.length) return [];
+/**
+ * One bulk look at every linked issue on both sides, for a poll cycle's
+ * "did anything change?" checks: Revizto issues by ID (full data, one
+ * call per 100) and ACC issues by ID (one call per 50, including
+ * commentCount/attachmentCount). Replaces what used to be several
+ * per-issue GETs every cycle. A failed ACC fetch gives accById: null,
+ * and everything downstream falls back to its old per-issue behavior
+ * for that cycle rather than skipping anything it can't verify.
+ */
+async function prefetchLinkedIssues(userId, project) {
+  const { rows: links } = await pool.query(
+    `SELECT revizto_issue_id, acc_issue_id, last_seen_revizto_updated, last_seen_revizto_commented
+     FROM sync_map WHERE project_id = $1`,
+    [project.id]
+  );
+  if (!links.length) return { links, reviztoById: new Map(), accById: new Map() };
+  const [reviztoIssues, accIssues] = await Promise.all([
+    reviztoService.getIssuesByIds(userId, project.revizto_region, project.revizto_project_uuid, links.map((l) => l.revizto_issue_id)),
+    accService.getIssuesByIds(userId, project, links.map((l) => l.acc_issue_id)).catch((err) => {
+      console.warn(`[poll] Bulk ACC issue fetch failed for "${project.name}" (checking every issue this cycle instead):`, err.message);
+      return null;
+    }),
+  ]);
+  if (accIssues) await _rememberAccIssueNumbers(project.id, accIssues);
+  return {
+    links,
+    reviztoById: new Map(reviztoIssues.map((i) => [String(i.id), i])),
+    accById: accIssues ? new Map(accIssues.map((i) => [i.id, i])) : null,
+  };
+}
+
+/**
+ * Re-pushes linked issues to ACC — but only the ones that changed in
+ * Revizto since they were last pushed, judged by the issue's own
+ * `updated` (any field) and `commented` (any comment, including file
+ * attachments and markups) timestamps against sync_map's last-seen
+ * copies. An unchanged issue costs zero API calls beyond the shared
+ * bulk fetch. `full: true` (the daily full check, see pollService)
+ * ignores the markers and re-pushes everything, as a safety net for
+ * anything a timestamp might not reflect.
+ */
+async function pushLinkedIssues(userId, project, { snapshot = null, full = false } = {}) {
+  const snap = snapshot || (await prefetchLinkedIssues(userId, project));
+  if (!snap.links.length) return [];
+  let ctx = null; // built on the first issue that actually needs a push
   const results = [];
-  for (const row of rows) {
+  for (const row of snap.links) {
     try {
-      const issue = await reviztoService.getIssue(userId, project.revizto_region, project.revizto_project_uuid, row.revizto_issue_id);
-      results.push({ reviztoId: issue.id, ...(await pushIssueToAcc(userId, project, issue)) });
+      const issue =
+        snap.reviztoById.get(String(row.revizto_issue_id)) ||
+        // Missing from the bulk result — look it up directly so a
+        // genuinely gone issue still surfaces its "not found" error.
+        (await reviztoService.getIssue(userId, project.revizto_region, project.revizto_project_uuid, row.revizto_issue_id));
+      const updated = issue.updated ?? null;
+      const commented = issue.commented ?? null;
+      const unchanged =
+        !full && updated != null && row.last_seen_revizto_updated === updated && row.last_seen_revizto_commented === commented;
+      if (unchanged) {
+        results.push({ reviztoId: issue.id, action: 'skipped' });
+        continue;
+      }
+      if (!ctx) {
+        ctx = await _buildPushContext(userId, project);
+        ctx.accIssueById = snap.accById;
+      }
+      results.push({ reviztoId: issue.id, ...(await pushIssueToAcc(userId, project, issue, ctx)) });
+      // Only after a successful push — a failure leaves the old markers,
+      // so the next cycle tries again.
+      await pool.query(
+        `UPDATE sync_map SET last_seen_revizto_updated = $3, last_seen_revizto_commented = $4
+         WHERE project_id = $1 AND revizto_issue_id = $2`,
+        [project.id, String(row.revizto_issue_id), updated, commented]
+      );
     } catch (err) {
       const message = err.response?.data?.errors?.[0]?.detail || err.message;
       console.error(`[sync] Failed to re-push linked issue ${row.revizto_issue_id}:`, JSON.stringify(err.response?.data) || err.message);
@@ -2017,70 +2110,87 @@ async function _resolveEffectiveReporterEmail(userId, project, accUpdatedById, f
   return matchedEmail || fallbackReporterEmail;
 }
 
-async function pollAccCommentsForProject(userId, project, reporterEmail) {
+async function pollAccCommentsForProject(userId, project, reporterEmail, { snapshot = null, full = false } = {}) {
   const { rows } = await pool.query(
-    'SELECT revizto_issue_id, acc_issue_id, last_pulled_acc_comment_id FROM sync_map WHERE project_id = $1',
+    'SELECT revizto_issue_id, acc_issue_id, last_pulled_acc_comment_id, last_seen_acc_comment_count FROM sync_map WHERE project_id = $1',
     [project.id]
   );
   for (const row of rows) {
+    // Skip issues whose ACC comment count hasn't moved since the last
+    // successful check (from the cycle's bulk ACC fetch) — no per-issue
+    // call at all. No bulk data, a first-ever check, or the daily full
+    // check (full) all fall through to checking as before.
+    const seenCount = snapshot?.accById?.get(row.acc_issue_id)?.commentCount ?? null;
+    if (!full && seenCount != null && row.last_seen_acc_comment_count === seenCount) continue;
     try {
-      const comments = await accService.getIssueComments(userId, project, row.acc_issue_id);
-      if (!comments.length) continue;
-      const latest = comments[comments.length - 1];
-      const latestId = latest.id || latest.commentId;
-      // String() coercion is deliberate: ACC's comment ID is likely a
-      // number, but row.last_pulled_acc_comment_id always comes back as
-      // a string from the TEXT column — a strict === would silently fail
-      // every single comparison (12345 !== "12345"), causing the same
-      // comment to re-push every poll cycle forever.
-      if (!latestId || String(latestId) === String(row.last_pulled_acc_comment_id)) continue; // nothing new
+      await (async () => {
+        const comments = await accService.getIssueComments(userId, project, row.acc_issue_id);
+        if (!comments.length) return;
+        const latest = comments[comments.length - 1];
+        const latestId = latest.id || latest.commentId;
+        // String() coercion is deliberate: ACC's comment ID is likely a
+        // number, but row.last_pulled_acc_comment_id always comes back as
+        // a string from the TEXT column — a strict === would silently fail
+        // every single comparison (12345 !== "12345"), causing the same
+        // comment to re-push every poll cycle forever.
+        if (!latestId || String(latestId) === String(row.last_pulled_acc_comment_id)) return; // nothing new
 
-      const commentText = latest.body || latest.text || '';
-      // Prevents an infinite ping-pong: a comment WE pushed Revizto->ACC
-      // becomes ACC's new "latest comment," which would otherwise look
-      // like a genuine new ACC comment on the next poll and get pushed
-      // right back into Revizto with another tag stacked on. Mark it
-      // seen (so we stop re-checking it) without re-pushing it. The
-      // "Attachment added via Revizto sync" case doesn't carry the
-      // "- synced from Revizto" phrase (see _pushLatestFileAttachmentToAcc)
-      // so needs its own prefix check, same as the mirror-image case
-      // below (isAutoPostedComment's "Attachment added via ACC sync").
-      if (commentText.includes('- synced from Revizto') || commentText.startsWith('Attachment added via Revizto sync')) {
+        const commentText = latest.body || latest.text || '';
+        // Prevents an infinite ping-pong: a comment WE pushed Revizto->ACC
+        // becomes ACC's new "latest comment," which would otherwise look
+        // like a genuine new ACC comment on the next poll and get pushed
+        // right back into Revizto with another tag stacked on. Mark it
+        // seen (so we stop re-checking it) without re-pushing it. The
+        // "Attachment added via Revizto sync" case doesn't carry the
+        // "- synced from Revizto" phrase (see _pushLatestFileAttachmentToAcc)
+        // so needs its own prefix check, same as the mirror-image case
+        // below (isAutoPostedComment's "Attachment added via ACC sync").
+        if (commentText.includes('- synced from Revizto') || commentText.startsWith('Attachment added via Revizto sync')) {
+          await pool.query(
+            'UPDATE sync_map SET last_pulled_acc_comment_id = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
+            [project.id, row.revizto_issue_id, latestId]
+          );
+          return;
+        }
+
+        const author = await _resolveAccAuthor(userId, project, latest.createdBy);
+        const attribution = author?.name ? ` by ${author.name}` : '';
+        // If the ACC commenter is also a real Revizto team member, attribute
+        // the comment to THEM (their own profile shows above it in Revizto)
+        // instead of the app-connected project owner — falls back to the
+        // owner when there's no match, same as before.
+        const reviztoReporterEmail = (await _resolveReviztoReporterEmail(userId, project, author?.email)) || reporterEmail;
+        await reviztoService.addComment(
+          userId,
+          project.revizto_region,
+          project.revizto_project_uuid,
+          row.revizto_issue_id,
+          `${commentText} - synced from ACC${attribution}`,
+          reviztoReporterEmail
+        );
         await pool.query(
           'UPDATE sync_map SET last_pulled_acc_comment_id = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
           [project.id, row.revizto_issue_id, latestId]
         );
-        continue;
+        await _audit({
+          projectId: project.id,
+          reviztoIssueId: row.revizto_issue_id,
+          accIssueId: row.acc_issue_id,
+          direction: 'acc_to_revizto',
+          action: 'comment',
+          attributedEmail: author?.email || null,
+          newValue: commentText,
+        });
+      })();
+      // Recorded only once the check fully succeeded, so a failed push
+      // gets retried next cycle instead of being marked seen.
+      if (seenCount != null) {
+        await pool.query('UPDATE sync_map SET last_seen_acc_comment_count = $3 WHERE project_id = $1 AND revizto_issue_id = $2', [
+          project.id,
+          row.revizto_issue_id,
+          seenCount,
+        ]);
       }
-
-      const author = await _resolveAccAuthor(userId, project, latest.createdBy);
-      const attribution = author?.name ? ` by ${author.name}` : '';
-      // If the ACC commenter is also a real Revizto team member, attribute
-      // the comment to THEM (their own profile shows above it in Revizto)
-      // instead of the app-connected project owner — falls back to the
-      // owner when there's no match, same as before.
-      const reviztoReporterEmail = (await _resolveReviztoReporterEmail(userId, project, author?.email)) || reporterEmail;
-      await reviztoService.addComment(
-        userId,
-        project.revizto_region,
-        project.revizto_project_uuid,
-        row.revizto_issue_id,
-        `${commentText} - synced from ACC${attribution}`,
-        reviztoReporterEmail
-      );
-      await pool.query(
-        'UPDATE sync_map SET last_pulled_acc_comment_id = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
-        [project.id, row.revizto_issue_id, latestId]
-      );
-      await _audit({
-        projectId: project.id,
-        reviztoIssueId: row.revizto_issue_id,
-        accIssueId: row.acc_issue_id,
-        direction: 'acc_to_revizto',
-        action: 'comment',
-        attributedEmail: author?.email || null,
-        newValue: commentText,
-      });
     } catch (err) {
       console.warn(`[poll] Could not check ACC comments for issue ${row.acc_issue_id} (skipping):`, err.response?.data?.detail || err.message);
     }
@@ -2097,119 +2207,136 @@ async function pollAccCommentsForProject(userId, project, reporterEmail) {
  * else (PDFs, etc.) goes over as a plain file attachment comment, since
  * Revizto's markup mechanism only accepts those three image types.
  */
-async function pollAccAttachmentsForProject(userId, project, reporterEmail) {
+async function pollAccAttachmentsForProject(userId, project, reporterEmail, { snapshot = null, full = false } = {}) {
   const { rows } = await pool.query(
-    'SELECT revizto_issue_id, acc_issue_id, last_pulled_acc_attachment_id, last_pushed_file_attachment_acc_id FROM sync_map WHERE project_id = $1',
+    'SELECT revizto_issue_id, acc_issue_id, last_pulled_acc_attachment_id, last_pushed_file_attachment_acc_id, last_seen_acc_attachment_count FROM sync_map WHERE project_id = $1',
     [project.id]
   );
   for (const row of rows) {
+    // Skip issues whose ACC attachment count hasn't moved since the last
+    // successful check (from the cycle's bulk ACC fetch) — no per-issue
+    // call at all. No bulk data, a first-ever check, or the daily full
+    // check (full) all fall through to checking as before.
+    const seenCount = snapshot?.accById?.get(row.acc_issue_id)?.attachmentCount ?? null;
+    if (!full && seenCount != null && row.last_seen_acc_attachment_count === seenCount) continue;
     try {
-      // Confirmed by real testing: attachments do NOT come back inline on
-      // the base issue GET (always empty), same as comments — needs the
-      // dedicated endpoint instead.
-      const attachments = await accService.getIssueAttachments(userId, project, row.acc_issue_id);
-      if (!attachments.length) continue;
+      await (async () => {
+        // Confirmed by real testing: attachments do NOT come back inline on
+        // the base issue GET (always empty), same as comments — needs the
+        // dedicated endpoint instead.
+        const attachments = await accService.getIssueAttachments(userId, project, row.acc_issue_id);
+        if (!attachments.length) return;
 
-      const latest = attachments[attachments.length - 1];
-      const latestId = latest.attachmentId || latest.id;
-      if (!latestId || String(latestId) === String(row.last_pulled_acc_attachment_id)) continue; // nothing new
+        const latest = attachments[attachments.length - 1];
+        const latestId = latest.attachmentId || latest.id;
+        if (!latestId || String(latestId) === String(row.last_pulled_acc_attachment_id)) return; // nothing new
 
-      const displayName = latest.displayName || latest.fileName || '';
-      // Ping-pong guard #1: a markup image WE pushed Revizto->ACC (see
-      // _pushMarkupImageToAcc) is attached with this exact display name
-      // pattern — without this check, it would look like a genuine new
-      // ACC attachment on the next poll and get imported right back into
-      // Revizto as a "new" one.
-      //
-      // Ping-pong guard #2: a real Revizto file attachment WE pushed
-      // Revizto->ACC (see _pushLatestFileAttachmentToAcc) uses the file's
-      // real name, not a recognizable pattern like guard #1 — so that
-      // push records the resulting ACC attachmentId itself
-      // (last_pushed_file_attachment_acc_id), and this checks against it
-      // directly instead of guessing from the name.
-      if (displayName.startsWith('Revizto Issue ') || String(latestId) === String(row.last_pushed_file_attachment_acc_id)) {
+        const displayName = latest.displayName || latest.fileName || '';
+        // Ping-pong guard #1: a markup image WE pushed Revizto->ACC (see
+        // _pushMarkupImageToAcc) is attached with this exact display name
+        // pattern — without this check, it would look like a genuine new
+        // ACC attachment on the next poll and get imported right back into
+        // Revizto as a "new" one.
+        //
+        // Ping-pong guard #2: a real Revizto file attachment WE pushed
+        // Revizto->ACC (see _pushLatestFileAttachmentToAcc) uses the file's
+        // real name, not a recognizable pattern like guard #1 — so that
+        // push records the resulting ACC attachmentId itself
+        // (last_pushed_file_attachment_acc_id), and this checks against it
+        // directly instead of guessing from the name.
+        if (displayName.startsWith('Revizto Issue ') || String(latestId) === String(row.last_pushed_file_attachment_acc_id)) {
+          await pool.query(
+            'UPDATE sync_map SET last_pulled_acc_attachment_id = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
+            [project.id, row.revizto_issue_id, latestId]
+          );
+          return;
+        }
+
+        // Same real-member attribution as pollAccCommentsForProject: if
+        // whoever added this attachment in ACC is also a real Revizto team
+        // member, both the attachment's own comment and the explanatory
+        // text comment below are attributed to THEM, not the app-connected
+        // project owner.
+        const author = await _resolveAccAuthor(userId, project, latest.createdBy);
+        const reviztoReporterEmail = (await _resolveReviztoReporterEmail(userId, project, author?.email)) || reporterEmail;
+
+        // TEMP DEBUG: labeled steps so a failure pinpoints exactly which
+        // leg (ACC download, Revizto upload, or the follow-up comment)
+        // actually broke, instead of a bare "Internal Server Error" that
+        // could come from any of the three.
+        console.log(`[poll] [step 1: download] "${displayName}" from ACC for Revizto issue #${row.revizto_issue_id}`);
+        let buffer, contentType;
+        try {
+          ({ buffer, contentType } = await accService.downloadAttachmentFile(userId, latest.storageUrn));
+        } catch (err) {
+          throw new Error(`[step 1: download from ACC] status ${err.response?.status}: ${JSON.stringify(err.response?.data) || err.message}`);
+        }
+        console.log(`[poll] [step 1 done] downloaded ${buffer.length} bytes, contentType=${contentType}`);
+
+        const fileName = displayName || `attachment-${latestId}`;
+
+        // Single plain file attachment for everything, images included — a
+        // markup-type upload was tried and confirmed working at the API
+        // level, but it landed as a broken reference in Revizto's UI
+        // (clicking the thumbnail said "selected issue does not have a
+        // screenshot") rather than a clean, openable image. A plain file
+        // attachment is a single real object with no such gap.
+        console.log(`[poll] [step 2: upload to Revizto] "${fileName}" for Revizto issue #${row.revizto_issue_id} (file)`);
+        let uploadResult;
+        try {
+          uploadResult = await reviztoService.addAttachment(
+            userId,
+            project.revizto_region,
+            project.revizto_project_uuid,
+            row.revizto_issue_id,
+            buffer,
+            fileName,
+            reviztoReporterEmail,
+            { asMarkup: false }
+          );
+        } catch (err) {
+          throw new Error(`[step 2: upload to Revizto] status ${err.response?.status}: ${JSON.stringify(err.response?.data) || err.message}`);
+        }
+        console.log('[poll] [step 2 done]');
+
+        console.log('[poll] [step 3: post explanatory comment]');
+        try {
+          await reviztoService.addComment(
+            userId,
+            project.revizto_region,
+            project.revizto_project_uuid,
+            row.revizto_issue_id,
+            author?.name ? `Attachment added via ACC sync by ${author.name}` : 'Attachment added via ACC sync',
+            reviztoReporterEmail
+          );
+        } catch (err) {
+          throw new Error(`[step 3: post comment] status ${err.response?.status}: ${JSON.stringify(err.response?.data) || err.message}`);
+        }
+        console.log('[poll] [step 3 done]');
+
         await pool.query(
-          'UPDATE sync_map SET last_pulled_acc_attachment_id = $3 WHERE project_id = $1 AND revizto_issue_id = $2',
-          [project.id, row.revizto_issue_id, latestId]
+          'UPDATE sync_map SET last_pulled_acc_attachment_id = $3, last_pulled_acc_attachment_comment_uuid = $4 WHERE project_id = $1 AND revizto_issue_id = $2',
+          [project.id, row.revizto_issue_id, latestId, uploadResult?.commentUuid || null]
         );
-        continue;
-      }
-
-      // Same real-member attribution as pollAccCommentsForProject: if
-      // whoever added this attachment in ACC is also a real Revizto team
-      // member, both the attachment's own comment and the explanatory
-      // text comment below are attributed to THEM, not the app-connected
-      // project owner.
-      const author = await _resolveAccAuthor(userId, project, latest.createdBy);
-      const reviztoReporterEmail = (await _resolveReviztoReporterEmail(userId, project, author?.email)) || reporterEmail;
-
-      // TEMP DEBUG: labeled steps so a failure pinpoints exactly which
-      // leg (ACC download, Revizto upload, or the follow-up comment)
-      // actually broke, instead of a bare "Internal Server Error" that
-      // could come from any of the three.
-      console.log(`[poll] [step 1: download] "${displayName}" from ACC for Revizto issue #${row.revizto_issue_id}`);
-      let buffer, contentType;
-      try {
-        ({ buffer, contentType } = await accService.downloadAttachmentFile(userId, latest.storageUrn));
-      } catch (err) {
-        throw new Error(`[step 1: download from ACC] status ${err.response?.status}: ${JSON.stringify(err.response?.data) || err.message}`);
-      }
-      console.log(`[poll] [step 1 done] downloaded ${buffer.length} bytes, contentType=${contentType}`);
-
-      const fileName = displayName || `attachment-${latestId}`;
-
-      // Single plain file attachment for everything, images included — a
-      // markup-type upload was tried and confirmed working at the API
-      // level, but it landed as a broken reference in Revizto's UI
-      // (clicking the thumbnail said "selected issue does not have a
-      // screenshot") rather than a clean, openable image. A plain file
-      // attachment is a single real object with no such gap.
-      console.log(`[poll] [step 2: upload to Revizto] "${fileName}" for Revizto issue #${row.revizto_issue_id} (file)`);
-      let uploadResult;
-      try {
-        uploadResult = await reviztoService.addAttachment(
-          userId,
-          project.revizto_region,
-          project.revizto_project_uuid,
+        await _audit({
+          projectId: project.id,
+          reviztoIssueId: row.revizto_issue_id,
+          accIssueId: row.acc_issue_id,
+          direction: 'acc_to_revizto',
+          action: 'attachment',
+          attributedEmail: author?.email || null,
+          detail: fileName,
+        });
+      })();
+      // Recorded only once the check fully succeeded, so a failed push
+      // gets retried next cycle instead of being marked seen.
+      if (seenCount != null) {
+        await pool.query('UPDATE sync_map SET last_seen_acc_attachment_count = $3 WHERE project_id = $1 AND revizto_issue_id = $2', [
+          project.id,
           row.revizto_issue_id,
-          buffer,
-          fileName,
-          reviztoReporterEmail,
-          { asMarkup: false }
-        );
-      } catch (err) {
-        throw new Error(`[step 2: upload to Revizto] status ${err.response?.status}: ${JSON.stringify(err.response?.data) || err.message}`);
+          seenCount,
+        ]);
       }
-      console.log('[poll] [step 2 done]');
-
-      console.log('[poll] [step 3: post explanatory comment]');
-      try {
-        await reviztoService.addComment(
-          userId,
-          project.revizto_region,
-          project.revizto_project_uuid,
-          row.revizto_issue_id,
-          author?.name ? `Attachment added via ACC sync by ${author.name}` : 'Attachment added via ACC sync',
-          reviztoReporterEmail
-        );
-      } catch (err) {
-        throw new Error(`[step 3: post comment] status ${err.response?.status}: ${JSON.stringify(err.response?.data) || err.message}`);
-      }
-      console.log('[poll] [step 3 done]');
-
-      await pool.query(
-        'UPDATE sync_map SET last_pulled_acc_attachment_id = $3, last_pulled_acc_attachment_comment_uuid = $4 WHERE project_id = $1 AND revizto_issue_id = $2',
-        [project.id, row.revizto_issue_id, latestId, uploadResult?.commentUuid || null]
-      );
-      await _audit({
-        projectId: project.id,
-        reviztoIssueId: row.revizto_issue_id,
-        accIssueId: row.acc_issue_id,
-        direction: 'acc_to_revizto',
-        action: 'attachment',
-        attributedEmail: author?.email || null,
-        detail: fileName,
-      });
     } catch (err) {
       console.warn(`[poll] Could not check ACC attachments for issue ${row.acc_issue_id} (skipping):`, err.response?.data?.detail || err.message);
     }
@@ -2221,6 +2348,7 @@ module.exports = {
   pushAllOpenIssues,
   pushSelectedIssues,
   pushLinkedIssues,
+  prefetchLinkedIssues,
   autoLinkMatchingIssues,
   getLinkedIssuePairs,
   getIssuesBoard,
