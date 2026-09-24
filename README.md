@@ -1264,6 +1264,12 @@ everything below it:
 - **Issues synced over time:** running total of linked issues, by the
   date each was **first linked** (`sync_map.linked_at`, below).
   `GET /api/dashboards/sync-timeline`.
+- **Changes made in Revizto / Changes made in ACC:** two stacked charts,
+  one per side the change was made on, segmented by what changed (Status,
+  Assignee, Watchers, Priority, Due date, Title, Comments, Attachments;
+  8 fixed validated colors, same per kind on both charts), with each
+  kind's total for the range in its legend. From the same audit rows
+  as Sync activity (`activity().fields`).
 - **Sync activity:** stacked columns per day/week/month by direction,
   from the audit log (so history starts 9/23/2026, when the Activity Log
   was added). `GET /api/dashboards/activity`.

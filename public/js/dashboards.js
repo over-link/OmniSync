@@ -13,6 +13,25 @@ const SERIES = {
   acc_to_revizto: { label: 'ACC → Revizto', color: '#eb6834' },
 };
 const TIMELINE_COLOR = '#2a78d6';
+// What can change on an issue: the six synced fields (audit_log.field_name
+// = Revizto's diff-comment keys) plus comments and attachments, in a fixed
+// order with fixed colors — categorical slots 1–8 of the reference
+// palette, validated as a stacked set on this app's white surface. Same
+// color for a kind on both "made in" charts. Three slots are under 3:1
+// against white, so these charts always carry legend totals and a table
+// view (the validator's required relief).
+const FIELD_SERIES = [
+  { key: 'customStatus', label: 'Status', color: '#2a78d6' },
+  { key: 'assignee', label: 'Assignee', color: '#eb6834' },
+  { key: 'watchers', label: 'Watchers', color: '#1baf7a' },
+  { key: 'priority', label: 'Priority', color: '#eda100' },
+  { key: 'deadline', label: 'Due date', color: '#e87ba4' },
+  { key: 'title', label: 'Title', color: '#008300' },
+  { key: 'comment', label: 'Comments', color: '#4a3aa7' },
+  { key: 'attachment', label: 'Attachments', color: '#e34948' },
+];
+// Chart id prefix -> which edits it shows (audit_log.direction).
+const FIELD_CHARTS = { 'fields-revizto': 'revizto_to_acc', 'fields-acc': 'acc_to_revizto' };
 const INK = { primary: '#12161c', secondary: '#52514e', muted: '#6b7280', grid: '#e8ebf0', surface: '#ffffff' };
 // [singular, plural] — tooltip rows read "1 attachment", "3 attachments".
 const ACTION_LABELS = { field_change: ['field change', 'field changes'], comment: ['comment', 'comments'], attachment: ['attachment', 'attachments'] };
@@ -210,6 +229,35 @@ function render() {
   _renderActivityChart(activityPoints, granularity);
   _renderTimelineTable(timelinePoints, granularity);
   _renderActivityTable(activityPoints, granularity);
+
+  // Field changes, one chart per side the edit was made on.
+  for (const [prefix, direction] of Object.entries(FIELD_CHARTS)) {
+    const byBucket = new Map(buckets.map((b) => [b, {}]));
+    for (const { day, direction: dir, kind: field, n } of activity.fields || []) {
+      if (dir !== direction) continue;
+      const bucket = byBucket.get(_bucketKey(day, granularity));
+      if (bucket) bucket[field] = (bucket[field] || 0) + n;
+    }
+    const points = buckets.map((key) => ({ key, ...byBucket.get(key) }));
+    const totals = Object.fromEntries(FIELD_SERIES.map((f) => [f.key, points.reduce((s, p) => s + (p[f.key] || 0), 0)]));
+    const where = direction === 'revizto_to_acc' ? 'Revizto' : 'ACC';
+    document.getElementById(`${prefix}-sub`).textContent = `What people change in ${where} — fields, comments and attachments — ${per}. Totals for this range are in the legend.`;
+    _renderLegendInto(`${prefix}-legend`, FIELD_SERIES.map((f) => ({ ...f, total: totals[f.key] })));
+    _renderStackedChart({
+      containerId: `${prefix}-chart`,
+      points,
+      granularity,
+      series: FIELD_SERIES,
+      valueOf: (p, field) => p[field] || 0,
+      ariaLabel: (total) => `Changes made in ${where}, ${_fmt(total)} total`,
+      emptyText: `No changes made in ${where} in this range`,
+    });
+    _table(
+      `${prefix}-table`,
+      [{ day: 'Day', week: 'Week of', month: 'Month' }[granularity], ...FIELD_SERIES.map((f) => f.label)],
+      points.map((p) => [_bucketLabel(p.key, granularity, { long: granularity === 'month' }), ...FIELD_SERIES.map((f) => _fmt(p[f.key] || 0))])
+    );
+  }
 }
 
 function _fmt(n) {
@@ -389,32 +437,33 @@ function _segmentPath(x, yTop, w, h, roundTop) {
   return `M${x},${yTop + h} L${x},${yTop + r} Q${x},${yTop} ${x + r},${yTop} L${x + w - r},${yTop} Q${x + w},${yTop} ${x + w},${yTop + r} L${x + w},${yTop + h} Z`;
 }
 
-function _renderActivityChart(points, granularity) {
-  const container = document.getElementById('activity-chart');
-  const totals = points.map((p) => p.revizto_to_acc.total + p.acc_to_revizto.total);
+/**
+ * Stacked columns, one segment per series, in the series' fixed order
+ * (never re-ordered by size, so a color always means the same thing).
+ * series: [{ key, label, color }]; valueOf(point, key) -> number;
+ * detailRows(point, series) -> extra tooltip rows under the value.
+ */
+function _renderStackedChart({ containerId, points, granularity, series, valueOf, detailRows = () => [], ariaLabel, emptyText }) {
+  const container = document.getElementById(containerId);
+  const totals = points.map((p) => series.reduce((s, ser) => s + valueOf(p, ser.key), 0));
   const { svg, y, xCenter, band } = _frame(container, points, granularity, Math.max(...totals, 1));
-  svg.setAttribute('aria-label', `Sync activity by direction, ${_fmt(totals.reduce((a, b) => a + b, 0))} changes total`);
+  svg.setAttribute('aria-label', ariaLabel(totals.reduce((a, b) => a + b, 0)));
   const colW = Math.max(2, Math.min(24, band * 0.6));
   const GAP = 2; // surface gap between stacked segments
 
   points.forEach((p, i) => {
     const x = xCenter(i) - colW / 2;
     let base = 0;
-    const order = ['revizto_to_acc', 'acc_to_revizto'].filter((dir) => p[dir].total > 0);
-    order.forEach((dir, k) => {
-      const v = p[dir].total;
+    const present = series.filter((ser) => valueOf(p, ser.key) > 0);
+    present.forEach((ser, k) => {
+      const v = valueOf(p, ser.key);
       const yBottom = y(base) - (k > 0 ? GAP : 0);
       const yTop = y(base + v);
       const h = Math.max(1, yBottom - yTop);
-      const seg = _svg('path', { d: _segmentPath(x, yTop, colW, h, k === order.length - 1), fill: SERIES[dir].color, class: 'dash-bar', tabindex: 0 });
-      seg.setAttribute('aria-label', `${_bucketLabel(p.key, granularity, { long: true })}: ${v} ${SERIES[dir].label}`);
-      const breakdown = Object.entries(ACTION_LABELS)
-        .filter(([action]) => p[dir][action])
-        .map(([action, [one, many]]) => ({ value: _fmt(p[dir][action]), label: p[dir][action] === 1 ? one : many }));
-      const show = (evt) => _showTooltip(evt, `${_bucketLabel(p.key, granularity, { long: true })} · ${SERIES[dir].label}`, [
-        { value: _fmt(v), label: 'synced', color: SERIES[dir].color },
-        ...breakdown,
-      ]);
+      const seg = _svg('path', { d: _segmentPath(x, yTop, colW, h, k === present.length - 1), fill: ser.color, class: 'dash-bar', tabindex: 0 });
+      const title = `${_bucketLabel(p.key, granularity, { long: true })} · ${ser.label}`;
+      seg.setAttribute('aria-label', `${title}: ${v}`);
+      const show = (evt) => _showTooltip(evt, title, [{ value: _fmt(v), label: 'synced', color: ser.color }, ...detailRows(p, ser)]);
       seg.addEventListener('pointermove', show);
       seg.addEventListener('pointerleave', _hideTooltip);
       seg.addEventListener('focus', () => {
@@ -429,14 +478,36 @@ function _renderActivityChart(points, granularity) {
 
   if (!totals.some((t) => t > 0)) {
     const empty = _svg('text', { x: PAD.left + (band * points.length) / 2, y: HEIGHT / 2, 'text-anchor': 'middle', class: 'dash-empty' });
-    empty.textContent = 'No sync activity in this range';
+    empty.textContent = emptyText;
     svg.appendChild(empty);
   }
 }
 
+function _renderActivityChart(points, granularity) {
+  _renderStackedChart({
+    containerId: 'activity-chart',
+    points,
+    granularity,
+    series: Object.entries(SERIES).map(([key, s]) => ({ key, ...s })),
+    valueOf: (p, dir) => p[dir].total,
+    detailRows: (p, ser) =>
+      Object.entries(ACTION_LABELS)
+        .filter(([action]) => p[ser.key][action])
+        .map(([action, [one, many]]) => ({ value: _fmt(p[ser.key][action]), label: p[ser.key][action] === 1 ? one : many })),
+    ariaLabel: (total) => `Sync activity by direction, ${_fmt(total)} changes total`,
+    emptyText: 'No sync activity in this range',
+  });
+}
+
 function _renderLegend() {
-  const legend = document.getElementById('activity-legend');
-  for (const { label, color } of Object.values(SERIES)) {
+  _renderLegendInto('activity-legend', Object.values(SERIES));
+}
+
+/** items: [{ label, color, total? }] — the total, when given, is the range's count (text ink, not the series color). */
+function _renderLegendInto(containerId, items) {
+  const legend = document.getElementById(containerId);
+  legend.innerHTML = '';
+  for (const { label, color, total } of items) {
     const item = document.createElement('span');
     item.className = 'dash-legend-item';
     const swatch = document.createElement('span');
@@ -444,6 +515,12 @@ function _renderLegend() {
     swatch.style.background = color;
     item.appendChild(swatch);
     item.appendChild(document.createTextNode(label));
+    if (total != null) {
+      const count = document.createElement('strong');
+      count.className = 'dash-legend-total';
+      count.textContent = _fmt(total);
+      item.appendChild(count);
+    }
     legend.appendChild(item);
   }
 }

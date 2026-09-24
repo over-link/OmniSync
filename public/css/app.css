@@ -893,7 +893,8 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
 .dash-empty { font-size: 13px; fill: var(--muted); }
 .dash-bar { cursor: default; }
 .dash-bar:hover, .dash-bar:focus { opacity: 0.8; outline: none; }
-.dash-legend { display: flex; gap: 1.1rem; font-size: 0.85rem; color: var(--ink); margin-bottom: 0.4rem; }
+.dash-legend { display: flex; flex-wrap: wrap; gap: 0.4rem 1.1rem; font-size: 0.85rem; color: var(--ink); margin-bottom: 0.4rem; }
+.dash-legend-total { font-weight: 600; margin-left: 0.1rem; font-variant-numeric: tabular-nums; }
 .dash-legend-item { display: inline-flex; align-items: center; gap: 0.4rem; }
 .dash-legend-swatch { width: 10px; height: 10px; border-radius: 2px; }
 .dash-table { margin-top: 0.5rem; font-size: 0.85rem; }

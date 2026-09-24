@@ -94,6 +94,30 @@
             <div id="activity-table"></div>
           </details>
         </div>
+
+        <!-- Same field -> color mapping on both charts, so a field reads the
+             same wherever it appears; each has its own legend with totals. -->
+        <div class="card dash-chart-card">
+          <h2 class="dash-chart-title">Changes made in Revizto</h2>
+          <p class="dash-chart-sub" id="fields-revizto-sub">What people change in Revizto, synced to ACC.</p>
+          <div class="dash-legend" id="fields-revizto-legend"></div>
+          <div class="dash-chart" id="fields-revizto-chart"></div>
+          <details class="dash-table">
+            <summary>Show as table</summary>
+            <div id="fields-revizto-table"></div>
+          </details>
+        </div>
+
+        <div class="card dash-chart-card">
+          <h2 class="dash-chart-title">Changes made in ACC</h2>
+          <p class="dash-chart-sub" id="fields-acc-sub">What people change in ACC, synced to Revizto.</p>
+          <div class="dash-legend" id="fields-acc-legend"></div>
+          <div class="dash-chart" id="fields-acc-chart"></div>
+          <details class="dash-table">
+            <summary>Show as table</summary>
+            <div id="fields-acc-table"></div>
+          </details>
+        </div>
       </div>
       <div id="dash-error" class="hint"></div>
     </div>

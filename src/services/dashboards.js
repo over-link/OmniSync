@@ -55,16 +55,34 @@ async function syncTimeline({ projectId = null, from, to, tz }) {
  */
 async function activity({ projectId = null, from, to, tz }) {
   const zone = safeTimeZone(tz);
-  const { rows } = await pool.query(
-    `SELECT to_char(created_at AT TIME ZONE $3, 'YYYY-MM-DD') AS day, direction, action, count(*)::int AS n
-     FROM audit_log
-     WHERE created_at >= $1 AND created_at < $2
-       AND action IN ('field_change', 'comment', 'attachment', 'error')
-       AND ($4::int IS NULL OR project_id = $4)
-     GROUP BY 1, 2, 3 ORDER BY 1`,
-    [from, to, zone, projectId]
-  );
-  return { rows };
+  const params = [from, to, zone, projectId];
+  const [{ rows }, { rows: fields }] = await Promise.all([
+    pool.query(
+      `SELECT to_char(created_at AT TIME ZONE $3, 'YYYY-MM-DD') AS day, direction, action, count(*)::int AS n
+       FROM audit_log
+       WHERE created_at >= $1 AND created_at < $2
+         AND action IN ('field_change', 'comment', 'attachment', 'error')
+         AND ($4::int IS NULL OR project_id = $4)
+       GROUP BY 1, 2, 3 ORDER BY 1`,
+      params
+    ),
+    // What changes, per day and by where the change was made:
+    // revizto_to_acc = made in Revizto, acc_to_revizto = made in ACC.
+    // `kind` is the field's diff-comment key (customStatus, assignee, ...)
+    // for field changes, or 'comment' / 'attachment' for those.
+    pool.query(
+      `SELECT to_char(created_at AT TIME ZONE $3, 'YYYY-MM-DD') AS day, direction,
+              CASE WHEN action = 'field_change' THEN field_name ELSE action END AS kind, count(*)::int AS n
+       FROM audit_log
+       WHERE created_at >= $1 AND created_at < $2
+         AND direction IS NOT NULL
+         AND (action IN ('comment', 'attachment') OR (action = 'field_change' AND field_name IS NOT NULL))
+         AND ($4::int IS NULL OR project_id = $4)
+       GROUP BY 1, 2, 3 ORDER BY 1`,
+      params
+    ),
+  ]);
+  return { rows, fields };
 }
 
 module.exports = { syncTimeline, activity };
