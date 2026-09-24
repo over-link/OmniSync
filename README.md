@@ -1261,6 +1261,9 @@ everything below it:
 - **Tiles:** linked issues now, newly synced in the range, changes
   synced (field changes + comments + attachments, both directions),
   sync errors.
+- **Total issues synced over time** (top): running total of linked issues
+  across the range, starting from what was already linked before `from`,
+  so each point is the true total on that date.
 - **Issues synced per week** (per day/month for other ranges): how many
   issues were newly synced in each period, as a line with a light fill,
   a dot per period and the peak labeled (the tooltip also shows the

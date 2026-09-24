@@ -73,10 +73,20 @@
         </div>
 
         <div class="card dash-chart-card">
+          <h2 class="dash-chart-title">Total issues synced over time</h2>
+          <p class="dash-chart-sub">Running total of linked issues, including any linked before the range starts.</p>
+          <div class="dash-chart" id="total-chart"></div>
+          <p class="hint" id="timeline-note"></p>
+          <details class="dash-table">
+            <summary>Show as table</summary>
+            <div id="total-table"></div>
+          </details>
+        </div>
+
+        <div class="card dash-chart-card">
           <h2 class="dash-chart-title" id="timeline-title">Issues synced per week</h2>
           <p class="dash-chart-sub" id="timeline-sub">How many issues were first synced each week.</p>
           <div class="dash-chart" id="timeline-chart"></div>
-          <p class="hint" id="timeline-note"></p>
           <details class="dash-table">
             <summary>Show as table</summary>
             <div id="timeline-table"></div>

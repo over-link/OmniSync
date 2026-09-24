@@ -227,6 +227,7 @@ function render() {
     ? `${timeline.undated} linked issue${timeline.undated === 1 ? '' : 's'} don't have a first-synced date yet — they'll appear after the next sync cycle.`
     : 'Counts issues that are linked now. An issue that was unlinked no longer appears in its history.';
 
+  _renderTotalChart(timelinePoints, granularity);
   _renderTimelineChart(timelinePoints, granularity);
   _renderActivityChart(activityPoints, granularity);
   _renderTimelineTable(timelinePoints, granularity);
@@ -366,37 +367,43 @@ function _hideTooltip() {
 // ─── Chart 1: issues synced over time (line + area wash) ───────────
 
 /**
- * Issues newly synced per bucket (week, for the default range) as a line
- * with a light wash under it — each period's real count, ups and downs
- * included, rather than a running total that only ever climbs. A dot on
- * every point makes each period's value readable; the peak gets the one
- * direct label.
+ * One-series line with a light wash under it, a crosshair tooltip that
+ * snaps to the nearest bucket, and arrow-key stepping. `valueOf(point)`
+ * is what's plotted; `label` picks the one direct label ('end' — the
+ * latest value, for a running total — or 'peak'); `markers` adds a dot
+ * per point (skipped when points are too dense to read as dots).
  */
-function _renderTimelineChart(points, granularity) {
-  const container = document.getElementById('timeline-chart');
-  const max = Math.max(...points.map((p) => p.added), 1);
+function _renderLineChart({ containerId, points, granularity, valueOf, label, markers, ariaLabel, tooltipRows }) {
+  const container = document.getElementById(containerId);
+  const values = points.map(valueOf);
+  const max = Math.max(...values, 1);
   const { svg, plotH, y, xCenter, band } = _frame(container, points, granularity, max);
-  const unit = { day: 'day', week: 'week', month: 'month' }[granularity];
-  svg.setAttribute('aria-label', `Issues newly synced per ${unit}, peak ${_fmt(max)}`);
+  svg.setAttribute('aria-label', ariaLabel(values));
 
-  const coords = points.map((p, i) => [xCenter(i), y(p.added)]);
+  const coords = points.map((p, i) => [xCenter(i), y(values[i])]);
   const line = coords.map(([x, yy], i) => `${i ? 'L' : 'M'}${x},${yy}`).join(' ');
   const baseY = PAD.top + plotH;
   svg.appendChild(_svg('path', { d: `${line} L${coords[coords.length - 1][0]},${baseY} L${coords[0][0]},${baseY} Z`, fill: TIMELINE_COLOR, 'fill-opacity': 0.1 }));
   svg.appendChild(_svg('path', { d: line, fill: 'none', stroke: TIMELINE_COLOR, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
 
-  // A marker per point (2px surface ring) — skipped when points are too
-  // dense to read as separate dots.
-  if (band >= 12) {
-    for (const [cx, cy] of coords) svg.appendChild(_svg('circle', { cx, cy, r: 4, fill: TIMELINE_COLOR, stroke: INK.surface, 'stroke-width': 2 }));
-  }
+  const dot = ([cx, cy]) => svg.appendChild(_svg('circle', { cx, cy, r: 4, fill: TIMELINE_COLOR, stroke: INK.surface, 'stroke-width': 2 }));
+  if (markers && band >= 12) coords.forEach(dot);
 
-  // The one direct label: the peak period's count, above its point.
-  const peak = points.reduce((best, p, i) => (p.added > points[best].added ? i : best), 0);
-  if (points[peak].added > 0) {
-    const peakLabel = _svg('text', { x: coords[peak][0], y: coords[peak][1] - 10, 'text-anchor': 'middle', class: 'dash-end-label' });
-    peakLabel.textContent = _fmt(points[peak].added);
-    svg.appendChild(peakLabel);
+  if (label === 'end') {
+    // End dot (2px surface ring) + the latest value beside it.
+    const last = coords[coords.length - 1];
+    if (!markers || band < 12) dot(last);
+    const endLabel = _svg('text', { x: last[0] + 8, y: last[1] + 4, class: 'dash-end-label' });
+    endLabel.textContent = _fmt(values[values.length - 1]);
+    svg.appendChild(endLabel);
+  } else {
+    // The peak period's value, above its point.
+    const peak = values.reduce((best, v, i) => (v > values[best] ? i : best), 0);
+    if (values[peak] > 0) {
+      const peakLabel = _svg('text', { x: coords[peak][0], y: coords[peak][1] - 10, 'text-anchor': 'middle', class: 'dash-end-label' });
+      peakLabel.textContent = _fmt(values[peak]);
+      svg.appendChild(peakLabel);
+    }
   }
 
   // Crosshair: snaps to the nearest bucket; one tooltip with that bucket's numbers.
@@ -407,17 +414,13 @@ function _renderTimelineChart(points, granularity) {
   svg.appendChild(hit);
 
   const show = (evt, i) => {
-    const p = points[i];
     cross.setAttribute('x1', xCenter(i));
     cross.setAttribute('x2', xCenter(i));
     cross.setAttribute('visibility', 'visible');
     hoverDot.setAttribute('cx', xCenter(i));
-    hoverDot.setAttribute('cy', y(p.added));
+    hoverDot.setAttribute('cy', y(values[i]));
     hoverDot.setAttribute('visibility', 'visible');
-    _showTooltip(evt, _bucketLabel(p.key, granularity, { long: true }), [
-      { value: _fmt(p.added), label: 'newly synced', color: TIMELINE_COLOR },
-      { value: _fmt(p.total), label: 'linked in total by then' },
-    ]);
+    _showTooltip(evt, _bucketLabel(points[i].key, granularity, { long: true }), tooltipRows(points[i]));
   };
   const hide = () => {
     cross.setAttribute('visibility', 'hidden');
@@ -434,7 +437,7 @@ function _renderTimelineChart(points, granularity) {
   // Keyboard: same readout as hover, arrow keys step through buckets.
   const keyShow = () => {
     const box = svg.getBoundingClientRect();
-    show({ clientX: box.left + xCenter(focusIndex), clientY: box.top + y(points[focusIndex].added) }, focusIndex);
+    show({ clientX: box.left + xCenter(focusIndex), clientY: box.top + y(values[focusIndex]) }, focusIndex);
   };
   hit.addEventListener('focus', keyShow);
   hit.addEventListener('blur', hide);
@@ -443,6 +446,49 @@ function _renderTimelineChart(points, granularity) {
     evt.preventDefault();
     focusIndex = Math.min(points.length - 1, Math.max(0, focusIndex + (evt.key === 'ArrowRight' ? 1 : -1)));
     keyShow();
+  });
+}
+
+/**
+ * Total linked issues over time — a running total that starts from what
+ * was already linked before the range, so each point is the true total on
+ * that date, not a count restarted at the range's start.
+ */
+function _renderTotalChart(points, granularity) {
+  _renderLineChart({
+    containerId: 'total-chart',
+    points,
+    granularity,
+    valueOf: (p) => p.total,
+    label: 'end',
+    markers: false,
+    ariaLabel: (v) => `Total linked issues over time, from ${_fmt(v[0])} to ${_fmt(v[v.length - 1])}`,
+    tooltipRows: (p) => [
+      { value: _fmt(p.total), label: 'linked in total', color: TIMELINE_COLOR },
+      { value: `+${_fmt(p.added)}`, label: 'newly synced' },
+    ],
+  });
+}
+
+/**
+ * Issues newly synced per bucket (week, for the default range) — each
+ * period's real count, ups and downs included. A dot per point makes each
+ * value readable; the peak gets the one direct label.
+ */
+function _renderTimelineChart(points, granularity) {
+  const unit = { day: 'day', week: 'week', month: 'month' }[granularity];
+  _renderLineChart({
+    containerId: 'timeline-chart',
+    points,
+    granularity,
+    valueOf: (p) => p.added,
+    label: 'peak',
+    markers: true,
+    ariaLabel: (v) => `Issues newly synced per ${unit}, peak ${_fmt(Math.max(...v))}`,
+    tooltipRows: (p) => [
+      { value: _fmt(p.added), label: 'newly synced', color: TIMELINE_COLOR },
+      { value: _fmt(p.total), label: 'linked in total by then' },
+    ],
   });
 }
 
@@ -562,12 +608,16 @@ function _table(containerId, headers, rows) {
   container.appendChild(table);
 }
 
+// Same rows under both line charts (total and per-period), since each
+// chart's table should carry its own numbers without hovering.
 function _renderTimelineTable(points, granularity) {
-  _table(
-    'timeline-table',
-    [{ day: 'Day', week: 'Week of', month: 'Month' }[granularity], 'Newly synced', 'Total linked'],
-    points.map((p) => [_bucketLabel(p.key, granularity, { long: granularity === 'month' }), _fmt(p.added), _fmt(p.total)])
-  );
+  for (const id of ['total-table', 'timeline-table']) {
+    _table(
+      id,
+      [{ day: 'Day', week: 'Week of', month: 'Month' }[granularity], 'Newly synced', 'Total linked'],
+      points.map((p) => [_bucketLabel(p.key, granularity, { long: granularity === 'month' }), _fmt(p.added), _fmt(p.total)])
+    );
+  }
 }
 
 function _renderActivityTable(points, granularity) {
