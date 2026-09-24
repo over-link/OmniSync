@@ -10,6 +10,7 @@ const tokenStore = require('../services/tokenStore');
 const fieldMapping = require('../services/fieldMapping');
 const appSettings = require('../services/appSettings');
 const auditLog = require('../services/auditLog');
+const dashboards = require('../services/dashboards');
 const { ReconnectRequiredError } = require('../services/authManager');
 
 // ─── Revizto license browser (for the license dropdown) ─────────────
@@ -102,6 +103,10 @@ router.get('/issues', (req, res) => {
 
 router.get('/logs', (req, res) => {
   res.sendFile(path.join(__dirname, '../../public/logs.html'));
+});
+
+router.get('/dashboards', (req, res) => {
+  res.sendFile(path.join(__dirname, '../../public/dashboards.html'));
 });
 
 // ─── Projects (Revizto project <-> ACC project pairing) ────────────
@@ -481,6 +486,28 @@ router.post('/api/settings/sync-paused', requireAdmin, async (req, res) => {
 // Open to any signed-in user (requireLogin, not requireAdmin) — meant as
 // a shared, visible trail for the whole team, same access level as the
 // Issues page. `projectId` optionally filters to one project.
+// ─── Dashboards ──────────────────────────────────────────────────────
+// Open to any signed-in user, same as the Activity Log it summarizes.
+// `from`/`to` are ISO timestamps (to exclusive), `tz` the viewer's IANA
+// timezone for grouping by day — see services/dashboards.js.
+function _dashboardQuery(req) {
+  const parseDate = (v) => {
+    const d = v ? new Date(v) : null;
+    return d && !Number.isNaN(d.getTime()) ? d : null;
+  };
+  const to = parseDate(req.query.to) || new Date();
+  const from = parseDate(req.query.from) || new Date(to.getTime() - 90 * 24 * 60 * 60 * 1000);
+  return { projectId: req.query.projectId ? Number(req.query.projectId) : null, from, to, tz: req.query.tz };
+}
+
+router.get('/api/dashboards/sync-timeline', requireLogin, async (req, res) => {
+  res.json(await dashboards.syncTimeline(_dashboardQuery(req)));
+});
+
+router.get('/api/dashboards/activity', requireLogin, async (req, res) => {
+  res.json(await dashboards.activity(_dashboardQuery(req)));
+});
+
 router.get('/api/audit-log', requireLogin, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
   const offset = parseInt(req.query.offset, 10) || 0;

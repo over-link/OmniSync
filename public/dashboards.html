@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dashboards — Revizto ↔ ACC Sync</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <div id="sidebar-mount"></div>
+  <div id="app" class="container container-wide container-log">
+    <header class="app-header">
+      <div>
+        <h1>Dashboards</h1>
+        <p class="app-sub">How much is being synced between Revizto and ACC, and when.</p>
+      </div>
+    </header>
+
+    <div id="dash-app" class="hidden">
+      <!-- One filter row scoping everything below it. -->
+      <div class="card log-filters">
+        <div class="filter-group">
+          <label for="dash-project-select">Project</label>
+          <select id="dash-project-select">
+            <option value="">All projects</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>Range</label>
+          <div class="dash-presets" role="group" aria-label="Date range presets">
+            <button type="button" class="dash-preset" data-months="1">1M</button>
+            <button type="button" class="dash-preset" data-months="3">3M</button>
+            <button type="button" class="dash-preset" data-months="6">6M</button>
+            <button type="button" class="dash-preset" data-months="12">12M</button>
+          </div>
+        </div>
+        <div class="filter-group">
+          <label for="dash-from-date">From</label>
+          <input type="date" id="dash-from-date" />
+        </div>
+        <div class="filter-group">
+          <label for="dash-to-date">To</label>
+          <input type="date" id="dash-to-date" />
+        </div>
+        <span id="dash-date-hint" class="hint"></span>
+      </div>
+
+      <div id="dash-body">
+        <div class="dash-tiles">
+          <div class="card dash-tile">
+            <div class="dash-tile-label">Linked issues</div>
+            <div class="dash-tile-value" id="tile-linked">—</div>
+            <div class="dash-tile-sub">currently linked</div>
+          </div>
+          <div class="card dash-tile">
+            <div class="dash-tile-label">Newly synced</div>
+            <div class="dash-tile-value" id="tile-new">—</div>
+            <div class="dash-tile-sub">first linked in this range</div>
+          </div>
+          <div class="card dash-tile">
+            <div class="dash-tile-label">Changes synced</div>
+            <div class="dash-tile-value" id="tile-changes">—</div>
+            <div class="dash-tile-sub">fields, comments &amp; attachments</div>
+          </div>
+          <div class="card dash-tile">
+            <div class="dash-tile-label">Sync errors</div>
+            <div class="dash-tile-value" id="tile-errors">—</div>
+            <div class="dash-tile-sub">in this range</div>
+          </div>
+        </div>
+
+        <div class="card dash-chart-card">
+          <h2 class="dash-chart-title">Issues synced over time</h2>
+          <p class="dash-chart-sub" id="timeline-sub">Total linked issues, by the date each was first synced.</p>
+          <div class="dash-chart" id="timeline-chart"></div>
+          <p class="hint" id="timeline-note"></p>
+          <details class="dash-table">
+            <summary>Show as table</summary>
+            <div id="timeline-table"></div>
+          </details>
+        </div>
+
+        <div class="card dash-chart-card">
+          <h2 class="dash-chart-title">Sync activity</h2>
+          <p class="dash-chart-sub" id="activity-sub">Field changes, comments and attachments synced, by direction.</p>
+          <div class="dash-legend" id="activity-legend"></div>
+          <div class="dash-chart" id="activity-chart"></div>
+          <p class="hint">Activity history starts when the Activity Log was added (9/23/2026).</p>
+          <details class="dash-table">
+            <summary>Show as table</summary>
+            <div id="activity-table"></div>
+          </details>
+        </div>
+      </div>
+      <div id="dash-error" class="hint"></div>
+    </div>
+  </div>
+  <div id="dash-tooltip" class="dash-tooltip" role="status" hidden></div>
+  <script src="/js/nav.js"></script>
+  <script src="/js/dashboards.js"></script>
+</body>
+</html>

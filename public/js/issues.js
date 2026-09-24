@@ -20,7 +20,7 @@ let activeFilters = Object.fromEntries(ALL_FILTER_FIELDS.map((f) => [f, []]));
 
 const PAGE_SIZE = 50;
 let currentPage = 1;
-// { key: 'revizto' | 'acc', dir: 'asc' | 'desc' } — remembered per
+// { key: 'revizto' | 'acc' | 'linked', dir: 'asc' | 'desc' } — remembered per
 // browser, a viewer convenience only (see _loadSort).
 let currentSort = _loadSort();
 // Revizto IDs ticked for "Link & push selected". Kept outside the DOM so
@@ -33,7 +33,7 @@ let linkableIds = new Set();
 function _loadSort() {
   try {
     const saved = JSON.parse(localStorage.getItem('issues:sort'));
-    if (saved && ['revizto', 'acc'].includes(saved.key) && ['asc', 'desc'].includes(saved.dir)) return saved;
+    if (saved && ['revizto', 'acc', 'linked'].includes(saved.key) && ['asc', 'desc'].includes(saved.dir)) return saved;
   } catch {
     // unreadable/blocked storage — fall through to the default
   }
@@ -48,10 +48,12 @@ function _saveSort() {
   }
 }
 
-// Numeric issue number to sort by, or null when there isn't one (an
-// unlinked issue has no ACC number; displayId can also fall back to a
-// UUID server-side if ACC ever omits it).
+// Numeric value to sort by, or null when there isn't one: an issue number,
+// or the linked date as a timestamp. An unlinked issue has no ACC number
+// or linked date; displayId can also fall back to a UUID server-side if
+// ACC ever omits it.
 function _sortValue(issue, key) {
+  if (key === 'linked') return issue.linked && issue.linkedAt ? Date.parse(issue.linkedAt) : null;
   const raw = key === 'acc' ? (issue.linked && !issue.acc?.error ? issue.acc?.displayId : null) : issue.id;
   const n = Number(raw);
   return raw == null || Number.isNaN(n) ? null : n;
@@ -279,11 +281,17 @@ function renderBoard() {
       // the issue in either system) — see the Setup page's Issue linking
       // toggle, which an admin has to turn on before this button appears.
       const unlinkBtn = i.linked && allowManualUnlink ? `<button type="button" class="btn secondary unlink-btn" data-id="${i.id}" title="Unlink — removes the tracked link only, doesn't delete either issue">Unlink</button>` : '';
+      // Always render the date and actions cells (empty when not
+      // applicable) so every row keeps the header's column positions.
+      const linkedDate = i.linkedAt
+        ? `<span class="linked-date" title="${new Date(i.linkedAt).toLocaleString()}">${new Date(i.linkedAt).toLocaleDateString()}</span>`
+        : '<span class="linked-date"></span>';
       return `<div class="${rowClass}">
         <span>${leftMeta}</span>
         <span class="bridge-connector" aria-hidden="true">${i.linked ? '⇄' : ''}</span>
         <span>${rightMeta}</span>
-        ${unlinkBtn}
+        ${linkedDate}
+        <span>${unlinkBtn}</span>
       </div>`;
     })
     .join('');

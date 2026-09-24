@@ -67,7 +67,7 @@ reminder before expiry once this goes beyond a prototype.
 - **`/logs`** ("Activity Log") — the audit trail: every field change,
   comment, attachment, link/unlink, and error, with who it's attributed
   to and when. See "Audit log" below. Open to Standard and Admin alike.
-- **Dashboards** — placeholder nav link, not built yet.
+- **Dashboards** — issues synced over time and sync activity charts (see "Dashboards page" below).
 
 Navigation is a shared left sidebar (`public/js/nav.js`), loaded first on
 every page — it fetches auth state once, renders links based on role, and
@@ -1251,6 +1251,38 @@ Revizto→ACC direction can return the favor and recognize *this* comment.
 **Migration needed**: `sync_map.last_pulled_acc_attachment_id`,
 `sync_map.last_pulled_acc_attachment_comment_uuid` (idempotent
 `ALTER TABLE`). Run `npm run migrate`.
+
+## Dashboards page
+
+`/dashboards` (open to any signed-in user). One filter row (project,
+1M/3M/6M/12M presets, From/To dates; default the last 3 months) scopes
+everything below it:
+
+- **Tiles:** linked issues now, newly synced in the range, changes
+  synced (field changes + comments + attachments, both directions),
+  sync errors.
+- **Issues synced over time:** running total of linked issues, by the
+  date each was **first linked** (`sync_map.linked_at`, below).
+  `GET /api/dashboards/sync-timeline`.
+- **Sync activity:** stacked columns per day/week/month by direction,
+  from the audit log (so history starts 9/23/2026, when the Activity Log
+  was added). `GET /api/dashboards/activity`.
+
+Both endpoints group by calendar day in the viewer's timezone (`tz`
+param); the page rolls days into weeks (over ~6 weeks) or months (over
+~6.5 months). Charts are plain SVG (no library), using the two validated
+categorical colors, with hover/keyboard tooltips and a "Show as table"
+view for every value.
+
+**`sync_map.linked_at`: when an issue was first linked.** Set by
+`recordLink`, and never changed by later re-syncs (a re-link after an
+unlink starts fresh, since unlink deletes the row). Links that predate the
+column are backfilled from the ACC issue's `createdAt` (the app creates
+the ACC issue when it first syncs one, so that's the sync date) by
+`_backfillLinkedAt`, which rides on the bulk ACC fetch the poll cycle and
+the Issues page already make. It also powers the Issues page's sortable
+**Linked** column. Limitation: the history counts issues that are linked
+now; an unlinked issue drops out of it.
 
 ## Poll schedule and change detection (API call budget)
 

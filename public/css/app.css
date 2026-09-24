@@ -226,7 +226,8 @@ body {
 .board-card { padding: 1rem 1.25rem; }
 .board-header, .board-row {
   display: grid;
-  grid-template-columns: 1fr 32px 1fr 90px;
+  /* Revizto · connector · ACC · Linked date · actions (Unlink) */
+  grid-template-columns: 1fr 32px 1fr 96px 90px;
   gap: 0.75rem;
   align-items: center;
   padding: 0.6rem 0.4rem;
@@ -244,6 +245,8 @@ body {
 .board-row:last-child { border-bottom: none; }
 .board-row.row-synced { background: var(--success-dim); border-radius: 6px; }
 .board-row em { color: var(--muted); font-style: normal; font-family: var(--font-mono); font-size: 0.78rem; }
+/* When the issue was first linked — its own sortable column. */
+.board-row .linked-date { color: var(--muted); font-family: var(--font-mono); font-size: 0.78rem; font-variant-numeric: tabular-nums; }
 .bridge-connector { color: var(--blueprint); font-family: var(--font-mono); text-align: center; }
 .link-checkbox { font-size: 0.85rem; color: var(--muted); }
 .board-select-all-bar { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0.4rem; border-bottom: 1px solid var(--line); }
@@ -853,4 +856,69 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
   .conn-label { min-width: 100%; }
   .linked-header, .linked-row { grid-template-columns: 1fr; gap: 0.25rem; }
   .linked-row .bridge-connector { display: none; }
+}
+
+/* ── Dashboards ──────────────────────────────────────────────────── */
+.dash-presets { display: flex; gap: 0.3rem; }
+.dash-preset {
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.45rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+}
+.dash-preset:hover { background: var(--blueprint-dim); color: var(--blueprint); }
+.dash-preset.active { background: var(--blueprint); border-color: var(--blueprint); color: #fff; }
+#dash-date-hint { flex-basis: 100%; margin: 0; }
+#dash-date-hint:empty { display: none; }
+/* Refetch keeps the frame: previous render stays, dimmed, until new data lands. */
+#dash-body { transition: opacity 0.15s ease; }
+#dash-body.dash-loading { opacity: 0.5; }
+.dash-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.9rem; margin-bottom: 1rem; }
+.dash-tile { margin: 0; padding: 1rem 1.1rem; }
+.dash-tile-label { font-size: 0.85rem; color: var(--muted); font-weight: 600; }
+.dash-tile-value { font-size: 1.9rem; font-weight: 600; line-height: 1.2; margin-top: 0.2rem; }
+.dash-tile-sub { font-size: 0.78rem; color: var(--muted); }
+.dash-chart-card { padding: 1.1rem 1.25rem; }
+.dash-chart-title { font-size: 1.05rem; margin: 0; }
+.dash-chart-sub { color: var(--muted); font-size: 0.85rem; margin: 0.15rem 0 0.6rem; }
+.dash-chart { width: 100%; }
+.dash-chart svg { display: block; overflow: visible; }
+.dash-axis { font-family: var(--font-mono); font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.dash-end-label { font-size: 12px; font-weight: 600; fill: var(--ink); }
+.dash-empty { font-size: 13px; fill: var(--muted); }
+.dash-bar { cursor: default; }
+.dash-bar:hover, .dash-bar:focus { opacity: 0.8; outline: none; }
+.dash-legend { display: flex; gap: 1.1rem; font-size: 0.85rem; color: var(--ink); margin-bottom: 0.4rem; }
+.dash-legend-item { display: inline-flex; align-items: center; gap: 0.4rem; }
+.dash-legend-swatch { width: 10px; height: 10px; border-radius: 2px; }
+.dash-table { margin-top: 0.5rem; font-size: 0.85rem; }
+.dash-table summary { cursor: pointer; color: var(--blueprint); font-weight: 600; }
+.dash-table table { border-collapse: collapse; margin-top: 0.5rem; font-variant-numeric: tabular-nums; }
+.dash-table th, .dash-table td { text-align: right; padding: 0.25rem 0.9rem 0.25rem 0; border-bottom: 1px solid var(--line); }
+.dash-table th:first-child, .dash-table td:first-child { text-align: left; }
+.dash-tooltip {
+  position: fixed;
+  z-index: 50;
+  pointer-events: none;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  padding: 0.45rem 0.6rem;
+  font-size: 0.8rem;
+  color: var(--ink);
+  min-width: 140px;
+}
+.dash-tooltip-title { color: var(--muted); margin-bottom: 0.2rem; }
+.dash-tooltip-row { display: flex; align-items: center; gap: 0.35rem; }
+/* Line keys, not boxes — a short stroke of the series color. */
+.dash-tooltip-key { width: 12px; height: 2px; border-radius: 1px; flex: none; }
+.dash-tooltip-row span:last-child { color: var(--muted); }
+@media (max-width: 900px) {
+  .dash-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

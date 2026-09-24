@@ -452,4 +452,12 @@ ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_seen_revizto_commented TEXT;
 ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_seen_acc_comment_count INTEGER;
 ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_seen_acc_attachment_count INTEGER;
 
+-- When each issue was first linked/synced, for the Dashboards page's
+-- "issues synced over time" chart — last_synced_at can't serve, it moves
+-- on every push. Set by recordLink going forward. Links that predate this
+-- column are backfilled by prefetchLinkedIssues from the ACC issue's own
+-- createdAt: the app creates the ACC issue at the moment it first syncs
+-- one, so that timestamp IS the sync date.
+ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS linked_at TIMESTAMPTZ;
+
 -- connect-pg-simple creates its own "session" table automatically on first run.

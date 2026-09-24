@@ -69,10 +69,11 @@ async function getReviztoIdForAcc(projectId, accIssueId) {
 
 async function recordLink(projectId, reviztoIssueId, accIssueId) {
   await pool.query(
-    `INSERT INTO sync_map (project_id, revizto_issue_id, acc_issue_id, last_synced_at, last_error, last_error_at)
-     VALUES ($1, $2, $3, now(), NULL, NULL)
+    `INSERT INTO sync_map (project_id, revizto_issue_id, acc_issue_id, last_synced_at, last_error, last_error_at, linked_at)
+     VALUES ($1, $2, $3, now(), NULL, NULL, now())
      ON CONFLICT (project_id, revizto_issue_id) DO UPDATE SET
-       acc_issue_id = EXCLUDED.acc_issue_id, last_synced_at = now(), last_error = NULL, last_error_at = NULL`,
+       acc_issue_id = EXCLUDED.acc_issue_id, last_synced_at = now(), last_error = NULL, last_error_at = NULL,
+       linked_at = COALESCE(sync_map.linked_at, now())`,
     [projectId, String(reviztoIssueId), accIssueId]
   );
   await _audit({ projectId, reviztoIssueId, accIssueId, action: 'link', detail: 'Issue linked' });
@@ -605,6 +606,28 @@ async function labelAuditEntries(entries) {
     attributed_name: e.attributed_email ? nameByEmail[e.attributed_email.toLowerCase()] || null : null,
     ...(e.field_name === 'customStatus' ? { old_label: statusLabel(e.old_value), new_label: statusLabel(e.new_value) } : {}),
   }));
+}
+
+/**
+ * Fills sync_map.linked_at for links that predate that column, from the
+ * ACC issue's createdAt — the app created each linked ACC issue when it
+ * first synced it, so that's the sync date (see schema.sql). Free: it
+ * rides on the cycle's existing bulk fetch. Once a row has a value this
+ * never touches it again. Best-effort, like _rememberAccIssueNumbers.
+ */
+async function _backfillLinkedAt(projectId, accIssues) {
+  const rows = accIssues.filter((i) => i?.id && i.createdAt);
+  if (!rows.length) return;
+  try {
+    await pool.query(
+      `UPDATE sync_map SET linked_at = v.created_at::timestamptz
+       FROM unnest($2::text[], $3::text[]) AS v(acc_issue_id, created_at)
+       WHERE sync_map.project_id = $1 AND sync_map.acc_issue_id = v.acc_issue_id AND sync_map.linked_at IS NULL`,
+      [projectId, rows.map((i) => i.id), rows.map((i) => i.createdAt)]
+    );
+  } catch (err) {
+    console.warn('[sync] Could not backfill link dates for the Dashboards page:', err.message);
+  }
 }
 
 /**
@@ -1269,7 +1292,10 @@ async function prefetchLinkedIssues(userId, project) {
       return null;
     }),
   ]);
-  if (accIssues) await _rememberAccIssueNumbers(project.id, accIssues);
+  if (accIssues) {
+    await _rememberAccIssueNumbers(project.id, accIssues);
+    await _backfillLinkedAt(project.id, accIssues);
+  }
   return {
     links,
     reviztoById: new Map(reviztoIssues.map((i) => [String(i.id), i])),
@@ -1881,13 +1907,17 @@ async function getIssuesBoard(userId, project) {
   // linked issue as gone.
   const [issues, linkRows, lookups, accIssues] = await Promise.all([
     reviztoService.getIssues(userId, project.revizto_region, project.revizto_project_uuid),
-    pool.query('SELECT revizto_issue_id, acc_issue_id FROM sync_map WHERE project_id = $1', [project.id]).then((r) => r.rows),
+    pool.query('SELECT revizto_issue_id, acc_issue_id, linked_at FROM sync_map WHERE project_id = $1', [project.id]).then((r) => r.rows),
     _loadFilterableFieldLookups(userId, project),
     accService.getIssues(userId, project).catch(() => null),
   ]);
   const linkMap = new Map(linkRows.map((r) => [String(r.revizto_issue_id), r.acc_issue_id]));
+  const linkedAtById = new Map(linkRows.map((r) => [String(r.revizto_issue_id), r.linked_at]));
   const accIssueById = accIssues ? new Map(accIssues.map((i) => [i.id, i])) : null;
-  if (accIssues) await _rememberAccIssueNumbers(project.id, accIssues);
+  if (accIssues) {
+    await _rememberAccIssueNumbers(project.id, accIssues);
+    await _backfillLinkedAt(project.id, accIssues);
+  }
 
   const board = [];
   for (const issue of issues) {
@@ -1945,6 +1975,10 @@ async function getIssuesBoard(userId, project) {
       title: reviztoService.unwrap(issue.title) || '(no title)',
       ..._buildFilterableFields(issue, lookups),
       linked,
+      // When this issue was first linked (sync_map.linked_at). An old link not
+      // backfilled yet (the backfill above runs after linkRows was read) falls
+      // back to the same ACC createdAt the backfill uses; null if unlinked.
+      linkedAt: linked ? linkedAtById.get(String(issue.id)) || accIssueById?.get(accIssueId)?.createdAt || null : null,
       acc,
     });
   }
