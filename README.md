@@ -1261,7 +1261,10 @@ everything below it:
 - **Tiles:** linked issues now, newly synced in the range, changes
   synced (field changes + comments + attachments, both directions),
   sync errors.
-- **Issues synced over time:** running total of linked issues, by the
+- **Issues synced per week** (per day/month for other ranges): how many
+  issues were newly synced in each period, as a line with a light fill,
+  a dot per period and the peak labeled (the tooltip also shows the
+  running total), by the
   date each was **first linked** (`sync_map.linked_at`, below).
   `GET /api/dashboards/sync-timeline`.
 - **Changes made in Revizto / Changes made in ACC:** two stacked charts,

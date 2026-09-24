@@ -220,6 +220,8 @@ function render() {
   document.getElementById('tile-errors').textContent = _fmt(errors);
 
   const per = { day: 'per day', week: 'per week', month: 'per month' }[granularity];
+  document.getElementById('timeline-title').textContent = `Issues synced ${per}`;
+  document.getElementById('timeline-sub').textContent = `How many issues were first synced each ${granularity}.`;
   document.getElementById('activity-sub').textContent = `Field changes, comments and attachments synced ${per}, by direction.`;
   document.getElementById('timeline-note').textContent = timeline.undated
     ? `${timeline.undated} linked issue${timeline.undated === 1 ? '' : 's'} don't have a first-synced date yet — they'll appear after the next sync cycle.`
@@ -363,24 +365,39 @@ function _hideTooltip() {
 
 // ─── Chart 1: issues synced over time (line + area wash) ───────────
 
+/**
+ * Issues newly synced per bucket (week, for the default range) as a line
+ * with a light wash under it — each period's real count, ups and downs
+ * included, rather than a running total that only ever climbs. A dot on
+ * every point makes each period's value readable; the peak gets the one
+ * direct label.
+ */
 function _renderTimelineChart(points, granularity) {
   const container = document.getElementById('timeline-chart');
-  const max = Math.max(...points.map((p) => p.total), 1);
+  const max = Math.max(...points.map((p) => p.added), 1);
   const { svg, plotH, y, xCenter, band } = _frame(container, points, granularity, max);
-  svg.setAttribute('aria-label', `Linked issues over time, from ${_fmt(points[0].total)} to ${_fmt(points[points.length - 1].total)}`);
+  const unit = { day: 'day', week: 'week', month: 'month' }[granularity];
+  svg.setAttribute('aria-label', `Issues newly synced per ${unit}, peak ${_fmt(max)}`);
 
-  const coords = points.map((p, i) => [xCenter(i), y(p.total)]);
+  const coords = points.map((p, i) => [xCenter(i), y(p.added)]);
   const line = coords.map(([x, yy], i) => `${i ? 'L' : 'M'}${x},${yy}`).join(' ');
   const baseY = PAD.top + plotH;
   svg.appendChild(_svg('path', { d: `${line} L${coords[coords.length - 1][0]},${baseY} L${coords[0][0]},${baseY} Z`, fill: TIMELINE_COLOR, 'fill-opacity': 0.1 }));
   svg.appendChild(_svg('path', { d: line, fill: 'none', stroke: TIMELINE_COLOR, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
 
-  // End dot (2px surface ring) + the one direct label: the current value.
-  const [ex, ey] = coords[coords.length - 1];
-  svg.appendChild(_svg('circle', { cx: ex, cy: ey, r: 4, fill: TIMELINE_COLOR, stroke: INK.surface, 'stroke-width': 2 }));
-  const endLabel = _svg('text', { x: ex + 8, y: ey + 4, class: 'dash-end-label' });
-  endLabel.textContent = _fmt(points[points.length - 1].total);
-  svg.appendChild(endLabel);
+  // A marker per point (2px surface ring) — skipped when points are too
+  // dense to read as separate dots.
+  if (band >= 12) {
+    for (const [cx, cy] of coords) svg.appendChild(_svg('circle', { cx, cy, r: 4, fill: TIMELINE_COLOR, stroke: INK.surface, 'stroke-width': 2 }));
+  }
+
+  // The one direct label: the peak period's count, above its point.
+  const peak = points.reduce((best, p, i) => (p.added > points[best].added ? i : best), 0);
+  if (points[peak].added > 0) {
+    const peakLabel = _svg('text', { x: coords[peak][0], y: coords[peak][1] - 10, 'text-anchor': 'middle', class: 'dash-end-label' });
+    peakLabel.textContent = _fmt(points[peak].added);
+    svg.appendChild(peakLabel);
+  }
 
   // Crosshair: snaps to the nearest bucket; one tooltip with that bucket's numbers.
   const cross = _svg('line', { y1: PAD.top, y2: baseY, stroke: INK.muted, 'stroke-width': 1, visibility: 'hidden' });
@@ -395,11 +412,11 @@ function _renderTimelineChart(points, granularity) {
     cross.setAttribute('x2', xCenter(i));
     cross.setAttribute('visibility', 'visible');
     hoverDot.setAttribute('cx', xCenter(i));
-    hoverDot.setAttribute('cy', y(p.total));
+    hoverDot.setAttribute('cy', y(p.added));
     hoverDot.setAttribute('visibility', 'visible');
     _showTooltip(evt, _bucketLabel(p.key, granularity, { long: true }), [
-      { value: _fmt(p.total), label: 'linked issues', color: TIMELINE_COLOR },
-      { value: `+${_fmt(p.added)}`, label: 'newly synced' },
+      { value: _fmt(p.added), label: 'newly synced', color: TIMELINE_COLOR },
+      { value: _fmt(p.total), label: 'linked in total by then' },
     ]);
   };
   const hide = () => {
@@ -417,7 +434,7 @@ function _renderTimelineChart(points, granularity) {
   // Keyboard: same readout as hover, arrow keys step through buckets.
   const keyShow = () => {
     const box = svg.getBoundingClientRect();
-    show({ clientX: box.left + xCenter(focusIndex), clientY: box.top + y(points[focusIndex].total) }, focusIndex);
+    show({ clientX: box.left + xCenter(focusIndex), clientY: box.top + y(points[focusIndex].added) }, focusIndex);
   };
   hit.addEventListener('focus', keyShow);
   hit.addEventListener('blur', hide);
