@@ -10,10 +10,10 @@ async function api(url, options = {}) {
 }
 
 const PAGE_SIZE = 50;
-let currentPage = 1;
+let loadedCount = 0; // entries currently shown — the next "Load more" starts here
 let currentProjectId = '';
-// Bumped on every load, so a slow earlier response (e.g. from clicking
-// Next twice quickly) can't overwrite the page actually asked for last.
+// Bumped on every load, so a slow earlier response (e.g. a Load more
+// still in flight when the dates change) can't land on the new list.
 let loadSeq = 0;
 
 window.addEventListener('app:ready', async (e) => {
@@ -23,7 +23,7 @@ window.addEventListener('app:ready', async (e) => {
   }
   document.getElementById('logs-app').classList.remove('hidden');
   await loadProjectOptions();
-  await loadEntries();
+  await loadEntries({ reset: true });
 });
 
 // <input type="date"> gives "YYYY-MM-DD" with no timezone. Build the
@@ -149,12 +149,22 @@ function _escape(str) {
   return div.innerHTML;
 }
 
-async function loadEntries() {
+// reset: start the list over (filters changed, Refresh); otherwise
+// append the next PAGE_SIZE entries below what's already shown.
+async function loadEntries({ reset } = {}) {
   const rowsEl = document.getElementById('log-rows');
   const emptyEl = document.getElementById('log-empty');
   const statusEl = document.getElementById('log-status');
   const hintEl = document.getElementById('log-date-hint');
+  const loadMoreEl = document.getElementById('log-load-more');
+  const loadMoreBtn = document.getElementById('log-load-more-btn');
   const seq = ++loadSeq;
+
+  if (reset) {
+    loadedCount = 0;
+    rowsEl.innerHTML = '';
+    loadMoreEl.classList.add('hidden');
+  }
 
   const { from, to, fromValue, toValue } = _dateRange();
   if (from && to && from >= to) {
@@ -162,59 +172,51 @@ async function loadEntries() {
     rowsEl.innerHTML = '';
     emptyEl.classList.add('hidden');
     statusEl.classList.add('hidden');
-    document.getElementById('log-pager').classList.add('hidden');
+    loadMoreEl.classList.add('hidden');
     return;
   }
   hintEl.textContent = '';
 
-  const params = new URLSearchParams({ limit: PAGE_SIZE, offset: (currentPage - 1) * PAGE_SIZE });
+  const params = new URLSearchParams({ limit: PAGE_SIZE, offset: loadedCount });
   if (currentProjectId) params.set('projectId', currentProjectId);
   if (from) params.set('from', from.toISOString());
   if (to) params.set('to', to.toISOString());
 
-  statusEl.textContent = 'Loading…';
-  statusEl.classList.remove('hidden');
+  if (reset) {
+    statusEl.textContent = 'Loading…';
+    statusEl.classList.remove('hidden');
+  } else {
+    loadMoreBtn.disabled = true;
+    loadMoreBtn.textContent = 'Loading…';
+  }
   try {
     const { entries, total } = await api(`/api/audit-log?${params.toString()}`);
     if (seq !== loadSeq) return; // a newer load has started since
-    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-    if (currentPage > totalPages) {
-      // e.g. the range shrank the log — jump to the new last page.
-      currentPage = totalPages;
-      return loadEntries();
-    }
-    rowsEl.innerHTML = entries.map(_rowHtml).join('');
+    rowsEl.insertAdjacentHTML('beforeend', entries.map(_rowHtml).join(''));
+    loadedCount += entries.length;
     statusEl.classList.add('hidden');
     emptyEl.textContent = fromValue || toValue ? 'No activity in this date range.' : 'No log entries yet.';
     emptyEl.classList.toggle('hidden', total > 0);
-    _renderPager(total, totalPages);
+    // Shown whenever there's anything listed, so the count is always
+    // visible; the button itself only while there's more to fetch.
+    loadMoreEl.classList.toggle('hidden', total === 0);
+    document.getElementById('log-shown-info').textContent = `Showing ${loadedCount} of ${total}`;
+    loadMoreBtn.classList.toggle('hidden', loadedCount >= total);
   } catch (err) {
     if (seq !== loadSeq) return;
     statusEl.textContent = err.message;
+    statusEl.classList.remove('hidden');
+  } finally {
+    if (seq === loadSeq) {
+      loadMoreBtn.disabled = false;
+      loadMoreBtn.textContent = 'Load more';
+    }
   }
 }
 
-function _renderPager(total, totalPages) {
-  const pager = document.getElementById('log-pager');
-  pager.classList.toggle('hidden', totalPages <= 1);
-  if (totalPages <= 1) return;
-  const first = (currentPage - 1) * PAGE_SIZE + 1;
-  const last = Math.min(currentPage * PAGE_SIZE, total);
-  document.getElementById('log-page-info').textContent = `Page ${currentPage} of ${totalPages} · ${first}–${last} of ${total}`;
-  document.getElementById('log-prev-btn').disabled = currentPage <= 1;
-  document.getElementById('log-next-btn').disabled = currentPage >= totalPages;
-}
-
-// Any change to what's being looked at starts back on page 1.
+// Any change to what's being looked at starts the list over.
 function _reload() {
-  currentPage = 1;
-  loadEntries();
-}
-
-function _goToPage(page) {
-  currentPage = page;
-  loadEntries();
-  document.querySelector('.board-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  loadEntries({ reset: true });
 }
 
 document.getElementById('log-project-select').addEventListener('change', (e) => {
@@ -229,7 +231,7 @@ document.getElementById('log-clear-dates-btn').addEventListener('click', () => {
   _reload();
 });
 
-// Refresh keeps the current page — new activity arrives at the top.
-document.getElementById('log-refresh-btn').addEventListener('click', () => loadEntries());
-document.getElementById('log-prev-btn').addEventListener('click', () => _goToPage(currentPage - 1));
-document.getElementById('log-next-btn').addEventListener('click', () => _goToPage(currentPage + 1));
+// Refresh starts over from the top — new activity arrives there, and
+// appending after it would shift every offset by the number of new rows.
+document.getElementById('log-refresh-btn').addEventListener('click', _reload);
+document.getElementById('log-load-more-btn').addEventListener('click', () => loadEntries({ reset: false }));
