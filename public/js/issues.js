@@ -18,6 +18,57 @@ const ALL_FILTER_FIELDS = [...SCALAR_FILTER_FIELDS, ...ARRAY_FILTER_FIELDS];
 // so multiple values can be chosen per filter at once.
 let activeFilters = Object.fromEntries(ALL_FILTER_FIELDS.map((f) => [f, []]));
 
+const PAGE_SIZE = 50;
+let currentPage = 1;
+// { key: 'revizto' | 'acc', dir: 'asc' | 'desc' } — remembered per
+// browser, a viewer convenience only (see _loadSort).
+let currentSort = _loadSort();
+// Revizto IDs ticked for "Link & push selected". Kept outside the DOM so
+// ticks survive paging — each page only renders its own 50 checkboxes.
+const selectedIds = new Set();
+
+function _loadSort() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('issues:sort'));
+    if (saved && ['revizto', 'acc'].includes(saved.key) && ['asc', 'desc'].includes(saved.dir)) return saved;
+  } catch {
+    // unreadable/blocked storage — fall through to the default
+  }
+  return { key: 'revizto', dir: 'asc' };
+}
+
+function _saveSort() {
+  try {
+    localStorage.setItem('issues:sort', JSON.stringify(currentSort));
+  } catch {
+    // storage blocked — sort still works for this visit
+  }
+}
+
+// Numeric issue number to sort by, or null when there isn't one (an
+// unlinked issue has no ACC number; displayId can also fall back to a
+// UUID server-side if ACC ever omits it).
+function _sortValue(issue, key) {
+  const raw = key === 'acc' ? (issue.linked && !issue.acc?.error ? issue.acc?.displayId : null) : issue.id;
+  const n = Number(raw);
+  return raw == null || Number.isNaN(n) ? null : n;
+}
+
+function _sortIssues(issues) {
+  const { key, dir } = currentSort;
+  const sign = dir === 'asc' ? 1 : -1;
+  return [...issues].sort((a, b) => {
+    const av = _sortValue(a, key);
+    const bv = _sortValue(b, key);
+    // Issues with no number (e.g. not linked yet, when sorting by ACC)
+    // always go last, whichever direction — not first on descending.
+    if (av == null && bv == null) return (a.id - b.id);
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    return (av - bv) * sign;
+  });
+}
+
 window.addEventListener('app:ready', async (e) => {
   if (!e.detail.user) {
     document.getElementById('signed-out-notice').classList.remove('hidden');
@@ -48,6 +99,7 @@ document.getElementById('project-select').addEventListener('change', () => {
   const projectId = document.getElementById('project-select').value;
   if (projectId) localStorage.setItem('issues:lastProjectId', projectId);
   else localStorage.removeItem('issues:lastProjectId');
+  _resetPageAndSelection();
   loadBoard();
 });
 document.getElementById('refresh-board-btn').addEventListener('click', loadBoard);
@@ -115,6 +167,7 @@ function populateFilterOptions() {
     activeFilters[field] = activeFilters[field].filter((v) => values.includes(v));
     renderMultiSelect(container, values, activeFilters[field], (updated) => {
       activeFilters[field] = updated;
+      _resetPageAndSelection();
       renderBoard();
     });
   }
@@ -122,8 +175,38 @@ function populateFilterOptions() {
 
 document.getElementById('reset-filters-btn').addEventListener('click', () => {
   for (const field of ALL_FILTER_FIELDS) activeFilters[field] = [];
+  _resetPageAndSelection();
   populateFilterOptions();
   renderBoard();
+});
+
+// A different set of matching issues — start back on page 1 and drop
+// selections, same as the old behavior where every filter change rebuilt
+// the list with nothing ticked (so a hidden issue can't be linked by accident).
+function _resetPageAndSelection() {
+  currentPage = 1;
+  selectedIds.clear();
+}
+
+document.querySelectorAll('.sort-btn').forEach((btn) =>
+  btn.addEventListener('click', () => {
+    const key = btn.dataset.sort;
+    currentSort = currentSort.key === key ? { key, dir: currentSort.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' };
+    _saveSort();
+    currentPage = 1;
+    renderBoard();
+  })
+);
+
+document.getElementById('page-prev-btn').addEventListener('click', () => {
+  currentPage -= 1;
+  renderBoard();
+  document.querySelector('.board-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+document.getElementById('page-next-btn').addEventListener('click', () => {
+  currentPage += 1;
+  renderBoard();
+  document.querySelector('.board-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
 
 function prettyStatus(s) {
@@ -148,15 +231,30 @@ function renderBoard() {
   document.getElementById('filter-issue-count').textContent = `${filtered.length} issue${filtered.length === 1 ? '' : 's'}`;
 
   const selectAllBar = document.getElementById('board-select-all-bar');
+  _renderSortIndicators();
+
+  // Drop selections that are no longer linkable (just linked, or gone
+  // after a refresh) so the tally and "Link & push" match what's real.
+  const linkableIds = new Set(filtered.filter((i) => !i.linked).map((i) => String(i.id)));
+  for (const id of [...selectedIds]) if (!linkableIds.has(id)) selectedIds.delete(id);
 
   if (!filtered.length) {
     rowsEl.innerHTML = '';
     emptyEl.classList.remove('hidden');
     actionsEl.classList.add('hidden');
     selectAllBar.classList.add('hidden');
+    _renderPager(0, 0);
     return;
   }
   emptyEl.classList.add('hidden');
+
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+  // Clamp — e.g. linking/unlinking or a refresh can shrink the list out
+  // from under the page you were on.
+  currentPage = Math.min(Math.max(currentPage, 1), totalPages);
+  const pageStart = (currentPage - 1) * PAGE_SIZE;
+  const pageIssues = _sortIssues(filtered).slice(pageStart, pageStart + PAGE_SIZE);
+  _renderPager(filtered.length, totalPages);
 
   const hasUnlinked = filtered.some((i) => !i.linked);
   actionsEl.classList.toggle('hidden', !hasUnlinked);
@@ -165,7 +263,7 @@ function renderBoard() {
   const projectId = document.getElementById('project-select').value;
   const allowManualUnlink = !!currentProjects.find((p) => String(p.id) === String(projectId))?.allow_manual_unlink;
 
-  rowsEl.innerHTML = filtered
+  rowsEl.innerHTML = pageIssues
     .map((i) => {
       const rowClass = i.linked ? 'board-row row-synced' : 'board-row';
       const leftMeta = `#${i.id} — ${i.title} <em>(${i.status ?? '?'})</em>`;
@@ -173,7 +271,7 @@ function renderBoard() {
         ? i.acc?.error
           ? `<span class="hint">${i.acc.error}</span>`
           : `#${i.acc.displayId ?? i.acc.id} — ${i.acc.title} <em>(${prettyStatus(i.acc.status)})</em>`
-        : `<label class="link-checkbox"><input type="checkbox" value="${i.id}" /> Select to link</label>`;
+        : `<label class="link-checkbox"><input type="checkbox" value="${i.id}"${selectedIds.has(String(i.id)) ? ' checked' : ''} /> Select to link</label>`;
       // Unlink only clears this app's own tracked link (never deletes
       // the issue in either system) — see the Setup page's Issue linking
       // toggle, which an admin has to turn on before this button appears.
@@ -186,33 +284,57 @@ function renderBoard() {
       </div>`;
     })
     .join('');
-  // Checkboxes above were just rebuilt from scratch (all unchecked) —
-  // reset the tally/button label to match instead of showing a stale count.
   updateSelectedCount();
 }
 
-// Tallies how many of the currently-rendered "select to link" checkboxes
-// are checked, and flips the button's label between Select all/Deselect
-// all depending on whether every one of them already is. Only checkboxes
-// for unlinked issues exist in #board-rows at all (see rightMeta above),
-// and only ones matching the active filters, since renderBoard rebuilds
-// the row list from `filtered` on every call — so this is naturally
-// scoped to "select all in the current filtered/unfiltered list" already.
+function _renderSortIndicators() {
+  document.querySelectorAll('.sort-btn').forEach((btn) => {
+    const active = btn.dataset.sort === currentSort.key;
+    btn.querySelector('.sort-arrow').textContent = active ? (currentSort.dir === 'asc' ? '▲' : '▼') : '';
+    btn.setAttribute('aria-sort', active ? (currentSort.dir === 'asc' ? 'ascending' : 'descending') : 'none');
+  });
+}
+
+function _renderPager(total, totalPages) {
+  const pager = document.getElementById('board-pager');
+  // Only worth showing once there's more than one page.
+  pager.classList.toggle('hidden', totalPages <= 1);
+  if (totalPages <= 1) return;
+  const first = (currentPage - 1) * PAGE_SIZE + 1;
+  const last = Math.min(currentPage * PAGE_SIZE, total);
+  document.getElementById('page-info').textContent = `Page ${currentPage} of ${totalPages} · ${first}–${last} of ${total}`;
+  document.getElementById('page-prev-btn').disabled = currentPage <= 1;
+  document.getElementById('page-next-btn').disabled = currentPage >= totalPages;
+}
+
+// Tally counts every selected issue across ALL pages (selectedIds), while
+// Select all / Deselect all acts on just the checkboxes on this page —
+// the label flips to "Deselect all" once every one of them is ticked.
 function updateSelectedCount() {
   const checkboxes = [...document.querySelectorAll('#board-rows input[type="checkbox"]')];
-  const checkedCount = checkboxes.filter((cb) => cb.checked).length;
-  document.getElementById('selected-count').textContent = `${checkedCount} selected`;
-  document.getElementById('select-all-btn').textContent = checkboxes.length && checkedCount === checkboxes.length ? 'Deselect all' : 'Select all';
+  const pageAllChecked = checkboxes.length && checkboxes.every((cb) => cb.checked);
+  document.getElementById('selected-count').textContent = `${selectedIds.size} selected`;
+  const selectAllBtn = document.getElementById('select-all-btn');
+  selectAllBtn.textContent = pageAllChecked ? 'Deselect all on page' : 'Select all on page';
+  // Other pages can still have unlinked issues when this one has none.
+  selectAllBtn.disabled = !checkboxes.length;
 }
 
 document.getElementById('board-rows').addEventListener('change', (e) => {
-  if (e.target.matches('input[type="checkbox"]')) updateSelectedCount();
+  if (!e.target.matches('input[type="checkbox"]')) return;
+  if (e.target.checked) selectedIds.add(e.target.value);
+  else selectedIds.delete(e.target.value);
+  updateSelectedCount();
 });
 
 document.getElementById('select-all-btn').addEventListener('click', () => {
   const checkboxes = [...document.querySelectorAll('#board-rows input[type="checkbox"]')];
   const shouldCheck = !(checkboxes.length && checkboxes.every((cb) => cb.checked));
-  checkboxes.forEach((cb) => (cb.checked = shouldCheck));
+  for (const cb of checkboxes) {
+    cb.checked = shouldCheck;
+    if (shouldCheck) selectedIds.add(cb.value);
+    else selectedIds.delete(cb.value);
+  }
   updateSelectedCount();
 });
 
@@ -236,7 +358,7 @@ document.getElementById('board-rows').addEventListener('click', async (e) => {
 
 document.getElementById('link-selected-btn').addEventListener('click', async () => {
   const projectId = document.getElementById('project-select').value;
-  const issueIds = [...document.querySelectorAll('#board-rows input[type="checkbox"]:checked')].map((cb) => cb.value);
+  const issueIds = [...selectedIds]; // across every page, not just this one
   const resultEl = document.getElementById('link-result');
   if (!issueIds.length) {
     resultEl.textContent = 'Select at least one issue first.';

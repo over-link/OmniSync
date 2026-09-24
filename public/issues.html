@@ -90,9 +90,9 @@
 
       <div class="card board-card">
         <div class="board-header">
-          <span>Revizto</span>
+          <span><button type="button" class="sort-btn" data-sort="revizto" title="Sort by Revizto issue number">Revizto <span class="sort-arrow" aria-hidden="true"></span></button></span>
           <span></span>
-          <span>ACC</span>
+          <span><button type="button" class="sort-btn" data-sort="acc" title="Sort by ACC issue number">ACC <span class="sort-arrow" aria-hidden="true"></span></button></span>
         </div>
         <div id="board-select-all-bar" class="board-select-all-bar hidden">
           <button type="button" id="select-all-btn" class="btn secondary">Select all</button>
@@ -100,6 +100,11 @@
         </div>
         <div id="board-rows"></div>
         <div id="board-empty" class="hint hidden">No issues match the current filters.</div>
+        <div id="board-pager" class="board-pager hidden">
+          <button type="button" id="page-prev-btn" class="btn secondary">‹ Previous</button>
+          <span id="page-info" class="hint"></span>
+          <button type="button" id="page-next-btn" class="btn secondary">Next ›</button>
+        </div>
         <div id="board-actions" class="hidden">
           <button id="link-selected-btn" class="btn">Link &amp; push selected</button>
           <span id="link-result" class="result-text"></span>
