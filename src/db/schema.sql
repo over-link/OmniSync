@@ -463,9 +463,11 @@ ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS linked_at TIMESTAMPTZ;
 -- Password sign-in (services/passwords.js). password_hash is NULL for an
 -- account that hasn't set one yet (invited, or created before passwords
 -- existed) — signing in then emails a 6-digit code to create one.
--- password_changed_at ends every session that started before it.
+-- password_changed_at is informational; password_version (bumped on every
+-- change) is what ends sessions that signed in under an older password.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_version INTEGER NOT NULL DEFAULT 0;
 
 -- Emailed 6-digit codes for creating/resetting a password. Only an HMAC of
 -- the code is stored; `attempts` counts wrong guesses (locked at 5).

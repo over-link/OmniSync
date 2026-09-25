@@ -1252,6 +1252,32 @@ Revizto→ACC direction can return the favor and recognize *this* comment.
 `sync_map.last_pulled_acc_attachment_comment_uuid` (idempotent
 `ALTER TABLE`). Run `npm run migrate`.
 
+## Signing in (email + password)
+
+- **Sign-in** is email + password (`POST /auth/login`). Passwords are
+  hashed with Node's built-in scrypt and a per-password salt
+  (`services/passwords.js`); at least 10 characters.
+- **First sign-in / forgot password:** an account with no password yet
+  (invited, or created before passwords existed) signs in with the
+  password left blank and is emailed a **6-digit code**; "Forgot
+  password?" emails one too. The code plus a new password is entered on
+  the same sign-in card (`POST /auth/verify-code`), which sets the
+  password and signs in. Codes: 10 minutes, single-use, locked after 5
+  wrong tries, a new one voids the old, at most one email per address per
+  minute, only an HMAC stored (`password_codes`). "Forgot password" gives
+  the same reply whether or not the email has an account. Without SMTP
+  (local dev), or if sending fails, the code is written to the server log.
+- **Sessions** end 14 days after sign-in regardless of activity, and when
+  the password changes (`users.password_version`, compared as a number,
+  not timestamps: the database's and the app server's clocks can differ
+  slightly). Sessions from before passwords existed end on deploy, so
+  everyone signs in with a password once.
+- **Brute force:** 10 wrong passwords per email+IP per 15 minutes, then a
+  pause (in memory).
+- **Tested end to end** against a local server with a throwaway account
+  (first-time code, wrong/reused code, password rules, sign-in/out, wrong
+  password, reset ending other sessions, 14-day expiry, both lockouts).
+
 ## Dashboards page
 
 `/dashboards` (open to any signed-in user). One filter row (project,

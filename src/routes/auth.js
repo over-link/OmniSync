@@ -30,18 +30,24 @@ const SESSION_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
  * The signed-in user's row if this session is still valid, else null
  * (and the session is destroyed). Invalid when: no sign-in time recorded
  * (sessions from before password sign-in existed — everyone signs in with
- * a password once), older than SESSION_MAX_AGE_MS, started before the
- * user's last password change, or the user no longer exists.
+ * a password once), older than SESSION_MAX_AGE_MS, the password has
+ * changed since this session signed in, or the user no longer exists.
+ *
+ * "Password changed since" is a version number, not a timestamp compare:
+ * the password's change time comes from the database clock and the
+ * sign-in time from this server's, and even slight skew between them made
+ * a session that signed in right after setting a password look older than
+ * the change (caught by the end-to-end test).
  */
 async function _sessionUser(req) {
   if (!req.session.userId) return null;
   const signedInAt = req.session.signedInAt || 0;
-  const { rows } = await pool.query('SELECT id, email, role, password_changed_at FROM users WHERE id = $1', [req.session.userId]);
+  const { rows } = await pool.query('SELECT id, email, role, password_version FROM users WHERE id = $1', [req.session.userId]);
   const user = rows[0];
   const expired =
     !user ||
     Date.now() - signedInAt > SESSION_MAX_AGE_MS ||
-    (user.password_changed_at && new Date(user.password_changed_at).getTime() > signedInAt);
+    req.session.passwordVersion !== user.password_version;
   if (expired) {
     await new Promise((resolve) => req.session.destroy(resolve));
     return null;
@@ -100,7 +106,10 @@ async function _startSession(req, user) {
   req.session.userEmail = user.email;
   req.session.role = user.role;
   req.session.signedInAt = Date.now();
-  await pool.query('UPDATE users SET last_login_at = now() WHERE id = $1', [user.id]);
+  // Read after any password change this request made, so the new session
+  // carries the current version (see _sessionUser).
+  const { rows } = await pool.query('UPDATE users SET last_login_at = now() WHERE id = $1 RETURNING password_version', [user.id]);
+  req.session.passwordVersion = rows[0].password_version;
 }
 
 // Brute-force brake: at most FAILED_LOGIN_LIMIT wrong passwords per

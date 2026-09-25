@@ -78,7 +78,7 @@ async function createCode(userId, purpose) {
  * Checks `code` against the user's current code and, if it's right, sets
  * the new password and uses the code up — atomically. A wrong code
  * counts an attempt; the code stops working after MAX_CODE_ATTEMPTS.
- * `password_changed_at` also ends every existing session for that user
+ * Bumping `password_version` also ends every existing session for that user
  * (see routes/auth.js). Returns { ok: true } or { ok: false, reason }
  * where reason is 'invalid' (wrong/expired/no code) or 'locked'.
  */
@@ -107,7 +107,10 @@ async function setPasswordWithCode(userId, code, password) {
       await client.query('COMMIT');
       return { ok: false, reason: current.attempts + 1 >= MAX_CODE_ATTEMPTS ? 'locked' : 'invalid' };
     }
-    await client.query('UPDATE users SET password_hash = $2, password_changed_at = now() WHERE id = $1', [userId, await hashPassword(password)]);
+    await client.query(
+      'UPDATE users SET password_hash = $2, password_changed_at = now(), password_version = password_version + 1 WHERE id = $1',
+      [userId, await hashPassword(password)]
+    );
     await client.query('UPDATE password_codes SET used_at = now() WHERE user_id = $1 AND used_at IS NULL', [userId]);
     await client.query('COMMIT');
     return { ok: true };
