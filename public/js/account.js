@@ -15,8 +15,7 @@ function render({ user, acc, revizto }) {
     return;
   }
   // Signed in: the sign-in forms are done with.
-  document.getElementById('signin-form').classList.add('hidden');
-  document.getElementById('forgot-form').classList.add('hidden');
+  for (const id of ['signin-form', 'forgot-form', 'code-form']) document.getElementById(id).classList.add('hidden');
   document.getElementById('whoami').textContent = `Signed in as ${user.email}`;
   document.getElementById('connections-section').classList.remove('hidden');
 
@@ -46,16 +45,40 @@ async function refreshMe() {
 window.addEventListener('app:ready', (e) => render(e.detail));
 
 // Carries a ?invite=<code> from a shared invite link (see Team page's
-// "Copy invite link") through to /auth/identify — only actually needed
+// "Copy invite link") through to /auth/login — only actually needed
 // for a brand-new signup (an existing user signing back in ignores it
 // server-side), but harmless to always include.
 const inviteCode = new URLSearchParams(location.search).get('invite');
+
+// ─── Sign-in card: three panels ─────────────────────────────────────
+// signin-form (email + password), forgot-form (email → reset code), and
+// code-form (code + new password), shared by first-time "create your
+// password" and "forgot password".
+
+const whoamiEl = document.getElementById('whoami');
+let codeEmail = null; // the email the current code was sent to
+let codePurpose = 'set'; // 'set' | 'reset' — which request "Resend code" repeats
+
+function _showPanel(id) {
+  for (const panel of ['signin-form', 'forgot-form', 'code-form']) {
+    document.getElementById(panel).classList.toggle('hidden', panel !== id);
+  }
+}
+
+function _showCodeForm(email, purpose, message) {
+  codeEmail = email;
+  codePurpose = purpose;
+  document.getElementById('code-intro').textContent = message;
+  for (const id of ['code-input', 'new-password-input', 'confirm-password-input']) document.getElementById(id).value = '';
+  whoamiEl.textContent = '';
+  _showPanel('code-form');
+  document.getElementById('code-input').focus();
+}
 
 document.getElementById('signin-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const email = document.getElementById('email-input').value.trim();
   const password = document.getElementById('password-input').value;
-  const whoamiEl = document.getElementById('whoami');
   if (!email) {
     whoamiEl.textContent = 'Enter your email.';
     return;
@@ -64,9 +87,9 @@ document.getElementById('signin-form').addEventListener('submit', async (e) => {
   btn.disabled = true;
   try {
     const result = await api('/auth/login', { method: 'POST', body: JSON.stringify({ email, password, invite: inviteCode }) });
-    // No password on this account yet — a set-password link was emailed.
-    if (result.status === 'password_link_sent') {
-      whoamiEl.textContent = result.message;
+    // No password on this account yet — a code to create one was emailed.
+    if (result.status === 'code_sent') {
+      _showCodeForm(email, 'set', result.message);
       return;
     }
     location.reload(); // refresh sidebar too, now that we're signed in
@@ -78,31 +101,80 @@ document.getElementById('signin-form').addEventListener('submit', async (e) => {
   }
 });
 
-function _showForgot(show) {
-  document.getElementById('signin-form').classList.toggle('hidden', show);
-  document.getElementById('forgot-form').classList.toggle('hidden', !show);
-  document.getElementById('whoami').textContent = '';
-  if (show) {
-    document.getElementById('forgot-email-input').value = document.getElementById('email-input').value;
-    document.getElementById('forgot-email-input').focus();
-  }
+document.getElementById('forgot-toggle').addEventListener('click', () => {
+  whoamiEl.textContent = '';
+  document.getElementById('forgot-email-input').value = document.getElementById('email-input').value;
+  _showPanel('forgot-form');
+  document.getElementById('forgot-email-input').focus();
+});
+
+for (const id of ['forgot-cancel', 'code-cancel']) {
+  document.getElementById(id).addEventListener('click', () => {
+    whoamiEl.textContent = '';
+    _showPanel('signin-form');
+  });
 }
-document.getElementById('forgot-toggle').addEventListener('click', () => _showForgot(true));
-document.getElementById('forgot-cancel').addEventListener('click', () => _showForgot(false));
+
+async function _requestResetCode(email) {
+  const result = await api('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) });
+  _showCodeForm(email, 'reset', result.message);
+}
 
 document.getElementById('forgot-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const email = document.getElementById('forgot-email-input').value.trim();
-  const whoamiEl = document.getElementById('whoami');
   if (!email) {
     whoamiEl.textContent = 'Enter your email.';
     return;
   }
   try {
-    const { message } = await api('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) });
-    whoamiEl.textContent = message;
+    await _requestResetCode(email);
   } catch (err) {
     whoamiEl.textContent = err.message;
+  }
+});
+
+document.getElementById('code-resend').addEventListener('click', async () => {
+  try {
+    if (codePurpose === 'reset') {
+      await _requestResetCode(codeEmail);
+    } else {
+      // Signing in with a blank password re-sends the create-password code.
+      const result = await api('/auth/login', { method: 'POST', body: JSON.stringify({ email: codeEmail, password: '', invite: inviteCode }) });
+      _showCodeForm(codeEmail, 'set', result.message);
+    }
+    whoamiEl.textContent = 'A new code is on its way (at most one per minute). Use the newest email.';
+  } catch (err) {
+    whoamiEl.textContent = err.message;
+  }
+});
+
+document.getElementById('code-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const code = document.getElementById('code-input').value.trim();
+  const password = document.getElementById('new-password-input').value;
+  const confirm = document.getElementById('confirm-password-input').value;
+  if (!/^\d{6}$/.test(code)) {
+    whoamiEl.textContent = 'Enter the 6-digit code from the email.';
+    return;
+  }
+  if (password.length < 10) {
+    whoamiEl.textContent = 'Password must be at least 10 characters.';
+    return;
+  }
+  if (password !== confirm) {
+    whoamiEl.textContent = "The two passwords don't match.";
+    return;
+  }
+  const btn = document.getElementById('code-submit');
+  btn.disabled = true;
+  try {
+    await api('/auth/verify-code', { method: 'POST', body: JSON.stringify({ email: codeEmail, code, password }) });
+    location.reload(); // signed in
+  } catch (err) {
+    whoamiEl.textContent = err.message;
+  } finally {
+    btn.disabled = false;
   }
 });
 

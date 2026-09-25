@@ -29,15 +29,32 @@
           <button id="identify-btn" type="submit" class="btn">Sign in</button>
           <button id="forgot-toggle" type="button" class="link-btn">Forgot password?</button>
         </div>
-        <p class="hint">First time signing in? Enter your email and leave the password blank — we'll email you a link to set one.</p>
+        <p class="hint">First time signing in? Enter your email and leave the password blank — we'll email you a code to create one.</p>
       </form>
       <form id="forgot-form" class="signin-form hidden" novalidate>
-        <p class="hint">Enter your email and we'll send you a link to reset your password.</p>
+        <p class="hint">Enter your email and we'll send you a code to reset your password.</p>
         <label for="forgot-email-input">Email</label>
         <input id="forgot-email-input" type="email" autocomplete="username" placeholder="you@company.com" required />
         <div class="signin-actions">
-          <button type="submit" class="btn">Send reset link</button>
+          <button type="submit" class="btn">Send code</button>
           <button id="forgot-cancel" type="button" class="link-btn">Back to sign in</button>
+        </div>
+      </form>
+      <!-- Shared by first-time "create your password" and "forgot password":
+           the emailed code proves the email is theirs, right on this page. -->
+      <form id="code-form" class="signin-form hidden" novalidate>
+        <p class="hint" id="code-intro"></p>
+        <label for="code-input">6-digit code</label>
+        <input id="code-input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="123456" required />
+        <label for="new-password-input">New password</label>
+        <input id="new-password-input" type="password" autocomplete="new-password" minlength="10" required />
+        <label for="confirm-password-input">Confirm new password</label>
+        <input id="confirm-password-input" type="password" autocomplete="new-password" minlength="10" required />
+        <p class="hint">At least 10 characters.</p>
+        <div class="signin-actions">
+          <button id="code-submit" type="submit" class="btn">Save password &amp; sign in</button>
+          <button id="code-resend" type="button" class="link-btn">Resend code</button>
+          <button id="code-cancel" type="button" class="link-btn">Back to sign in</button>
         </div>
       </form>
       <div id="whoami" class="whoami" role="status"></div>

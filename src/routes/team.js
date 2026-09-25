@@ -4,7 +4,6 @@ const crypto = require('crypto');
 const pool = require('../db/pool');
 const { requireAdmin, requireLogin } = require('./auth');
 const emailService = require('../services/emailService');
-const passwords = require('../services/passwords');
 
 const VALID_ROLES = ['admin', 'standard'];
 
@@ -55,17 +54,14 @@ router.post('/api/team/invite', requireAdmin, async (req, res) => {
   let emailError = null;
   if (sendEmail) {
     try {
-      // The invite carries a set-password link — the invitee's first
-      // sign-in. Not sent at all if they already have a password.
-      const { rows: pwRows } = await pool.query('SELECT password_hash FROM users WHERE id = $1', [member.id]);
-      if (pwRows[0]?.password_hash) throw new Error('This person already has a password — they can sign in directly.');
+      // Just a pointer to the app — on first sign-in (password left blank)
+      // they're emailed a code to create their password.
       const appUrl = process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
-      const token = await passwords.createLinkToken(member.id, 'set');
       await emailService.sendInviteEmail({
         toEmail: normalizedEmail,
         invitedByEmail: req.session.userEmail,
+        appUrl,
         role: finalRole,
-        setPasswordUrl: `${appUrl}/reset-password?token=${encodeURIComponent(token)}`,
       });
       emailSent = true;
     } catch (err) {

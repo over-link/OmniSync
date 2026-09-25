@@ -3,14 +3,15 @@
  *
  * Three separate auth concerns, don't confuse them:
  *   1. App identity — who is using THIS app: email + password sign-in
- *      (services/passwords.js), with emailed set/reset-password links and
- *      sessions that end 14 days after sign-in regardless of activity.
+ *      (services/passwords.js), with emailed 6-digit codes to create or reset
+ *      a password, and sessions that end 14 days after sign-in regardless of
+ *      activity.
  *   2. ACC connection — per-user 3-legged Autodesk OAuth (redirect flow).
  *   3. Revizto connection — per-user access-code paste flow (no redirect
  *      support on Revizto's side, per their docs).
  */
 const express = require('express');
-const path = require('path');
+
 const router = express.Router();
 const pool = require('../db/pool');
 const accAuth = require('../services/accAuth');
@@ -71,34 +72,41 @@ async function requireAdmin(req, res, next) {
 
 // ─── 1. App identity ────────────────────────────────────────────────
 
-function _appUrl(req) {
-  return process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
-}
-
 /**
- * Emails a set/reset link. Without SMTP (local dev), or if sending fails,
- * the link is written to the server log instead so an admin with log
- * access can still get someone in — then rethrows a send failure so the
- * caller can say so rather than claim an email went out.
+ * Emails a fresh 6-digit code ('set' or 'reset'). Without SMTP (local
+ * dev), or if sending fails, the code is written to the server log instead
+ * so an admin with log access can still get someone in — then rethrows a
+ * send failure so the caller can say so rather than claim an email went out.
  */
-async function _emailPasswordLink(req, user, purpose) {
-  const token = await passwords.createLinkToken(user.id, purpose);
-  const url = `${_appUrl(req)}/reset-password?token=${encodeURIComponent(token)}`;
+async function _emailPasswordCode(user, purpose) {
+  const code = await passwords.createCode(user.id, purpose);
+  const validMinutes = passwords.CODE_TTL_MS / 60000;
   if (!emailService.isConfigured()) {
-    console.warn(`[auth] SMTP not configured — ${purpose}-password link for ${user.email}: ${url}`);
+    console.warn(`[auth] SMTP not configured — ${purpose}-password code for ${user.email}: ${code}`);
     return;
   }
   try {
-    await emailService.sendPasswordLinkEmail({ toEmail: user.email, url, purpose });
+    await emailService.sendPasswordCodeEmail({ toEmail: user.email, code, purpose, validMinutes });
   } catch (err) {
-    console.error(`[auth] Couldn't email the ${purpose}-password link to ${user.email} (${err.message}). Link: ${url}`);
+    console.error(`[auth] Couldn't email the ${purpose}-password code to ${user.email} (${err.message}). Code: ${code}`);
     throw err;
   }
 }
 
+/** Starts a fresh session for `user` (new session id — no session fixation). */
+async function _startSession(req, user) {
+  await new Promise((resolve, reject) => req.session.regenerate((err) => (err ? reject(err) : resolve())));
+  req.session.userId = user.id;
+  req.session.userEmail = user.email;
+  req.session.role = user.role;
+  req.session.signedInAt = Date.now();
+  await pool.query('UPDATE users SET last_login_at = now() WHERE id = $1', [user.id]);
+}
+
 // Brute-force brake: at most FAILED_LOGIN_LIMIT wrong passwords per
 // email+IP per window. In memory (resets on restart) — enough to make
-// online guessing impractical without a new dependency.
+// online guessing impractical without a new dependency. (Wrong codes have
+// their own, stricter per-code limit — see passwords.MAX_CODE_ATTEMPTS.)
 const FAILED_LOGIN_LIMIT = 10;
 const FAILED_LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const _failedLogins = new Map();
@@ -109,13 +117,22 @@ function _recentFailures(key) {
   return recent;
 }
 
-const PASSWORD_LINK_SENT = 'Check your email — we sent you a link to set your password. It expires in 72 hours.';
+// At most one code email per address per minute, whichever way it's asked for.
+const _lastCodeEmail = new Map();
+function _codeRecentlySent(email) {
+  if (Date.now() - (_lastCodeEmail.get(email) || 0) < 60 * 1000) return true;
+  _lastCodeEmail.set(email, Date.now());
+  return false;
+}
+
+const CODE_SENT = `We emailed you a 6-digit code. Enter it below with your new password — it expires in ${passwords.CODE_TTL_MS / 60000} minutes.`;
+const SEND_FAILED = "We couldn't send your code email just now. Try again in a few minutes, or contact your administrator.";
 
 // Sign-in. An account with no password yet (invited, or created before
-// passwords existed) gets a set-password link emailed instead of signing
-// in — email ownership is proven by that link, so nobody can claim an
-// account just by typing its address. New accounts still need a valid
-// invite code, except the very first user ever (bootstrap admin).
+// passwords existed) is emailed a code to create one instead — owning the
+// email is proven by that code, so nobody can claim an account just by
+// typing its address. New accounts still need a valid invite code, except
+// the very first user ever (bootstrap admin).
 router.post('/auth/login', async (req, res) => {
   const email = req.body.email?.toLowerCase().trim();
   const password = req.body.password || '';
@@ -155,12 +172,14 @@ router.post('/auth/login', async (req, res) => {
   }
 
   if (!user.password_hash) {
-    try {
-      await _emailPasswordLink(req, user, 'set');
-    } catch {
-      return res.status(502).json({ error: "We couldn't send your set-password email just now. Try again in a few minutes, or contact your administrator." });
+    if (!_codeRecentlySent(email)) {
+      try {
+        await _emailPasswordCode(user, 'set');
+      } catch {
+        return res.status(502).json({ error: SEND_FAILED });
+      }
     }
-    return res.json({ status: 'password_link_sent', message: PASSWORD_LINK_SENT });
+    return res.json({ status: 'code_sent', purpose: 'set', message: CODE_SENT });
   }
 
   if (!(await passwords.verifyPassword(password, user.password_hash))) {
@@ -168,58 +187,47 @@ router.post('/auth/login', async (req, res) => {
     return res.status(401).json({ error: 'Incorrect email or password.' });
   }
   _failedLogins.delete(`${req.ip}|${email}`);
-
-  // A fresh session id on every sign-in (no session fixation).
-  await new Promise((resolve, reject) => req.session.regenerate((err) => (err ? reject(err) : resolve())));
-  req.session.userId = user.id;
-  req.session.userEmail = user.email;
-  req.session.role = user.role;
-  req.session.signedInAt = Date.now();
-  await pool.query('UPDATE users SET last_login_at = now() WHERE id = $1', [user.id]);
+  await _startSession(req, user);
   res.json({ user: { id: user.id, email: user.email, role: user.role } });
 });
 
 // "Forgot password": always the same answer whether or not the email has
-// an account, so this can't be used to discover who's on the team. At
-// most one email per address per minute.
-const _lastResetEmail = new Map();
+// an account, so this can't be used to discover who's on the team.
 router.post('/auth/forgot-password', async (req, res) => {
   const email = req.body.email?.toLowerCase().trim();
   if (!email) return res.status(400).json({ error: 'Enter your email.' });
-  const reply = { message: 'If that email has an account, we sent a link to reset the password. It expires in 1 hour.' };
-  if (Date.now() - (_lastResetEmail.get(email) || 0) < 60 * 1000) return res.json(reply);
-  _lastResetEmail.set(email, Date.now());
+  const reply = { status: 'code_sent', purpose: 'reset', message: `If that email has an account, we emailed it a 6-digit code. Enter it below with your new password — it expires in ${passwords.CODE_TTL_MS / 60000} minutes.` };
+  if (_codeRecentlySent(email)) return res.json(reply);
   const { rows } = await pool.query('SELECT id, email FROM users WHERE email = $1', [email]);
   if (rows[0]) {
     try {
-      await _emailPasswordLink(req, rows[0], 'reset');
-    } catch (err) {
-      console.error(`[auth] Couldn't send reset email to ${email}:`, err.message);
+      await _emailPasswordCode(rows[0], 'reset');
+    } catch {
+      // Already logged with the code; same reply either way (see above).
     }
   }
   res.json(reply);
 });
 
-const LINK_INVALID = 'This link is invalid, expired, or already used. Request a new one from the sign-in page.';
-
-// What the set/reset page shows before the new password is entered.
-router.get('/auth/password-link', async (req, res) => {
-  const link = await passwords.lookupLinkToken(req.query.token);
-  if (!link) return res.status(404).json({ error: LINK_INVALID });
-  res.json({ email: link.email, purpose: link.purpose });
-});
-
-router.post('/auth/set-password', async (req, res) => {
-  const { token, password } = req.body;
+// Code + new password → password set, and signed in. Covers both the
+// first-time 'set' flow and 'reset'.
+router.post('/auth/verify-code', async (req, res) => {
+  const email = req.body.email?.toLowerCase().trim();
+  const { code, password } = req.body;
   const problem = passwords.validatePassword(password);
   if (problem) return res.status(400).json({ error: problem });
-  const result = await passwords.setPasswordWithToken(token, password);
-  if (!result) return res.status(404).json({ error: LINK_INVALID });
-  res.json({ ok: true, email: result.email });
-});
-
-router.get('/reset-password', (req, res) => {
-  res.sendFile(path.join(__dirname, '../../public/reset-password.html'));
+  const { rows } = await pool.query('SELECT id, email, role FROM users WHERE email = $1', [email || '']);
+  const user = rows[0];
+  const result = user ? await passwords.setPasswordWithCode(user.id, code, password) : { ok: false, reason: 'invalid' };
+  if (!result.ok) {
+    return res.status(result.reason === 'locked' ? 429 : 400).json({
+      error: result.reason === 'locked'
+        ? 'Too many wrong codes. Request a new code and try again.'
+        : "That code is incorrect or has expired. Check the latest email, or request a new code.",
+    });
+  }
+  await _startSession(req, user);
+  res.json({ user: { id: user.id, email: user.email, role: user.role } });
 });
 
 router.post('/auth/logout', (req, res) => {

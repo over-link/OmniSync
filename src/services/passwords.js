@@ -1,17 +1,20 @@
 /**
  * services/passwords.js
- * Password hashing and one-time password links (set-password for new or
- * pre-password accounts, reset for "forgot password").
+ * Password hashing, and the emailed 6-digit codes that prove someone owns
+ * an email before they can set a password on it — first-time "create
+ * your password" (invited, or an account from before passwords existed)
+ * and "forgot password" both use the same code flow, entirely on the
+ * sign-in page.
  *
  * Hashing uses Node's built-in scrypt (a memory-hard KDF) with a random
  * per-password salt — no native dependency to build on Render. Stored as
  * "scrypt$N$r$p$salt$hash" so the cost parameters can be raised later
  * without breaking existing hashes.
  *
- * Link tokens: 32 random bytes, sent to the user's email; only a SHA-256
- * of the token is stored, so a database leak can't be replayed as links.
- * Single-use, time-limited, and issuing or using one invalidates that
- * user's other outstanding links.
+ * Codes: 6 random digits, emailed; only an HMAC of the code is stored.
+ * Short-lived (CODE_TTL_MS), single-use, locked after MAX_CODE_ATTEMPTS
+ * wrong guesses (so 6 digits can't be brute-forced in the window), and a
+ * newly issued code voids that user's earlier ones.
  */
 const crypto = require('crypto');
 const { promisify } = require('util');
@@ -23,10 +26,8 @@ const SCRYPT = { N: 16384, r: 8, p: 1, keyLen: 64 };
 const MIN_LENGTH = 10;
 const MAX_LENGTH = 200;
 
-// A reset link is short-lived; a first-time "set your password" link
-// (invite, or an account that predates passwords) gets longer, since
-// people don't always open those right away.
-const LINK_TTL_MS = { reset: 60 * 60 * 1000, set: 72 * 60 * 60 * 1000 };
+const CODE_TTL_MS = 10 * 60 * 1000;
+const MAX_CODE_ATTEMPTS = 5;
 
 /** Returns an error message if the password isn't acceptable, else null. */
 function validatePassword(password) {
@@ -52,65 +53,64 @@ async function verifyPassword(password, stored) {
   return crypto.timingSafeEqual(actual, expected);
 }
 
-const _sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
+// Keyed with the session secret, so a leaked table alone can't be used to
+// work backwards from the stored value to the code.
+function _codeHash(userId, code) {
+  return crypto.createHmac('sha256', process.env.SESSION_SECRET || 'dev-only-secret').update(`${userId}:${code}`).digest('hex');
+}
 
 /**
- * Creates a one-time link token for `userId` ('set' or 'reset') and
- * returns the raw token (to put in the emailed URL). Any earlier unused
- * links for that user stop working — only the newest email is valid.
+ * Issues a new 6-digit code for `userId` ('set' or 'reset') and returns
+ * it (to email). Voids any earlier unused code for that user.
  */
-async function createLinkToken(userId, purpose) {
-  const token = crypto.randomBytes(32).toString('base64url');
-  await pool.query('UPDATE password_tokens SET used_at = now() WHERE user_id = $1 AND used_at IS NULL', [userId]);
+async function createCode(userId, purpose) {
+  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+  await pool.query('UPDATE password_codes SET used_at = now() WHERE user_id = $1 AND used_at IS NULL', [userId]);
   await pool.query(
-    `INSERT INTO password_tokens (user_id, token_hash, purpose, expires_at)
+    `INSERT INTO password_codes (user_id, code_hash, purpose, expires_at)
      VALUES ($1, $2, $3, now() + ($4::int * interval '1 millisecond'))`,
-    [userId, _sha256(token), purpose, LINK_TTL_MS[purpose]]
+    [userId, _codeHash(userId, code), purpose, CODE_TTL_MS]
   );
-  return token;
-}
-
-/** The still-valid link's { userId, email, purpose }, or null — doesn't use it up. */
-async function lookupLinkToken(token) {
-  if (!token) return null;
-  const { rows } = await pool.query(
-    `SELECT t.user_id, t.purpose, u.email FROM password_tokens t JOIN users u ON u.id = t.user_id
-     WHERE t.token_hash = $1 AND t.used_at IS NULL AND t.expires_at > now()`,
-    [_sha256(token)]
-  );
-  return rows[0] ? { userId: rows[0].user_id, email: rows[0].email, purpose: rows[0].purpose } : null;
+  return code;
 }
 
 /**
- * Sets a new password via a link token, atomically using up the token.
+ * Checks `code` against the user's current code and, if it's right, sets
+ * the new password and uses the code up — atomically. A wrong code
+ * counts an attempt; the code stops working after MAX_CODE_ATTEMPTS.
  * `password_changed_at` also ends every existing session for that user
- * (see routes/auth.js) — a reset after a suspected compromise logs out
- * whoever else was signed in. Returns { email } or null if the link is
- * invalid, expired, or already used.
+ * (see routes/auth.js). Returns { ok: true } or { ok: false, reason }
+ * where reason is 'invalid' (wrong/expired/no code) or 'locked'.
  */
-async function setPasswordWithToken(token, password) {
-  const passwordHash = await hashPassword(password);
+async function setPasswordWithCode(userId, code, password) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const { rows } = await client.query(
-      `UPDATE password_tokens SET used_at = now()
-       WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
-       RETURNING user_id`,
-      [_sha256(token)]
+      `SELECT id, code_hash, attempts FROM password_codes
+       WHERE user_id = $1 AND used_at IS NULL AND expires_at > now()
+       ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+      [userId]
     );
-    if (!rows[0]) {
+    const current = rows[0];
+    if (!current) {
       await client.query('ROLLBACK');
-      return null;
+      return { ok: false, reason: 'invalid' };
     }
-    const userId = rows[0].user_id;
-    const { rows: userRows } = await client.query(
-      'UPDATE users SET password_hash = $2, password_changed_at = now() WHERE id = $1 RETURNING email',
-      [userId, passwordHash]
-    );
-    await client.query('UPDATE password_tokens SET used_at = now() WHERE user_id = $1 AND used_at IS NULL', [userId]);
+    if (current.attempts >= MAX_CODE_ATTEMPTS) {
+      await client.query('ROLLBACK');
+      return { ok: false, reason: 'locked' };
+    }
+    const given = Buffer.from(_codeHash(userId, String(code || '').trim()), 'hex');
+    if (!crypto.timingSafeEqual(given, Buffer.from(current.code_hash, 'hex'))) {
+      await client.query('UPDATE password_codes SET attempts = attempts + 1 WHERE id = $1', [current.id]);
+      await client.query('COMMIT');
+      return { ok: false, reason: current.attempts + 1 >= MAX_CODE_ATTEMPTS ? 'locked' : 'invalid' };
+    }
+    await client.query('UPDATE users SET password_hash = $2, password_changed_at = now() WHERE id = $1', [userId, await hashPassword(password)]);
+    await client.query('UPDATE password_codes SET used_at = now() WHERE user_id = $1 AND used_at IS NULL', [userId]);
     await client.query('COMMIT');
-    return { email: userRows[0].email };
+    return { ok: true };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
@@ -119,4 +119,4 @@ async function setPasswordWithToken(token, password) {
   }
 }
 
-module.exports = { validatePassword, hashPassword, verifyPassword, createLinkToken, lookupLinkToken, setPasswordWithToken, MIN_LENGTH };
+module.exports = { validatePassword, hashPassword, verifyPassword, createCode, setPasswordWithCode, MIN_LENGTH, CODE_TTL_MS };

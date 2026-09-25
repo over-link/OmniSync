@@ -31,36 +31,32 @@ async function _send({ to, subject, text, html }) {
   await _transport().sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, to, subject, text, html });
 }
 
-/** Invite: the set-password link doubles as "accept the invite". */
-async function sendInviteEmail({ toEmail, invitedByEmail, role, setPasswordUrl }) {
+async function sendInviteEmail({ toEmail, invitedByEmail, appUrl, role }) {
   await _send({
     to: toEmail,
     subject: `You've been added to Revizto ↔ ACC Sync`,
-    text: `${invitedByEmail} added you as a ${role} on Revizto ↔ ACC Sync.\n\nSet your password to get started (link valid for 72 hours):\n${setPasswordUrl}`,
+    text: `${invitedByEmail} added you as a ${role} on Revizto ↔ ACC Sync.\n\nSign in here with ${toEmail}: ${appUrl}\nThe first time, leave the password blank — we'll email you a code to create one.`,
     html: `<p>${_escape(invitedByEmail)} added you as a <strong>${_escape(role)}</strong> on Revizto ↔ ACC Sync.</p>
-           <p><a href="${_escape(setPasswordUrl)}">Set your password</a> to get started. This link is valid for 72 hours.</p>`,
+           <p><a href="${_escape(appUrl)}">Sign in here</a> with ${_escape(toEmail)}. The first time, leave the password blank — we'll email you a code to create one.</p>`,
   });
 }
 
 /**
- * purpose 'set': first password for an existing/invited account.
- * purpose 'reset': "forgot password".
+ * The 6-digit code for creating a password ('set' — first sign-in) or
+ * resetting one ('reset' — forgot password). Entered on the sign-in page.
  */
-async function sendPasswordLinkEmail({ toEmail, url, purpose }) {
+async function sendPasswordCodeEmail({ toEmail, code, purpose, validMinutes }) {
   const isReset = purpose === 'reset';
-  const validFor = isReset ? '1 hour' : '72 hours';
   await _send({
     to: toEmail,
-    subject: isReset ? 'Reset your Revizto ↔ ACC Sync password' : 'Set your Revizto ↔ ACC Sync password',
+    subject: `${code} is your Revizto ↔ ACC Sync code`,
     text: isReset
-      ? `Someone (hopefully you) asked to reset the password for ${toEmail}.\n\nReset it here (valid for ${validFor}):\n${url}\n\nIf this wasn't you, ignore this email — your password won't change.`
-      : `Set a password for ${toEmail} to sign in to Revizto ↔ ACC Sync (link valid for ${validFor}):\n${url}`,
-    html: isReset
-      ? `<p>Someone (hopefully you) asked to reset the password for ${_escape(toEmail)}.</p>
-         <p><a href="${_escape(url)}">Reset your password</a> (valid for ${validFor}).</p>
-         <p>If this wasn't you, ignore this email — your password won't change.</p>`
-      : `<p><a href="${_escape(url)}">Set a password</a> for ${_escape(toEmail)} to sign in to Revizto ↔ ACC Sync (valid for ${validFor}).</p>`,
+      ? `Your code to reset the password for ${toEmail} is ${code}.\nIt expires in ${validMinutes} minutes.\n\nIf you didn't ask for this, ignore this email — your password won't change.`
+      : `Your code to create a password for ${toEmail} is ${code}.\nIt expires in ${validMinutes} minutes.`,
+    html: `<p>Your code to ${isReset ? 'reset the password' : 'create a password'} for ${_escape(toEmail)} is:</p>
+           <p style="font-size:24px;font-weight:bold;letter-spacing:4px;">${code}</p>
+           <p>It expires in ${validMinutes} minutes.${isReset ? " If you didn't ask for this, ignore this email — your password won't change." : ''}</p>`,
   });
 }
 
-module.exports = { isConfigured, sendInviteEmail, sendPasswordLinkEmail };
+module.exports = { isConfigured, sendInviteEmail, sendPasswordCodeEmail };
