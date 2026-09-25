@@ -924,7 +924,21 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
 .signin-form .hint { margin: 0.5rem 0 0; }
 .link-btn { background: none; border: none; padding: 0; font: inherit; font-size: 0.85rem; color: var(--blueprint); cursor: pointer; }
 .link-btn:hover { text-decoration: underline; }
-/* Signed-in user + Sign out, top right of every page (nav.js). */
-.header-user { display: flex; justify-content: flex-end; align-items: center; gap: 0.6rem; margin: -1rem 0 0.9rem; font-size: 0.85rem; color: var(--muted); }
-.header-user-email { overflow-wrap: anywhere; }
-.header-signout { padding: 0.35rem 0.8rem; font-size: 0.82rem; }
+/* Signed-in user + Sign out, bottom left of the sidebar (nav.js). */
+.sidebar-footer { border-top: 1px solid var(--line); padding-top: 0.9rem; margin-top: 0.9rem; display: flex; flex-direction: column; align-items: flex-start; gap: 0.4rem; font-size: 0.75rem; color: var(--muted); }
+.sidebar-user-email { overflow-wrap: anywhere; }
+.sidebar-signout { padding: 0.3rem 0.75rem; font-size: 0.78rem; }
+
+/* ── License Administration / Team tables ─────────────────────────── */
+.card-header-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
+.card-header-row h2 { margin: 0; }
+.new-project-form { margin: 0.9rem 0 0.4rem; display: flex; flex-direction: column; gap: 0.35rem; }
+.new-project-form label { font-size: 0.8rem; font-weight: 600; color: var(--muted); }
+.license-table-wrap { overflow-x: auto; margin-top: 0.8rem; }
+.license-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+.license-table th { text-align: left; font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; padding: 0.4rem 0.6rem 0.4rem 0; border-bottom: 1px solid var(--line); }
+.license-table td { padding: 0.55rem 0.6rem 0.55rem 0; border-bottom: 1px solid var(--line); vertical-align: middle; overflow-wrap: anywhere; }
+.license-table tr:last-child td { border-bottom: none; }
+.license-table td:last-child { text-align: right; white-space: nowrap; }
+.inline-check { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--muted); }
+.pairing-edit-name { font-size: 0.85rem; color: var(--muted); margin: 0.6rem 0 0.2rem; }

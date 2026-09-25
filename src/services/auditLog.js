@@ -47,13 +47,12 @@ async function record({
 }
 
 /**
- * Paginated, optionally-filtered read for the Activity Log page. `projectId`
- * filters to one project; omit for "all projects this user can see" (the
- * page itself decides what to pass — every signed-in user can read this,
- * same as the rest of the app's non-admin pages).
+ * Paginated, optionally-filtered read for the Activity Log page. `projectIds`
+ * limits to those projects (null = all — license admins; the routes work
+ * out which projects a user may see — see routes/index.js _projectScope).
  */
-async function list({ projectId = null, from = null, to = null, limit = 100, offset = 0 } = {}) {
-  const { where, params } = _filters({ projectId, from, to });
+async function list({ projectIds = null, from = null, to = null, limit = 100, offset = 0 } = {}) {
+  const { where, params } = _filters({ projectIds, from, to });
   params.push(limit, offset);
   // acc_display_id: ACC's human-readable issue number. Rows without an
   // acc_issue_id of their own (e.g. errors) borrow it from the issue's
@@ -81,8 +80,8 @@ async function list({ projectId = null, from = null, to = null, limit = 100, off
  * Total matching rows for the same filters as `list`, so the page can
  * show "Page X of Y" instead of an open-ended "Load more".
  */
-async function count({ projectId = null, from = null, to = null } = {}) {
-  const { where, params } = _filters({ projectId, from, to });
+async function count({ projectIds = null, from = null, to = null } = {}) {
+  const { where, params } = _filters({ projectIds, from, to });
   const { rows } = await pool.query(`SELECT count(*)::int AS total FROM audit_log ${where}`, params);
   return rows[0].total;
 }
@@ -93,12 +92,14 @@ async function count({ projectId = null, from = null, to = null } = {}) {
  * day and the start of the day AFTER the last one, in the viewer's own
  * timezone, so a "7/15 – 7/22" range covers all of 7/22 locally.
  */
-function _filters({ projectId, from, to }) {
+function _filters({ projectIds, from, to }) {
   const params = [];
   const clauses = [];
-  if (projectId) {
-    params.push(projectId);
-    clauses.push(`audit_log.project_id = $${params.length}`);
+  // projectIds: null = every project (license admins); otherwise only
+  // these — an empty list matches nothing (see routes' _projectScope).
+  if (projectIds) {
+    params.push(projectIds);
+    clauses.push(`audit_log.project_id = ANY($${params.length}::int[])`);
   }
   if (from) {
     params.push(from);

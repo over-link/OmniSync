@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const path = require('path');
 const pool = require('../db/pool');
-const { requireLogin, requireAdmin } = require('./auth');
+const { requireLogin, requireLicenseAdmin, requireProjectRole } = require('./auth');
 const syncService = require('../services/syncService');
 const accService = require('../services/accService');
 const reviztoService = require('../services/reviztoService');
@@ -11,11 +11,12 @@ const fieldMapping = require('../services/fieldMapping');
 const appSettings = require('../services/appSettings');
 const auditLog = require('../services/auditLog');
 const dashboards = require('../services/dashboards');
+const access = require('../services/access');
 const { ReconnectRequiredError } = require('../services/authManager');
 
 // ─── Revizto license browser (for the license dropdown) ─────────────
 
-router.get('/api/revizto/licenses', requireLogin, async (req, res) => {
+router.get('/api/revizto/licenses', requireLicenseAdmin, async (req, res) => {
   const tokens = await tokenStore.getReviztoTokens(req.session.userId);
   if (!tokens) return res.status(409).json({ error: 'Connect Revizto first' });
   try {
@@ -34,7 +35,7 @@ router.get('/api/revizto/licenses', requireLogin, async (req, res) => {
   }
 });
 
-router.get('/api/revizto/projects', requireLogin, async (req, res) => {
+router.get('/api/revizto/projects', requireLicenseAdmin, async (req, res) => {
   const tokens = await tokenStore.getReviztoTokens(req.session.userId);
   if (!tokens) return res.status(409).json({ error: 'Connect Revizto first' });
   if (!tokens.license_id) {
@@ -55,7 +56,7 @@ router.get('/api/revizto/projects', requireLogin, async (req, res) => {
 
 // ─── ACC hub/project browser (for the "add project" dropdowns) ──────
 
-router.get('/api/acc/hubs', requireLogin, async (req, res) => {
+router.get('/api/acc/hubs', requireLicenseAdmin, async (req, res) => {
   try {
     const hubs = await accService.getHubs(req.session.userId);
     res.json({ hubs });
@@ -68,7 +69,7 @@ router.get('/api/acc/hubs', requireLogin, async (req, res) => {
   }
 });
 
-router.get('/api/acc/hubs/:hubId/projects', requireLogin, async (req, res) => {
+router.get('/api/acc/hubs/:hubId/projects', requireLicenseAdmin, async (req, res) => {
   try {
     const projects = await accService.getHubProjects(req.session.userId, req.params.hubId);
     res.json({ projects });
@@ -111,9 +112,30 @@ router.get('/dashboards', (req, res) => {
 
 // ─── Projects (Revizto project <-> ACC project pairing) ────────────
 
+/**
+ * Which project ids this request may read, optionally narrowed to the
+ * `projectId` it asked for: null means "every project" (license admins
+ * with no filter); [] means none (asked for one they can't see, or they
+ * aren't on any project). Used by every cross-project read below.
+ */
+async function _projectScope(req) {
+  const userAccess = await access.getAccess(req.session.userId);
+  const allowed = access.accessibleProjectIds(userAccess); // null = all
+  const requested = req.query.projectId ? Number(req.query.projectId) : null;
+  if (requested) return allowed === null || allowed.includes(requested) ? [requested] : [];
+  return allowed;
+}
+
+// Only the projects this person can access (license admins: all), each
+// with their role on it, so pages can show/hide admin-only controls.
 router.get('/api/projects', requireLogin, async (req, res) => {
-  const { rows } = await pool.query('SELECT * FROM projects ORDER BY created_at DESC');
-  res.json({ projects: rows });
+  const userAccess = await access.getAccess(req.session.userId);
+  const allowed = access.accessibleProjectIds(userAccess);
+  const { rows } = await pool.query(
+    'SELECT * FROM projects WHERE ($1::int[] IS NULL OR id = ANY($1)) ORDER BY created_at DESC',
+    [allowed]
+  );
+  res.json({ projects: rows.map((p) => ({ ...p, my_role: access.effectiveProjectRole(userAccess, p.id) })) });
 });
 
 /**
@@ -140,7 +162,7 @@ async function _autoRegisterWebhook(userId, project) {
   }
 }
 
-router.post('/api/projects', requireAdmin, async (req, res) => {
+router.post('/api/projects', requireLicenseAdmin, async (req, res) => {
   const {
     name,
     revizto_project_uuid,
@@ -152,25 +174,33 @@ router.post('/api/projects', requireAdmin, async (req, res) => {
     acc_default_subtype_id,
     makeMeOwner,
   } = req.body;
-  if (!name || !revizto_project_uuid || !acc_hub_id || !acc_project_id) {
-    return res.status(400).json({ error: 'name, revizto_project_uuid, acc_hub_id, acc_project_id are required' });
+  // Normally just a name (License Administration → "+ New Project"); the
+  // pairing is done next on Project Setup via PATCH below. Pairing fields
+  // are still accepted here, all-or-nothing, for a create-and-pair in one go.
+  const trimmedName = String(name || '').trim();
+  if (!trimmedName) return res.status(400).json({ error: 'Give the project a name.' });
+  const pairing = [revizto_project_uuid, acc_hub_id, acc_project_id];
+  if (pairing.some(Boolean) && !pairing.every(Boolean)) {
+    return res.status(400).json({ error: 'To pair while creating, send revizto_project_uuid, acc_hub_id and acc_project_id together.' });
   }
   const { rows } = await pool.query(
     `INSERT INTO projects (name, revizto_project_uuid, revizto_project_id, revizto_region, acc_hub_id, acc_project_id, acc_project_name, acc_default_subtype_id, owner_user_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
     [
-      name,
-      revizto_project_uuid,
+      trimmedName,
+      revizto_project_uuid || null,
       revizto_project_id || null,
       revizto_region || 'virginia',
-      acc_hub_id,
-      acc_project_id,
+      acc_hub_id || null,
+      acc_project_id || null,
       acc_project_name || null,
       acc_default_subtype_id || null,
-      makeMeOwner ? req.session.userId : null,
+      // The creating license admin owns it by default — background syncing
+      // runs on the owner's Revizto/ACC connections.
+      makeMeOwner === false ? null : req.session.userId,
     ]
   );
-  await _autoRegisterWebhook(req.session.userId, rows[0]);
+  if (_isPaired(rows[0])) await _autoRegisterWebhook(req.session.userId, rows[0]);
   res.json({ project: rows[0] });
 });
 
@@ -179,22 +209,23 @@ router.post('/api/projects', requireAdmin, async (req, res) => {
 // makeMeOwner (those have their own dedicated routes already). Re-runs
 // webhook auto-registration too, since a changed ACC project/hub makes any
 // existing webhook stale.
-router.patch('/api/projects/:id', requireAdmin, async (req, res) => {
+router.patch('/api/projects/:id', requireLicenseAdmin, async (req, res) => {
   const { name, revizto_project_uuid, revizto_project_id, revizto_region, acc_hub_id, acc_project_id, acc_project_name } = req.body;
   if (!name || !revizto_project_uuid || !acc_hub_id || !acc_project_id) {
     return res.status(400).json({ error: 'name, revizto_project_uuid, acc_hub_id, acc_project_id are required' });
   }
   const { rows } = await pool.query(
-    `UPDATE projects SET name = $2, revizto_project_uuid = $3, revizto_project_id = $4, revizto_region = $5, acc_hub_id = $6, acc_project_id = $7, acc_project_name = $8
+    `UPDATE projects SET name = $2, revizto_project_uuid = $3, revizto_project_id = $4, revizto_region = $5, acc_hub_id = $6, acc_project_id = $7, acc_project_name = $8,
+       owner_user_id = COALESCE(owner_user_id, $9) -- first pairing: the pairing license admin owns it
      WHERE id = $1 RETURNING *`,
-    [req.params.id, name, revizto_project_uuid, revizto_project_id || null, revizto_region || 'virginia', acc_hub_id, acc_project_id, acc_project_name || null]
+    [req.params.id, name, revizto_project_uuid, revizto_project_id || null, revizto_region || 'virginia', acc_hub_id, acc_project_id, acc_project_name || null, req.session.userId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'Project not found' });
   await _autoRegisterWebhook(req.session.userId, rows[0]);
   res.json({ project: rows[0] });
 });
 
-router.get('/api/projects/:id/issues-board', requireLogin, async (req, res) => {
+router.get('/api/projects/:id/issues-board', requireProjectRole('standard'), requirePaired, async (req, res) => {
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
   try {
@@ -209,7 +240,7 @@ router.get('/api/projects/:id/issues-board', requireLogin, async (req, res) => {
   }
 });
 
-router.get('/api/projects/:id/linked-issues', requireLogin, async (req, res) => {
+router.get('/api/projects/:id/linked-issues', requireProjectRole('standard'), requirePaired, async (req, res) => {
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
   try {
@@ -228,7 +259,7 @@ router.get('/api/projects/:id/linked-issues', requireLogin, async (req, res) => 
 // the create-response wasn't what the code assumed) and repairs the DB.
 // Also logs the raw response so we can confirm the real field name for
 // good, instead of continuing to guess.
-router.post('/api/projects/:id/relink-webhook', requireAdmin, async (req, res) => {
+router.post('/api/projects/:id/relink-webhook', requireProjectRole('project_admin'), requirePaired, async (req, res) => {
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
   try {
@@ -254,7 +285,7 @@ router.post('/api/projects/:id/relink-webhook', requireAdmin, async (req, res) =
 // see — bypasses our own project-matching logic entirely, for cases where
 // that logic might be missing something (e.g. a subtle scope format
 // mismatch) rather than trusting our own filter.
-router.get('/api/debug/list-all-webhooks', requireAdmin, async (req, res) => {
+router.get('/api/debug/list-all-webhooks', requireLicenseAdmin, async (req, res) => {
   try {
     const hooks = await accService.listWebhooks(req.session.userId);
     res.json({ count: hooks.length, hooks });
@@ -266,7 +297,7 @@ router.get('/api/debug/list-all-webhooks', requireAdmin, async (req, res) => {
   }
 });
 
-router.get('/api/projects/:id/webhook-status', requireAdmin, async (req, res) => {
+router.get('/api/projects/:id/webhook-status', requireProjectRole('project_admin'), requirePaired, async (req, res) => {
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
   if (!project.webhook_id) return res.status(404).json({ error: 'No webhook registered for this project yet' });
@@ -285,7 +316,7 @@ router.get('/api/projects/:id/webhook-status', requireAdmin, async (req, res) =>
 // Diagnostic: register a webhook pointing at an arbitrary URL (e.g. a
 // webhook.site test URL), to isolate whether ACC's delivery reaches ANY
 // server, independent of our own app/hosting. Doesn't touch project.webhook_id.
-router.post('/api/projects/:id/register-test-webhook', requireAdmin, async (req, res) => {
+router.post('/api/projects/:id/register-test-webhook', requireProjectRole('project_admin'), requirePaired, async (req, res) => {
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
   const { callbackUrl } = req.body;
@@ -302,7 +333,7 @@ router.post('/api/projects/:id/register-test-webhook', requireAdmin, async (req,
   }
 });
 
-router.delete('/api/projects/:id/webhook/:hookId', requireAdmin, async (req, res) => {
+router.delete('/api/projects/:id/webhook/:hookId', requireProjectRole('project_admin'), requirePaired, async (req, res) => {
   try {
     await accService.deleteWebhook(req.session.userId, req.params.hookId);
     await pool.query('UPDATE projects SET webhook_id = NULL WHERE id = $1 AND webhook_id = $2', [req.params.id, req.params.hookId]);
@@ -320,7 +351,7 @@ router.delete('/api/projects/:id/webhook/:hookId', requireAdmin, async (req, res
 // PUBLIC_BASE_URL to be a real internet-reachable HTTPS URL — this will
 // fail (as it should) if run against localhost, since ACC's servers can't
 // reach your laptop.
-router.post('/api/projects/:id/register-webhook', requireAdmin, async (req, res) => {
+router.post('/api/projects/:id/register-webhook', requireProjectRole('project_admin'), requirePaired, async (req, res) => {
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
   if (!process.env.PUBLIC_BASE_URL || process.env.PUBLIC_BASE_URL.includes('localhost')) {
@@ -349,7 +380,7 @@ router.post('/api/projects/:id/register-webhook', requireAdmin, async (req, res)
 
 // Open to any signed-in user — shows on the Issues page for everyone, and
 // later the Dashboards page. Not admin-gated, unlike mapping-warnings below.
-router.get('/api/projects/:id/stats', requireLogin, async (req, res) => {
+router.get('/api/projects/:id/stats', requireProjectRole('standard'), requirePaired, async (req, res) => {
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
   try {
@@ -365,7 +396,7 @@ router.get('/api/projects/:id/stats', requireLogin, async (req, res) => {
 });
 
 // Admin-only — this is a "go fix your mapping" action item, not a general stat.
-router.get('/api/projects/:id/mapping-warnings', requireAdmin, async (req, res) => {
+router.get('/api/projects/:id/mapping-warnings', requireProjectRole('project_admin'), requirePaired, async (req, res) => {
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
   try {
@@ -381,7 +412,7 @@ router.get('/api/projects/:id/mapping-warnings', requireAdmin, async (req, res) 
 
 // ─── Field mapping (status & issue type) — admin only ───────────────
 
-router.get('/api/projects/:id/mapping-options', requireAdmin, async (req, res) => {
+router.get('/api/projects/:id/mapping-options', requireProjectRole('project_admin'), requirePaired, async (req, res) => {
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
   try {
@@ -395,24 +426,24 @@ router.get('/api/projects/:id/mapping-options', requireAdmin, async (req, res) =
   }
 });
 
-router.get('/api/projects/:id/status-map', requireAdmin, async (req, res) => {
+router.get('/api/projects/:id/status-map', requireProjectRole('project_admin'), async (req, res) => {
   const map = await fieldMapping.getStatusMap(req.params.id);
   res.json({ map });
 });
 
-router.post('/api/projects/:id/status-map', requireAdmin, async (req, res) => {
+router.post('/api/projects/:id/status-map', requireProjectRole('project_admin'), async (req, res) => {
   const { mappings } = req.body;
   if (!Array.isArray(mappings)) return res.status(400).json({ error: 'mappings array required' });
   await fieldMapping.saveStatusMap(req.params.id, mappings);
   res.json({ ok: true });
 });
 
-router.get('/api/projects/:id/type-map', requireAdmin, async (req, res) => {
+router.get('/api/projects/:id/type-map', requireProjectRole('project_admin'), async (req, res) => {
   const map = await fieldMapping.getTypeMap(req.params.id);
   res.json({ map });
 });
 
-router.post('/api/projects/:id/type-map', requireAdmin, async (req, res) => {
+router.post('/api/projects/:id/type-map', requireProjectRole('project_admin'), async (req, res) => {
   const { mappings } = req.body;
   if (!Array.isArray(mappings)) return res.status(400).json({ error: 'mappings array required' });
   await fieldMapping.saveTypeMap(req.params.id, mappings);
@@ -423,14 +454,14 @@ router.post('/api/projects/:id/type-map', requireAdmin, async (req, res) => {
 // Filter option VALUES reuse the existing /issues-board endpoint (same
 // data the Issues page's own filters already draw from), so there's no
 // separate options endpoint here.
-router.get('/api/projects/:id/auto-sync-filters', requireAdmin, async (req, res) => {
+router.get('/api/projects/:id/auto-sync-filters', requireProjectRole('project_admin'), async (req, res) => {
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
   const filters = await fieldMapping.getAutoSyncFilters(req.params.id);
   res.json({ enabled: project.auto_sync_enabled, filters });
 });
 
-router.post('/api/projects/:id/auto-sync-filters', requireAdmin, async (req, res) => {
+router.post('/api/projects/:id/auto-sync-filters', requireProjectRole('project_admin'), async (req, res) => {
   const { enabled, filters } = req.body;
   if (typeof filters !== 'object' || filters === null || Array.isArray(filters)) {
     return res.status(400).json({ error: 'filters object required' });
@@ -442,7 +473,7 @@ router.post('/api/projects/:id/auto-sync-filters', requireAdmin, async (req, res
 
 // Whether any signed-in user (not just admins) can manually unlink an
 // issue from the Issues page — admin-only to toggle, off by default.
-router.post('/api/projects/:id/allow-manual-unlink', requireAdmin, async (req, res) => {
+router.post('/api/projects/:id/allow-manual-unlink', requireProjectRole('project_admin'), async (req, res) => {
   const { enabled } = req.body;
   const { rows } = await pool.query('UPDATE projects SET allow_manual_unlink = $2 WHERE id = $1 RETURNING *', [
     req.params.id,
@@ -459,7 +490,7 @@ router.post('/api/projects/:id/allow-manual-unlink', requireAdmin, async (req, r
 // the capability rather than just hiding it from someone who already has
 // the page open. requireLogin (not requireAdmin): once an admin has
 // turned this on, any signed-in user can use it, per the feature's intent.
-router.post('/api/projects/:id/issues/:reviztoIssueId/unlink', requireLogin, async (req, res) => {
+router.post('/api/projects/:id/issues/:reviztoIssueId/unlink', requireProjectRole('standard'), async (req, res) => {
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
   if (!project.allow_manual_unlink) return res.status(403).json({ error: 'Manual unlinking is not enabled for this project' });
@@ -473,11 +504,11 @@ router.post('/api/projects/:id/issues/:reviztoIssueId/unlink', requireLogin, asy
 // selected, etc.) — those are a deliberate click, not the app quietly
 // making API calls in the background, which is the actual thing this
 // toggle exists to stop while testing.
-router.get('/api/settings/sync-paused', requireAdmin, async (req, res) => {
+router.get('/api/settings/sync-paused', requireLicenseAdmin, async (req, res) => {
   res.json({ paused: await appSettings.isSyncPaused() });
 });
 
-router.post('/api/settings/sync-paused', requireAdmin, async (req, res) => {
+router.post('/api/settings/sync-paused', requireLicenseAdmin, async (req, res) => {
   await appSettings.setSyncPaused(!!req.body.paused);
   res.json({ paused: !!req.body.paused });
 });
@@ -490,28 +521,28 @@ router.post('/api/settings/sync-paused', requireAdmin, async (req, res) => {
 // Open to any signed-in user, same as the Activity Log it summarizes.
 // `from`/`to` are ISO timestamps (to exclusive), `tz` the viewer's IANA
 // timezone for grouping by day — see services/dashboards.js.
-function _dashboardQuery(req) {
+async function _dashboardQuery(req) {
   const parseDate = (v) => {
     const d = v ? new Date(v) : null;
     return d && !Number.isNaN(d.getTime()) ? d : null;
   };
   const to = parseDate(req.query.to) || new Date();
   const from = parseDate(req.query.from) || new Date(to.getTime() - 90 * 24 * 60 * 60 * 1000);
-  return { projectId: req.query.projectId ? Number(req.query.projectId) : null, from, to, tz: req.query.tz };
+  return { projectIds: await _projectScope(req), from, to, tz: req.query.tz };
 }
 
 router.get('/api/dashboards/sync-timeline', requireLogin, async (req, res) => {
-  res.json(await dashboards.syncTimeline(_dashboardQuery(req)));
+  res.json(await dashboards.syncTimeline(await _dashboardQuery(req)));
 });
 
 router.get('/api/dashboards/activity', requireLogin, async (req, res) => {
-  res.json(await dashboards.activity(_dashboardQuery(req)));
+  res.json(await dashboards.activity(await _dashboardQuery(req)));
 });
 
 router.get('/api/audit-log', requireLogin, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
   const offset = parseInt(req.query.offset, 10) || 0;
-  const projectId = req.query.projectId ? Number(req.query.projectId) : null;
+  const projectIds = await _projectScope(req);
   // Optional date range, as ISO timestamps (see auditLog._filters) —
   // anything unparseable is ignored rather than erroring the whole page.
   const parseDate = (v) => {
@@ -521,15 +552,15 @@ router.get('/api/audit-log', requireLogin, async (req, res) => {
   const from = parseDate(req.query.from);
   const to = parseDate(req.query.to);
   const [entries, total] = await Promise.all([
-    auditLog.list({ projectId, from, to, limit, offset }),
-    auditLog.count({ projectId, from, to }),
+    auditLog.list({ projectIds, from, to, limit, offset }),
+    auditLog.count({ projectIds, from, to }),
   ]);
   res.json({ entries: await syncService.labelAuditEntries(entries), total });
 });
 
 // ─── Sync (on-demand) ────────────────────────────────────────────────
 
-router.get('/api/projects/:id/revizto-issues', requireLogin, async (req, res) => {
+router.get('/api/projects/:id/revizto-issues', requireProjectRole('standard'), requirePaired, async (req, res) => {
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
   try {
@@ -549,7 +580,7 @@ router.get('/api/projects/:id/revizto-issues', requireLogin, async (req, res) =>
   }
 });
 
-router.patch('/api/projects/:id/revizto-project-id', requireAdmin, async (req, res) => {
+router.patch('/api/projects/:id/revizto-project-id', requireLicenseAdmin, async (req, res) => {
   const { revizto_project_id } = req.body;
   if (!revizto_project_id) return res.status(400).json({ error: 'revizto_project_id required' });
   const { rows } = await pool.query('UPDATE projects SET revizto_project_id = $2 WHERE id = $1 RETURNING *', [
@@ -565,7 +596,7 @@ router.patch('/api/projects/:id/revizto-project-id', requireAdmin, async (req, r
 // this is the ONLY thing that gives an unmapped-type issue somewhere real
 // to land in ACC, so it needs to be viewable/editable for a project that
 // already exists, not just at creation time.
-router.patch('/api/projects/:id/default-subtype', requireAdmin, async (req, res) => {
+router.patch('/api/projects/:id/default-subtype', requireProjectRole('project_admin'), async (req, res) => {
   const { acc_default_subtype_id } = req.body;
   const { rows } = await pool.query('UPDATE projects SET acc_default_subtype_id = $2 WHERE id = $1 RETURNING *', [
     req.params.id,
@@ -575,7 +606,7 @@ router.patch('/api/projects/:id/default-subtype', requireAdmin, async (req, res)
   res.json({ project: rows[0] });
 });
 
-router.post('/api/projects/:id/sync', requireLogin, async (req, res) => {
+router.post('/api/projects/:id/sync', requireProjectRole('standard'), requirePaired, async (req, res) => {
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
@@ -596,7 +627,7 @@ router.post('/api/projects/:id/sync', requireLogin, async (req, res) => {
   }
 });
 
-router.get('/api/projects/:id/subtypes', requireAdmin, async (req, res) => {
+router.get('/api/projects/:id/subtypes', requireProjectRole('project_admin'), requirePaired, async (req, res) => {
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
   try {
@@ -625,7 +656,7 @@ async function _handleAccWebhookRequest(req, res) {
   // Confirmed from a real webhook delivery: scope is nested under
   // hook.scope.project, not top-level hookScope.project as originally
   // guessed.
-  const { rows: projects } = await pool.query('SELECT * FROM projects');
+  const { rows: projects } = await pool.query('SELECT * FROM projects WHERE acc_project_id IS NOT NULL');
   const project = projects.find((p) => req.body?.hook?.scope?.project === p.acc_project_id.replace(/^b\./, ''));
   if (!project || !project.owner_user_id) {
     console.warn('[webhook] No matching project/owner for payload:', req.body?.hook?.scope);
@@ -660,6 +691,28 @@ router.post('/webhook/acc-v2', express.json(), _handleAccWebhookRequest);
 async function _getProject(id) {
   const { rows } = await pool.query('SELECT * FROM projects WHERE id = $1', [id]);
   return rows[0] || null;
+}
+
+function _isPaired(project) {
+  return !!(project && project.revizto_project_uuid && project.acc_project_id);
+}
+
+/**
+ * For routes that call Revizto/ACC for a project: a project created on
+ * License Administration but not yet paired on Project Setup gets a clear
+ * 409 instead of a confusing API error. Runs after requireProjectRole.
+ */
+async function requirePaired(req, res, next) {
+  try {
+    const project = await _getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    if (!_isPaired(project)) {
+      return res.status(409).json({ error: `"${project.name}" isn't paired to Revizto and ACC yet — a license admin can pair it on Project Setup.` });
+    }
+    next();
+  } catch (err) {
+    next(err);
+  }
 }
 
 module.exports = router;

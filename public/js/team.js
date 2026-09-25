@@ -1,3 +1,8 @@
+// Team: members of one project at a time, with their role. Anyone on the
+// project can see it; project admins and above get the invite/role/remove
+// controls, limited to roles below their own (enforced server-side in
+// routes/team.js — the page just doesn't offer what would be refused).
+
 async function api(url, options = {}) {
   const res = await fetch(url, {
     headers: { 'Content-Type': 'application/json' },
@@ -9,95 +14,145 @@ async function api(url, options = {}) {
   return data;
 }
 
-let currentUserId = null;
-let isAdmin = false;
+let projectId = null;
+let assignableRoles = []; // [{ value, label }]
 
 window.addEventListener('app:ready', async (e) => {
   if (!e.detail.user) return;
-  isAdmin = e.detail.user.role === 'admin';
-  currentUserId = e.detail.user.id;
-
-  document.getElementById('header-role-badge').classList.toggle('hidden', !isAdmin);
-  document.getElementById('add-someone-card').classList.toggle('hidden', !isAdmin);
-  document.getElementById('invite-link-card').classList.toggle('hidden', !isAdmin);
-  _renderHeaderSub();
-
-  await loadTeam();
-  if (isAdmin) await loadInviteLinks();
+  const { projects } = await api('/api/projects');
+  const select = document.getElementById('team-project-select');
+  if (!projects.length) {
+    document.getElementById('team-no-projects').classList.remove('hidden');
+    select.closest('.card').classList.add('hidden');
+    return;
+  }
+  for (const p of projects) {
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = p.name;
+    select.appendChild(opt);
+  }
+  let saved = null;
+  try {
+    saved = localStorage.getItem('team:lastProjectId');
+  } catch {
+    // storage blocked — just start on the first project
+  }
+  if (saved && projects.some((p) => String(p.id) === saved)) select.value = saved;
+  await selectProject(select.value);
 });
 
-// GET /api/team is requireLogin server-side (not requireAdmin) — any
-// signed-in user can read the roster/activity. Every action that
-// actually changes something (invite, invite links, role changes) stays
-// requireAdmin both server-side and here — non-admins just never see
-// those controls at all, rather than seeing them fail.
-function _renderHeaderSub() {
-  const subEl = document.getElementById('header-sub');
-  subEl.textContent = isAdmin
-    ? 'Invite people and set their role. Admin can manage project setup and team; Standard can view/sync issues and connect their own accounts.'
-    : 'The team roster and everyone’s activity, read-only. Ask an admin if you need someone added or a role changed.';
+document.getElementById('team-project-select').addEventListener('change', (e) => {
+  try {
+    localStorage.setItem('team:lastProjectId', e.target.value);
+  } catch {
+    // storage blocked — selection still works for this visit
+  }
+  selectProject(e.target.value);
+});
+
+async function selectProject(id) {
+  projectId = id;
+  document.getElementById('invite-result').textContent = '';
+  document.getElementById('invite-link-result').textContent = '';
+  await loadTeam();
+}
+
+function _cell(tr, text) {
+  const td = tr.insertCell();
+  td.textContent = text;
+  return td;
+}
+
+function _when(value) {
+  return value ? new Date(value).toLocaleString() : '—';
+}
+
+function _fillRoleSelect(select, roles) {
+  select.innerHTML = '';
+  for (const r of roles) {
+    const opt = document.createElement('option');
+    opt.value = r.value;
+    opt.textContent = r.label;
+    select.appendChild(opt);
+  }
 }
 
 async function loadTeam() {
-  const { members, emailConfigured } = await api('/api/team');
-  if (isAdmin) document.getElementById('email-config-notice').textContent = emailConfigured
-    ? 'Email sending is configured (SMTP).'
-    : 'Email sending isn\u2019t configured yet (no SMTP_HOST/SMTP_USER/SMTP_PASS set) — "Add" still grants access immediately, it just won\u2019t send an email.';
+  const data = await api(`/api/projects/${projectId}/team`);
+  assignableRoles = data.assignableRoles;
 
-  const rows = document.getElementById('team-rows');
-  rows.innerHTML = members
-    .map(
-      (m) => `<tr data-id="${m.id}">
-        <td>${m.email}</td>
-        <td>${_roleCellHtml(m)}</td>
-        <td>${new Date(m.created_at).toLocaleDateString()}</td>
-        <td>${m.last_login_at ? new Date(m.last_login_at).toLocaleString() : '<span class="hint">Never</span>'}</td>
-        <td>${m.latest_activity_at ? new Date(m.latest_activity_at).toLocaleString() : '<span class="hint">None yet</span>'}</td>
-        <td class="role-result"></td>
-      </tr>`
-    )
-    .join('');
+  const myRole = document.getElementById('team-my-role');
+  myRole.textContent = `You: ${data.myRoleLabel}`;
+  myRole.classList.remove('hidden');
 
-  rows.querySelectorAll('.role-select').forEach((select) => {
-    select.addEventListener('change', async (e) => {
-      const tr = e.target.closest('tr');
-      const id = tr.dataset.id;
-      const resultEl = tr.querySelector('.role-result');
-      try {
-        await api(`/api/team/${id}/role`, { method: 'PATCH', body: JSON.stringify({ role: e.target.value }) });
-        resultEl.textContent = 'Saved ✓';
-      } catch (err) {
-        resultEl.textContent = err.message;
-        await loadTeam(); // revert the select to actual state
-      }
-    });
-  });
-}
-
-// Editable dropdown for admins (their own row disabled — have another
-// admin change your role), plain badge for everyone else — a standard
-// user has no route that would accept a role change anyway, so there's
-// no point showing a control that would just 403.
-function _roleCellHtml(m) {
-  if (!isAdmin) {
-    return `<span class="badge badge-${m.role === 'admin' ? 'warning' : 'neutral'}">${m.role}</span>`;
+  const canInvite = data.canInvite;
+  document.getElementById('add-someone-card').classList.toggle('hidden', !canInvite);
+  document.getElementById('invite-link-card').classList.toggle('hidden', !canInvite);
+  document.getElementById('members-card').classList.remove('hidden');
+  if (canInvite) {
+    _fillRoleSelect(document.getElementById('invite-role'), assignableRoles);
+    _fillRoleSelect(document.getElementById('invite-link-role'), assignableRoles);
+    document.getElementById('email-config-notice').textContent = data.emailConfigured
+      ? "They'll get an email; on first sign-in they create a password with an emailed code."
+      : "Email isn't configured, so no invite email goes out — let them know to sign in.";
+    await loadInviteLinks();
   }
-  return `<select class="role-select" ${m.id === currentUserId ? 'disabled title="Have another admin change your role"' : ''}>
-    <option value="standard" ${m.role === 'standard' ? 'selected' : ''}>Standard</option>
-    <option value="admin" ${m.role === 'admin' ? 'selected' : ''}>Admin</option>
-  </select>`;
+
+  const tbody = document.getElementById('team-rows');
+  tbody.innerHTML = '';
+  for (const m of data.members) {
+    const tr = tbody.insertRow();
+    _cell(tr, m.email);
+    const roleCell = tr.insertCell();
+    if (m.canManage && assignableRoles.length) {
+      const select = document.createElement('select');
+      select.setAttribute('aria-label', `Role for ${m.email}`);
+      _fillRoleSelect(select, assignableRoles);
+      select.value = m.role;
+      select.addEventListener('change', async () => {
+        try {
+          await api(`/api/projects/${projectId}/team/${m.id}`, { method: 'PATCH', body: JSON.stringify({ role: select.value }) });
+        } catch (err) {
+          alert(err.message);
+          select.value = m.role;
+        }
+      });
+      roleCell.appendChild(select);
+    } else {
+      const badge = document.createElement('span');
+      badge.className = `badge badge-${m.role === 'standard' ? 'neutral' : 'warning'}`;
+      badge.textContent = m.roleLabel;
+      roleCell.appendChild(badge);
+    }
+    _cell(tr, _when(m.last_login_at));
+    _cell(tr, _when(m.latest_activity_at));
+    const actions = tr.insertCell();
+    if (m.canManage) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn secondary';
+      btn.textContent = 'Remove';
+      btn.addEventListener('click', async () => {
+        if (!confirm(`Remove ${m.email} from this project? Their account and other projects aren't affected.`)) return;
+        try {
+          await api(`/api/projects/${projectId}/team/${m.id}`, { method: 'DELETE' });
+          await loadTeam();
+        } catch (err) {
+          alert(err.message);
+        }
+      });
+      actions.appendChild(btn);
+    }
+  }
 }
 
 // ─── Chip-list email input ("Add someone") ─────────────────────────
 // Paste a whole list — from a spreadsheet, Word doc, email "To:" field,
 // however it's separated — and each parsed address becomes its own
-// removable chip, so it's unambiguous exactly who's queued to be added
-// before clicking Add, rather than a wall of raw pasted text.
+// removable chip, so it's unambiguous exactly who's queued to be added.
 
-// Splits on commas, semicolons, and any whitespace (newlines included) —
-// covers the common paste sources: one per line, comma-separated, or
-// semicolon-separated (e.g. copied straight out of an email "To:" field
-// or a spreadsheet column).
+// Splits on commas, semicolons, and any whitespace (newlines included).
 function _parseEmails(raw) {
   return raw.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
 }
@@ -105,22 +160,29 @@ function _parseEmails(raw) {
 let pendingEmails = [];
 
 function _renderChips() {
-  document.getElementById('invite-email-chips').innerHTML = pendingEmails
-    .map(
-      (email, i) => `<span class="chip">${email}<button type="button" class="chip-remove" data-index="${i}" title="Remove" aria-label="Remove ${email}">&times;</button></span>`
-    )
-    .join('');
-  document.querySelectorAll('.chip-remove').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      pendingEmails.splice(Number(btn.dataset.index), 1);
+  const list = document.getElementById('invite-email-chips');
+  list.innerHTML = '';
+  pendingEmails.forEach((email, i) => {
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.textContent = email; // pasted text — never as HTML
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'chip-remove';
+    remove.title = 'Remove';
+    remove.setAttribute('aria-label', `Remove ${email}`);
+    remove.textContent = '×';
+    remove.addEventListener('click', () => {
+      pendingEmails.splice(i, 1);
       _renderChips();
     });
+    chip.appendChild(remove);
+    list.appendChild(chip);
   });
 }
 
 // Adds every email parsed out of `raw` as a chip, deduped against what's
-// already queued (pasting the same list twice, or an email already
-// added, shouldn't create a second chip for it).
+// already queued.
 function _addEmailsFromText(raw) {
   for (const email of _parseEmails(raw)) {
     if (!pendingEmails.includes(email)) pendingEmails.push(email);
@@ -131,47 +193,37 @@ function _addEmailsFromText(raw) {
 const chipInput = document.getElementById('invite-email-input');
 const chipbox = document.getElementById('invite-email-chipbox');
 
-// Paste is the main path — a whole list pasted in one go becomes chips
-// immediately, with nothing left sitting in the input as raw text.
 chipInput.addEventListener('paste', (e) => {
   e.preventDefault();
   _addEmailsFromText(e.clipboardData.getData('text'));
   chipInput.value = '';
 });
 
-// Typing one at a time still works — Enter, comma, or semicolon commits
-// whatever's currently typed as a chip (comma/semicolon since someone
-// might type "a@x.com, b@x.com" by hand rather than paste it).
+// Enter, comma, or semicolon commits what's typed; Backspace on an empty
+// input removes the last chip.
 chipInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' || e.key === ',' || e.key === ';') {
     e.preventDefault();
     if (chipInput.value.trim()) _addEmailsFromText(chipInput.value);
     chipInput.value = '';
   } else if (e.key === 'Backspace' && !chipInput.value && pendingEmails.length) {
-    // Backspace on an empty input removes the last chip — standard
-    // chip-input behavior, lets you quickly undo a paste/typo.
     pendingEmails.pop();
     _renderChips();
   }
 });
 
-// Anything left half-typed when focus leaves the field still gets
-// captured as a chip on blur, so nothing typed is silently dropped just
-// because Add was clicked without pressing Enter first.
+// Anything left half-typed still becomes a chip when focus leaves.
 chipInput.addEventListener('blur', () => {
   if (chipInput.value.trim()) _addEmailsFromText(chipInput.value);
   chipInput.value = '';
 });
 
-// Clicking anywhere in the chip box (not just directly on the input)
-// focuses the input, matching how a real "To:" field behaves.
 chipbox.addEventListener('click', (e) => {
   if (e.target === chipbox || e.target.id === 'invite-email-chips') chipInput.focus();
 });
 
 document.getElementById('invite-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  // Anything still sitting in the input when Add is clicked counts too.
   if (chipInput.value.trim()) _addEmailsFromText(chipInput.value);
   chipInput.value = '';
 
@@ -182,30 +234,31 @@ document.getElementById('invite-form').addEventListener('submit', async (e) => {
     resultEl.textContent = 'Add at least one email.';
     return;
   }
-
-  // Always sends the notification email now (no separate opt-in checkbox
-  // — "Add" is the one action) — sendInviteEmail already no-ops gracefully
-  // with a clear "not sent" reason if SMTP isn't configured, same as before.
   resultEl.textContent = `Adding ${emails.length} ${emails.length === 1 ? 'person' : 'people'}...`;
   const outcomes = [];
   for (const email of emails) {
     try {
-      const { member, emailSent, emailError } = await api('/api/team/invite', {
+      const { member, emailSent, emailError } = await api(`/api/projects/${projectId}/team/invite`, {
         method: 'POST',
         body: JSON.stringify({ email, role, sendEmail: true }),
       });
       outcomes.push(`${member.email}: added${emailSent ? ', email sent' : ` (email not sent: ${emailError})`}`);
     } catch (err) {
-      outcomes.push(`${email}: FAILED — ${err.message}`);
+      outcomes.push(`${email}: not added — ${err.message}`);
     }
   }
-  resultEl.innerHTML = outcomes.map((o) => `<div>${o}</div>`).join('');
+  resultEl.innerHTML = '';
+  for (const line of outcomes) {
+    const div = document.createElement('div');
+    div.textContent = line;
+    resultEl.appendChild(div);
+  }
   pendingEmails = [];
   _renderChips();
   await loadTeam();
 });
 
-// ─── Invite links ("Copy invite link", one per role) ──────────────────
+// ─── Invite links (per project, one per role) ────────────────────────
 
 function _inviteUrl(code) {
   return `${location.origin}/account?invite=${code}`;
@@ -216,49 +269,57 @@ async function _copyToClipboard(text) {
     await navigator.clipboard.writeText(text);
     return true;
   } catch {
-    return false; // clipboard API unavailable/blocked — caller falls back to showing the raw link
+    return false; // clipboard unavailable/blocked — caller shows the raw link
   }
 }
 
 async function loadInviteLinks() {
-  const { links } = await api('/api/team/invite-links');
+  const { links } = await api(`/api/projects/${projectId}/invite-links`);
   const listEl = document.getElementById('invite-links-list');
+  listEl.innerHTML = '';
   if (!links.length) {
-    listEl.innerHTML = '<p class="hint">No active invite links yet — generate one above.</p>';
+    const p = document.createElement('p');
+    p.className = 'hint';
+    p.textContent = 'No active invite links for this project yet — generate one above.';
+    listEl.appendChild(p);
     return;
   }
-  listEl.innerHTML = links
-    .map(
-      (l) => `<div class="invite-link-row" data-id="${l.id}">
-        <span class="badge badge-${l.role === 'admin' ? 'warning' : 'neutral'}">${l.role}</span>
-        <code class="invite-link-url">${_inviteUrl(l.code)}</code>
-        <button type="button" class="btn secondary copy-link-btn" data-code="${l.code}">Copy</button>
-        <button type="button" class="btn secondary revoke-link-btn">Revoke</button>
-      </div>`
-    )
-    .join('');
-
-  listEl.querySelectorAll('.copy-link-btn').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const copied = await _copyToClipboard(_inviteUrl(btn.dataset.code));
-      btn.textContent = copied ? 'Copied ✓' : 'Copy failed';
-      setTimeout(() => (btn.textContent = 'Copy'), 1500);
+  for (const l of links) {
+    const row = document.createElement('div');
+    row.className = 'invite-link-row';
+    const badge = document.createElement('span');
+    badge.className = `badge badge-${l.role === 'standard' ? 'neutral' : 'warning'}`;
+    badge.textContent = l.roleLabel;
+    const url = document.createElement('code');
+    url.className = 'invite-link-url';
+    url.textContent = _inviteUrl(l.code);
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'btn secondary';
+    copy.textContent = 'Copy';
+    copy.addEventListener('click', async () => {
+      const copied = await _copyToClipboard(_inviteUrl(l.code));
+      copy.textContent = copied ? 'Copied ✓' : 'Copy failed';
+      setTimeout(() => (copy.textContent = 'Copy'), 1500);
     });
-  });
-  listEl.querySelectorAll('.revoke-link-btn').forEach((btn) => {
-    btn.addEventListener('click', async (e) => {
-      const id = e.target.closest('.invite-link-row').dataset.id;
-      await api(`/api/team/invite-links/${id}/revoke`, { method: 'POST' });
+    const revoke = document.createElement('button');
+    revoke.type = 'button';
+    revoke.className = 'btn secondary';
+    revoke.textContent = 'Revoke';
+    revoke.addEventListener('click', async () => {
+      await api(`/api/projects/${projectId}/invite-links/${l.id}/revoke`, { method: 'POST' });
       await loadInviteLinks();
     });
-  });
+    row.append(badge, url, copy, revoke);
+    listEl.appendChild(row);
+  }
 }
 
 document.getElementById('copy-invite-link-btn').addEventListener('click', async () => {
   const role = document.getElementById('invite-link-role').value;
   const resultEl = document.getElementById('invite-link-result');
   try {
-    const { link } = await api('/api/team/invite-links', { method: 'POST', body: JSON.stringify({ role }) });
+    const { link } = await api(`/api/projects/${projectId}/invite-links`, { method: 'POST', body: JSON.stringify({ role }) });
     const url = _inviteUrl(link.code);
     const copied = await _copyToClipboard(url);
     resultEl.textContent = copied ? `Copied to clipboard: ${url}` : `Link (copy failed, copy manually): ${url}`;

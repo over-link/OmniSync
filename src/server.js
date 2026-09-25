@@ -16,6 +16,7 @@ const pool = require('./db/pool');
 const authRoutes = require('./routes/auth').router;
 const mainRoutes = require('./routes/index');
 const teamRoutes = require('./routes/team');
+const licenseRoutes = require('./routes/license');
 const { startPolling } = require('./services/pollService');
 
 const app = express();
@@ -54,6 +55,7 @@ app.use(express.static(path.join(__dirname, '../public')));
 app.use('/', authRoutes);
 app.use('/', mainRoutes);
 app.use('/', teamRoutes);
+app.use('/', licenseRoutes);
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 app.use((err, req, res, _next) => {

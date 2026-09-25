@@ -68,6 +68,7 @@ reminder before expiry once this goes beyond a prototype.
   comment, attachment, link/unlink, and error, with who it's attributed
   to and when. See "Audit log" below. Open to Standard and Admin alike.
 - **Dashboards** — issues synced over time and sync activity charts (see "Dashboards page" below).
+- **License Administration** — projects (+ New Project), license admins, app-wide sync pause (see "Roles and project access").
 
 Navigation is a shared left sidebar (`public/js/nav.js`), loaded first on
 every page — it fetches auth state once, renders links based on role, and
@@ -1251,6 +1252,42 @@ Revizto→ACC direction can return the favor and recognize *this* comment.
 **Migration needed**: `sync_map.last_pulled_acc_attachment_id`,
 `sync_map.last_pulled_acc_attachment_comment_uuid` (idempotent
 `ALTER TABLE`). Run `npm run migrate`.
+
+## Roles and project access
+
+Two layers (`services/access.js` is the single source of truth; every
+route enforces it server-side via `routes/auth.js` `requireLicenseAdmin` /
+`requirePrimaryAdmin` / `requireProjectRole(minRole)`):
+
+| Role | Where it comes from | Can |
+|---|---|---|
+| **Primary license admin** | `users.role` (whoever set up the license) | everything below, plus add/remove license admins |
+| **License admin** | `users.role` | create projects (License Administration), pair them (Project Setup step 1), app-wide sync pause, ACC hub / Revizto license; sees **every** project |
+| **Project admin** | `project_members.role`, per project | on their projects: field mapping, auto-sync, issue linking, webhooks, invite/manage standard users; pairing shown read-only |
+| **Standard** | `project_members.role`, per project | on their projects: Issues, Activity Log, Dashboards, Team (read-only), My Connections |
+
+- **A member only sees projects they've been invited to** (`/api/projects`,
+  Activity Log and Dashboards are all scoped — `_projectScope`); a project
+  they're not on returns 404, same as one that doesn't exist.
+- **Roles can only be given, changed or removed strictly below your own**
+  — a project admin manages standard users, a license admin manages
+  project admins and standard users, only the primary manages license
+  admins. Nobody can change their own role.
+- **New projects:** License Administration → "+ New Project" (name only,
+  creator becomes owner) → opens Project Setup with the project's pairing
+  row ready. Until paired it shows "Not paired yet"; routes that need
+  Revizto/ACC return a clear 409 (`requirePaired`), and polling and the
+  webhook skip it.
+- **Invites** are per project (Team page): by email, or a per-project,
+  per-role invite link. A link grants its project role only after the
+  person proves the email is theirs (password or code).
+- **Migration** (schema.sql, idempotent): the earliest `admin` became
+  primary license admin, other admins license admins, `standard` users
+  standard on every existing project; old app-wide invite links retired.
+- **Tested** on an isolated copy of the schema with a local server (52
+  permission checks: project visibility, setup access, pairing, every
+  invite/role rule, license-admin management, invite links, log/dashboard
+  scoping) plus a browser pass as primary, project admin and standard.
 
 ## Signing in (email + password)
 

@@ -43,76 +43,67 @@ document.getElementById('setup-top-warning').addEventListener('click', openMappi
 let currentRevizto = { connected: false };
 let currentAcc = { connected: false };
 
+// Set on load: license admins can change the license/hub and pairings;
+// project admins get field mapping / auto-sync / issue linking for their
+// own projects, with the pairing shown read-only.
+let isLicenseAdmin = false;
+
 window.addEventListener('app:ready', async (e) => {
-  // nav.js already redirects non-admins away from this page — if we get
-  // here, the user is an admin. Still guard against the brief moment
-  // before that redirect fires.
-  if (!e.detail.user || e.detail.user.role !== 'admin') return;
+  // nav.js already redirects anyone without Setup access away from this
+  // page — still guard against the brief moment before that redirect fires.
+  const user = e.detail.user;
+  if (!user || !(user.isLicenseAdmin || user.isAnyProjectAdmin)) return;
+  isLicenseAdmin = !!user.isLicenseAdmin;
+  document.getElementById('setup-role-badge').textContent = user.roleLabel;
   currentRevizto = e.detail.revizto;
   currentAcc = e.detail.acc;
   document.getElementById('revizto-region-hidden').value = e.detail.revizto.region || 'virginia';
-  await loadSyncEnabledSetting();
-  await loadLicenseAndHubOptions();
-  await Promise.all([
-    currentRevizto.connected && currentRevizto.licenseId ? loadReviztoProjectOptions() : Promise.resolve(),
-    currentAcc.connected && currentAcc.hubId ? loadAccProjectOptions() : Promise.resolve(),
-  ]);
-  await loadProjects();
-  await loadActiveProjectOptions();
-});
-
-// ─── Global sync pause toggle (not per-project) ────────────────────
-// Checked = syncing enabled (normal operation) — kept this polarity
-// rather than a "paused" checkbox so checked still means "on/green",
-// same convention as every other toggle on this page.
-
-function _renderSyncEnabledLabel(enabled) {
-  document.getElementById('sync-enabled-label').textContent = enabled
-    ? 'Automatic syncing — ON'
-    : 'Automatic syncing — PAUSED';
-}
-
-async function loadSyncEnabledSetting() {
-  const resultEl = document.getElementById('sync-enabled-result');
-  resultEl.textContent = '';
-  try {
-    const { paused } = await api('/api/settings/sync-paused');
-    document.getElementById('sync-enabled-toggle').checked = !paused;
-    _renderSyncEnabledLabel(!paused);
-  } catch (err) {
-    resultEl.textContent = err.message;
+  document.getElementById('pairing-readonly-note').classList.toggle('hidden', isLicenseAdmin);
+  document.getElementById('license-hub-section').classList.toggle('hidden', !isLicenseAdmin);
+  // Coming from License Administration's "+ New Project": open that
+  // project, with its pairing row ready to fill in.
+  const requestedProjectId = Number(new URLSearchParams(location.search).get('project')) || null;
+  if (isLicenseAdmin) {
+    await loadLicenseAndHubOptions();
+    await Promise.all([
+      currentRevizto.connected && currentRevizto.licenseId ? loadReviztoProjectOptions() : Promise.resolve(),
+      currentAcc.connected && currentAcc.hubId ? loadAccProjectOptions() : Promise.resolve(),
+    ]);
   }
-}
-
-document.getElementById('sync-enabled-toggle').addEventListener('change', async (e) => {
-  const resultEl = document.getElementById('sync-enabled-result');
-  const enabled = e.target.checked;
-  try {
-    await api('/api/settings/sync-paused', {
-      method: 'POST',
-      body: JSON.stringify({ paused: !enabled }),
-    });
-    _renderSyncEnabledLabel(enabled);
-    resultEl.textContent = 'Saved ✓';
-  } catch (err) {
-    e.target.checked = !enabled; // revert, the save didn't actually take
-    _renderSyncEnabledLabel(!enabled);
-    resultEl.textContent = err.message;
-  }
+  await loadProjects(requestedProjectId);
+  await loadActiveProjectOptions(requestedProjectId);
 });
 
 // ─── Shared project selector (warnings + field mapping) ───────────
 
-async function loadActiveProjectOptions() {
-  const { projects } = await api('/api/projects');
-  const select = document.getElementById('active-project-select');
-  select.innerHTML = '<option value="">Select a project</option>' + projects.map((p) => `<option value="${p.id}">${p.name}</option>`).join('');
+// Only projects this person can administer (license admins: all). A
+// standard member of a project never sees it here.
+let adminProjects = [];
 
-  const lastProjectId = localStorage.getItem('setup:lastProjectId');
-  if (lastProjectId && projects.some((p) => String(p.id) === lastProjectId)) {
-    select.value = lastProjectId;
-    await onActiveProjectChange(lastProjectId);
+async function loadActiveProjectOptions(requestedProjectId = null) {
+  const { projects } = await api('/api/projects');
+  adminProjects = projects.filter((p) => p.my_role && p.my_role !== 'standard');
+  const select = document.getElementById('active-project-select');
+  select.innerHTML =
+    '<option value="">Select a project</option>' +
+    adminProjects.map((p) => `<option value="${p.id}">${p.name}${_isPaired(p) ? '' : ' — not paired yet'}</option>`).join('');
+
+  const preferred = requestedProjectId ? String(requestedProjectId) : localStorage.getItem('setup:lastProjectId');
+  if (preferred && adminProjects.some((p) => String(p.id) === preferred)) {
+    select.value = preferred;
+    localStorage.setItem('setup:lastProjectId', preferred);
+    await onActiveProjectChange(preferred);
   }
+}
+
+function _escapeHtml(value) {
+  const div = document.createElement('div');
+  div.textContent = value == null ? '' : String(value);
+  return div.innerHTML;
+}
+
+function _isPaired(p) {
+  return !!(p && p.revizto_project_uuid && p.acc_project_id);
 }
 
 async function onActiveProjectChange(projectId) {
@@ -124,6 +115,18 @@ async function onActiveProjectChange(projectId) {
     mappingPanels.classList.add('hidden');
     autoSyncPanels.classList.add('hidden');
     document.getElementById('mapping-warnings-caution').classList.add('hidden');
+    document.getElementById('setup-top-warning').classList.add('hidden');
+    return;
+  }
+  // Field mapping / auto-sync / issue linking all read the project's
+  // Revizto and ACC data, so they wait until it's paired (step 1).
+  const project = adminProjects.find((p) => String(p.id) === String(projectId));
+  const paired = _isPaired(project);
+  document.getElementById('unpaired-note').classList.toggle('hidden', paired);
+  if (!paired) {
+    warningsEl.classList.add('hidden');
+    mappingPanels.classList.add('hidden');
+    autoSyncPanels.classList.add('hidden');
     document.getElementById('setup-top-warning').classList.add('hidden');
     return;
   }
@@ -600,9 +603,14 @@ async function loadAccProjectOptions() {
   renderProjectPairings();
 }
 
-async function loadProjects() {
+async function loadProjects(requestedProjectId = null) {
   const { projects } = await api('/api/projects');
-  currentProjectsList = projects;
+  // Pairing rows: projects this person administers (license admins: all).
+  currentProjectsList = projects.filter((p) => p.my_role && p.my_role !== 'standard');
+  // A brand-new project from License Administration opens straight into
+  // its pairing row, ready to pick the Revizto and ACC projects.
+  const requested = currentProjectsList.find((p) => p.id === requestedProjectId);
+  if (isLicenseAdmin && requested && !_isPaired(requested)) editingPairingId = requested.id;
   renderProjectPairings();
 }
 
@@ -613,6 +621,14 @@ async function loadProjects() {
 // automatically on save — see routes/index.js's _autoRegisterWebhook),
 // not just "this row exists in the DB".
 function pairingRowHtml(p) {
+  if (!_isPaired(p) && editingPairingId !== p.id) {
+    return `<div class="pairing-row" data-id="${p.id}">
+      <span class="pairing-row-name">${p.name}</span>
+      <span class="pairing-dot" title="Not paired yet"></span>
+      <span class="pairing-row-name hint">Not paired yet</span>
+      ${isLicenseAdmin ? `<button type="button" class="btn modify-pairing-btn" data-id="${p.id}">Pair project</button>` : ''}
+    </div>`;
+  }
   if (editingPairingId !== p.id) {
     const missingIdHtml = p.revizto_project_id
       ? ''
@@ -624,8 +640,8 @@ function pairingRowHtml(p) {
       <span class="pairing-row-name">${p.name}</span>
       <span class="pairing-dot${p.webhook_id ? ' connected' : ''}" title="${p.webhook_id ? 'Webhook registered — syncing active' : 'Webhook not registered yet — Modify and re-save to retry'}"></span>
       <span class="pairing-row-name">${p.acc_project_name || p.acc_project_id}</span>
-      <button type="button" class="btn secondary modify-pairing-btn" data-id="${p.id}">Modify pairing</button>
-    </div>${missingIdHtml}`;
+      ${isLicenseAdmin ? `<button type="button" class="btn secondary modify-pairing-btn" data-id="${p.id}">Modify pairing</button>` : ''}
+    </div>${isLicenseAdmin ? missingIdHtml : ''}`;
   }
   return pairingEditRowHtml(p);
 }
@@ -642,7 +658,8 @@ function pairingEditRowHtml(p) {
   const accOptionsHtml = accProjectOptions
     .map((ap) => `<option value="${ap.id}" ${ap.id === p.acc_project_id ? 'selected' : ''}>${ap.name}</option>`)
     .join('');
-  return `<div class="pairing-row pairing-row-editing" data-id="${id}">
+  return `<div class="pairing-edit-name">Pairing <strong>${_escapeHtml(p.name)}</strong></div>
+  <div class="pairing-row pairing-row-editing" data-id="${id}">
     <select class="pairing-revizto-select" data-id="${id}">
       <option value="">${reviztoProjectOptions.length ? 'Select Revizto project' : 'No Revizto projects — set license above'}</option>
       ${reviztoOptionsHtml}
@@ -667,7 +684,9 @@ function pairingEditRowHtml(p) {
 function renderProjectPairings() {
   const container = document.getElementById('project-pairing-rows');
   if (!currentProjectsList.length) {
-    container.innerHTML = '<p class="hint">No project paired yet — use "+ New Project" above to set one up (coming soon).</p>';
+    container.innerHTML = isLicenseAdmin
+      ? '<p class="hint">No projects yet — create one on <a href="/license">License Administration</a> ("+ New Project").</p>'
+      : '<p class="hint">No projects you administer yet.</p>';
     return;
   }
   container.innerHTML = currentProjectsList.map((p) => pairingRowHtml(p)).join('');
@@ -708,6 +727,12 @@ function wirePairingRowHandlers() {
   container.querySelectorAll('.pairing-default-subtype-select').forEach((select) => {
     const id = select.dataset.id;
     const current = select.dataset.current;
+    // Needs the ACC project, so only once the pairing exists — for a first
+    // pairing it can be set right after saving.
+    if (!_isPaired(currentProjectsList.find((p) => String(p.id) === String(id)))) {
+      select.innerHTML = '<option value="">Save the pairing first, then set this</option>';
+      return;
+    }
     api(`/api/projects/${id}/subtypes`)
       .then(({ subtypes }) => {
         select.innerHTML =
@@ -732,7 +757,9 @@ function wirePairingRowHandlers() {
         return;
       }
       const body = {
-        name: reviztoOption.textContent,
+        // Keep the name given on License Administration; fall back to the
+        // Revizto project's title only if the project somehow has none.
+        name: currentProjectsList.find((p) => String(p.id) === String(id))?.name || reviztoOption.textContent,
         revizto_project_uuid: reviztoSelect.value,
         revizto_project_id: reviztoOption.dataset.projectId || '',
         revizto_region: document.getElementById('revizto-region-hidden').value,

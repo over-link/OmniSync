@@ -13,47 +13,14 @@
   <div id="sidebar-mount"></div>
   <div id="app" class="container container-wide">
     <header class="app-header">
-      <div class="app-header-top">
-        <div>
-          <h1>Project Setup <span class="badge badge-warning">Admin</span></h1>
-          <p class="app-sub">Map Revizto projects to ACC projects. Mistakes here affect the whole team — that's why it's admin-only.</p>
-        </div>
-        <!-- Mockup only — see README "Planned: multi-project workspaces". Will
-             create a new project (own DB, own team/mappings/issues) and drop
-             you into its setup, letting you rename it. Gated by license
-             project-slot count once License Administration exists. -->
-        <button type="button" id="new-project-btn" class="btn" disabled title="Coming soon — see README: Planned: multi-project workspaces">+ New Project</button>
-      </div>
+      <h1>Project Setup <span id="setup-role-badge" class="badge badge-warning"></span></h1>
+      <p class="app-sub">Pair each project's Revizto side with its ACC side, then set up field mapping, auto-sync and issue linking. New projects are created on License Administration.</p>
     </header>
 
     <button type="button" id="setup-top-warning" class="setup-top-warning hidden">
       ⚠️&nbsp;<span id="setup-top-warning-text"></span> — see Field mapping → Mapping warnings
     </button>
 
-    <!-- Global, not per-project — applies to the whole app regardless of
-         which project is selected below. Admin-only kill switch for the
-         automatic background sync (2-minute poll cycle + incoming ACC
-         webhooks), added so the app can be tested without constantly
-         calling Revizto/ACC's APIs. Manual actions (Link & push selected,
-         etc.) still work while paused — see the hint text. -->
-    <div class="card">
-      <label class="ios-toggle">
-        <input type="checkbox" id="sync-enabled-toggle" />
-        <span class="ios-toggle-track"><span class="ios-toggle-thumb"></span></span>
-        <span id="sync-enabled-label">Automatic syncing</span>
-      </label>
-      <p class="hint">
-        When off, the 2-minute auto-resync (Revizto→ACC push, ACC→Revizto
-        comment/attachment polling, auto-sync-by-filter) and incoming ACC
-        webhook processing are both skipped — nothing runs in the
-        background, so the app stops calling Revizto/ACC's APIs
-        automatically. Manual actions (e.g. "Link & push selected" on the
-        Issues page) still work either way, since those are a deliberate
-        click, not background activity. Applies to the whole app, not just
-        the project selected below.
-      </p>
-      <span id="sync-enabled-result" class="result-text"></span>
-    </div>
 
     <!-- Today this only scopes Field mapping/Auto sync/Issue linking below
          (one shared DB). Under the planned redesign this becomes the real
@@ -62,6 +29,7 @@
     <div class="card setup-context-bar">
       <label for="active-project-select">Project:</label>
       <select id="active-project-select"><option value="">Select a project</option></select>
+      <p id="unpaired-note" class="hint hidden">This project isn't paired yet — pair it in step 1 below before setting up field mapping, auto-sync or issue linking.</p>
     </div>
 
     <div class="accordion" id="setup-accordion">
@@ -72,12 +40,15 @@
           <span class="accordion-caret" aria-hidden="true">▾</span>
         </button>
         <div class="accordion-panel">
+          <p id="pairing-readonly-note" class="hint hidden">Only license admins can change the license, hub or pairing — shown here for reference.</p>
+          <div id="license-hub-section">
           <h3>Revizto license ↔ ACC hub</h3>
           <p class="hint">Sets the context both project dropdowns below pull from — connect Revizto and ACC first on <a href="/account">My Connections</a> if either is empty. Locks once both are saved; click "Modify" to change it.</p>
           <div id="license-hub-row"></div>
+          </div>
 
           <h3 style="margin-top:1.75rem;">Project pairing</h3>
-          <p class="hint">Links this project's Revizto side to its ACC side — this is what makes syncing work. Locked once saved; click "Modify pairing" to change it. The sync webhook registers automatically when you save, nothing extra to click. New pairings are created by starting a new project (see "+ New Project" above, coming soon) rather than added here.</p>
+          <p class="hint">Links this project's Revizto side to its ACC side — this is what makes syncing work. A project created on License Administration shows here as "Not paired yet" — pick its Revizto and ACC projects and save. Locked once saved; click "Modify pairing" to change it. The sync webhook registers automatically when you save.</p>
           <div class="pairing-column-headers">
             <span>Revizto</span>
             <span aria-hidden="true"></span>

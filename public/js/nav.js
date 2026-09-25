@@ -1,44 +1,37 @@
 /**
  * public/js/nav.js
  * Loaded first on every page. Fetches auth state once, renders the left
- * sidebar with links visible based on role, redirects non-admins away
- * from admin-only pages (just /setup — /team is readable by anyone
- * signed in now, see below), redirects EVERYONE (admins included) away
- * from every page except /account until both ACC and Revizto are
- * connected, and dispatches an "app:ready" event so each page's own
- * script can proceed without re-fetching /auth/me.
+ * sidebar (tabs shown by role, signed-in user + Sign out at the bottom),
+ * redirects away from pages the user's role doesn't allow (Project Setup:
+ * license admins + project admins; License Administration: license admins),
+ * redirects EVERYONE away from every page except /account until they're
+ * signed in with both ACC and Revizto connected, and dispatches an
+ * "app:ready" event so each page's own script can proceed without
+ * re-fetching /auth/me.
  *
- * Client-side redirect here is a UX convenience, not the real security
- * boundary — every admin-only API route also checks server-side
- * (requireAdmin), which is what actually protects the data. The
- * connections gate is enforced the same way client-side only for now —
- * the app's other API routes don't currently reject an unconnected
- * user's requests server-side, so this is a UX nudge onto /account, not
- * a hard security boundary the way requireAdmin is.
- *
- * /team itself is reachable by any signed-in user — its own script
- * (team.js) renders a read-only view (no invite controls, no editable
- * role dropdown) for non-admins, matching GET /api/team's requireLogin
- * (not requireAdmin); every route that actually changes something there
- * stays requireAdmin server-side, unaffected by this.
+ * Client-side hiding/redirects here are a UX convenience, not the security
+ * boundary — every route checks the same rules server-side
+ * (routes/auth.js requireLicenseAdmin / requireProjectRole, backed by
+ * services/access.js), which is what actually protects the data.
  */
-const ADMIN_ONLY_PATHS = ['/setup'];
+const ADMIN_PAGES = {
+  // Project Setup: license admins, and project admins (for their own projects).
+  '/setup': (user) => user.isLicenseAdmin || user.isAnyProjectAdmin,
+  // License Administration: license admins only.
+  '/license': (user) => user.isLicenseAdmin,
+};
 
 const NAV_LINKS = [
-  { href: '/issues', label: 'Issues', adminOnly: false },
-  { href: '/logs', label: 'Activity Log', adminOnly: false },
-  { href: '/account', label: 'My Connections', adminOnly: false },
-  { href: '/setup', label: 'Project Setup', adminOnly: true },
-  { href: '/team', label: 'Team', adminOnly: false },
-  // Mockup only — see README "Planned: multi-project workspaces". Will hold
-  // license project-slot count/usage and per-project API-call tracking once
-  // each project runs off its own DB.
-  { href: '#', label: 'License Administration', adminOnly: true, disabled: true },
-  { href: '/dashboards', label: 'Dashboards', adminOnly: false },
+  { href: '/issues', label: 'Issues' },
+  { href: '/logs', label: 'Activity Log' },
+  { href: '/account', label: 'My Connections' },
+  { href: '/setup', label: 'Project Setup' },
+  { href: '/team', label: 'Team' },
+  { href: '/license', label: 'License Administration' },
+  { href: '/dashboards', label: 'Dashboards' },
   // Mockup only — see README "Planned: Help Center (phase 3)". Topics:
-  // best practices, FAQ, video tutorials, contact support. Open to
-  // everyone (not admin-gated), unlike the two entries above it.
-  { href: '#', label: 'Help Center', adminOnly: false, disabled: true },
+  // best practices, FAQ, video tutorials, contact support.
+  { href: '#', label: 'Help Center', disabled: true },
 ];
 
 async function loadNav() {
@@ -56,8 +49,10 @@ async function loadNav() {
   }
 
   const path = window.location.pathname;
-  const isAdmin = user?.role === 'admin';
   const fullyConnected = !!user && acc.connected && revizto.connected;
+  // Pages this user's role allows (see services/access.js; the server
+  // enforces the same rules on every route — this only hides/redirects).
+  const canSee = (href) => !ADMIN_PAGES[href] || (!!user && ADMIN_PAGES[href](user));
 
   // Nobody gets past My Connections until both ACC and Revizto are
   // connected — applies to everyone, admins included. /account itself is
@@ -69,7 +64,7 @@ async function loadNav() {
     return;
   }
 
-  if (ADMIN_ONLY_PATHS.includes(path) && !isAdmin) {
+  if (!canSee(path)) {
     window.location.replace('/issues');
     return;
   }
@@ -80,7 +75,7 @@ async function loadNav() {
       <div class="sidebar">
         <div class="sidebar-brand">Revizto <span class="bridge-glyph" aria-hidden="true">⇄</span> ACC</div>
         <nav class="sidebar-nav">
-          ${NAV_LINKS.filter((l) => !l.adminOnly || isAdmin)
+          ${NAV_LINKS.filter((l) => canSee(l.href))
             .map((l) => {
               if (l.disabled) return `<span class="sidebar-link disabled" title="Not built yet">${l.label}</span>`;
               // Locked until signed in with both accounts connected — only My
@@ -93,32 +88,31 @@ async function loadNav() {
             })
             .join('')}
         </nav>
+        <div class="sidebar-footer" id="sidebar-footer"></div>
       </div>
     `;
-  }
-
-  // Who's signed in + Sign out: top right of every page, in a slim strip
-  // above the page title (so it never collides with a header's own buttons).
-  const app = document.getElementById('app');
-  if (user && app) {
-    const bar = document.createElement('div');
-    bar.className = 'header-user';
-    const email = document.createElement('span');
-    email.className = 'header-user-email';
-    email.textContent = user.email;
-    const badge = document.createElement('span');
-    badge.className = `badge badge-${isAdmin ? 'warning' : 'neutral'}`;
-    badge.textContent = user.role;
-    const signOut = document.createElement('button');
-    signOut.type = 'button';
-    signOut.className = 'btn secondary header-signout';
-    signOut.textContent = 'Sign out';
-    signOut.addEventListener('click', async () => {
-      await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
-      window.location.replace('/account');
-    });
-    bar.append(email, badge, signOut);
-    app.prepend(bar);
+    // Who's signed in + Sign out, bottom left of the sidebar. Built with
+    // textContent — the email is user data.
+    const footer = document.getElementById('sidebar-footer');
+    if (user) {
+      const email = document.createElement('div');
+      email.className = 'sidebar-user-email';
+      email.textContent = user.email;
+      const badge = document.createElement('span');
+      badge.className = `badge badge-${user.isLicenseAdmin || user.isAnyProjectAdmin ? 'warning' : 'neutral'}`;
+      badge.textContent = user.roleLabel || user.role;
+      const signOut = document.createElement('button');
+      signOut.type = 'button';
+      signOut.className = 'btn secondary sidebar-signout';
+      signOut.textContent = 'Sign out';
+      signOut.addEventListener('click', async () => {
+        await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+        window.location.replace('/account');
+      });
+      footer.append(email, badge, signOut);
+    } else {
+      footer.remove();
+    }
   }
 
   // Wait until every page script has run before announcing. /auth/me can

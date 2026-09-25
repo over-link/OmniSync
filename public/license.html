@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>License Administration — Revizto ↔ ACC Sync</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <div id="sidebar-mount"></div>
+  <div id="app" class="container container-wide">
+    <header class="app-header">
+      <h1>License Administration <span id="license-role-badge" class="badge badge-warning"></span></h1>
+      <p class="app-sub">Projects under this license, who the license admins are, and app-wide settings.</p>
+    </header>
+
+    <div id="license-app" class="hidden">
+      <section class="card">
+        <div class="card-header-row">
+          <h2>Projects</h2>
+          <button type="button" id="new-project-btn" class="btn">+ New Project</button>
+        </div>
+        <form id="new-project-form" class="new-project-form hidden" novalidate>
+          <label for="new-project-name">Project name</label>
+          <div class="field-row">
+            <input id="new-project-name" type="text" maxlength="120" placeholder="e.g. WI&amp;M Railroad Company" required />
+            <button type="submit" class="btn">Create &amp; pair</button>
+            <button type="button" id="new-project-cancel" class="btn secondary">Cancel</button>
+          </div>
+          <p class="hint">Next you'll pick its Revizto and ACC projects on Project Setup. You'll own it — background syncing uses your Revizto and ACC connections.</p>
+        </form>
+        <span id="new-project-result" class="result-text" role="status"></span>
+        <div class="license-table-wrap">
+          <table class="license-table">
+            <thead><tr><th>Project</th><th>Pairing</th><th>Owner</th><th>Members</th><th></th></tr></thead>
+            <tbody id="license-projects"></tbody>
+          </table>
+        </div>
+        <p id="license-projects-empty" class="hint hidden">No projects yet — click "+ New Project" to create the first one.</p>
+      </section>
+
+      <section class="card">
+        <h2>License admins</h2>
+        <p class="hint">License admins can create and pair projects and see every project under the license. Only the primary license admin can add or remove them.</p>
+        <div class="license-table-wrap">
+          <table class="license-table">
+            <thead><tr><th>Email</th><th>Role</th><th>Last sign-in</th><th></th></tr></thead>
+            <tbody id="license-admins"></tbody>
+          </table>
+        </div>
+        <form id="add-admin-form" class="field-row hidden" novalidate>
+          <input id="add-admin-email" type="email" placeholder="colleague@company.com" required />
+          <label class="inline-check"><input id="add-admin-send-email" type="checkbox" checked /> Email them</label>
+          <button type="submit" class="btn">Add license admin</button>
+        </form>
+        <span id="add-admin-result" class="result-text" role="status"></span>
+      </section>
+
+      <!-- App-wide, not per project: pauses the background sync (2-minute
+           poll + incoming ACC webhooks) for every project. -->
+      <section class="card">
+        <h2>Automatic syncing</h2>
+        <label class="ios-toggle">
+          <input type="checkbox" id="sync-enabled-toggle" />
+          <span class="ios-toggle-track"><span class="ios-toggle-thumb"></span></span>
+          <span id="sync-enabled-label">Automatic syncing</span>
+        </label>
+        <p class="hint">
+          When off, the background sync (Revizto→ACC push, ACC→Revizto comment/attachment
+          polling, auto-sync-by-filter) and incoming ACC webhooks are skipped for every
+          project. While it's off, edits made in ACC are dropped rather than queued. Manual
+          actions (e.g. "Link &amp; push selected" on the Issues page) still work.
+        </p>
+        <span id="sync-enabled-result" class="result-text"></span>
+      </section>
+    </div>
+  </div>
+  <script src="/js/nav.js"></script>
+  <script src="/js/license.js"></script>
+</body>
+</html>

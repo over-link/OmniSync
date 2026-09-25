@@ -484,4 +484,53 @@ CREATE TABLE IF NOT EXISTS password_codes (
 );
 CREATE INDEX IF NOT EXISTS password_codes_user_idx ON password_codes(user_id);
 
+-- ─── Roles: license-level + per-project (services/access.js) ────────────
+-- users.role is now the LICENSE-level role:
+--   'primary_license_admin' — bought/set up the license; assigns license admins
+--   'license_admin'         — creates/modifies pairings; sees every project
+--   'member'                — no license role; access comes only from
+--                             project_members (below)
+-- project_members gives a member a role on one project:
+--   'project_admin' — all tools for that project except pairing
+--   'standard'      — everything except Project Setup / License Administration
+-- Anyone can only assign roles below their own.
+CREATE TABLE IF NOT EXISTS project_members (
+  project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role        TEXT NOT NULL CHECK (role IN ('project_admin', 'standard')),
+  invited_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (project_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS project_members_user_idx ON project_members(user_id);
+
+-- A project is created by a license admin on License Administration with
+-- just a name, then paired (Revizto ↔ ACC) on Project Setup — so these are
+-- empty until pairing. Everything that talks to Revizto/ACC skips an
+-- unpaired project (see routes' _requirePaired, pollService).
+ALTER TABLE projects ALTER COLUMN revizto_project_uuid DROP NOT NULL;
+ALTER TABLE projects ALTER COLUMN acc_hub_id DROP NOT NULL;
+ALTER TABLE projects ALTER COLUMN acc_project_id DROP NOT NULL;
+
+-- Invite links and the invite log are per project now.
+ALTER TABLE invite_links ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE;
+ALTER TABLE invites ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL;
+
+-- One-time move from the old app-wide admin/standard roles (idempotent —
+-- does nothing once no 'admin'/'standard' users remain):
+--   the earliest admin → primary license admin (only if none exists yet),
+--   other admins → license admins,
+--   standard users → standard on every existing project, then 'member'.
+UPDATE users SET role = 'primary_license_admin'
+  WHERE id = (SELECT min(id) FROM users WHERE role = 'admin')
+    AND NOT EXISTS (SELECT 1 FROM users WHERE role = 'primary_license_admin');
+UPDATE users SET role = 'license_admin' WHERE role = 'admin';
+INSERT INTO project_members (project_id, user_id, role)
+  SELECT p.id, u.id, 'standard' FROM users u CROSS JOIN projects p WHERE u.role = 'standard'
+  ON CONFLICT DO NOTHING;
+UPDATE users SET role = 'member' WHERE role = 'standard';
+-- Old app-wide invite links (no project) can't grant a project role — retire them.
+UPDATE invite_links SET revoked_at = now() WHERE project_id IS NULL AND revoked_at IS NULL;
+ALTER TABLE users ALTER COLUMN role SET DEFAULT 'member';
+
 -- connect-pg-simple creates its own "session" table automatically on first run.

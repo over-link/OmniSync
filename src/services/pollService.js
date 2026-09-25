@@ -84,7 +84,11 @@ async function pollTick() {
 }
 
 async function pollAllProjects({ full = false } = {}) {
-  const { rows: projects } = await pool.query('SELECT * FROM projects WHERE owner_user_id IS NOT NULL');
+  // Unpaired projects (created on License Administration, not yet paired
+  // on Project Setup) have nothing to sync.
+  const { rows: projects } = await pool.query(
+    'SELECT * FROM projects WHERE owner_user_id IS NOT NULL AND revizto_project_uuid IS NOT NULL AND acc_project_id IS NOT NULL'
+  );
   for (const project of projects) {
     try {
       // One bulk look at both sides for every linked issue, shared by the

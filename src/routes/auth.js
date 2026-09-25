@@ -19,6 +19,7 @@ const reviztoAuth = require('../services/reviztoAuth');
 const tokenStore = require('../services/tokenStore');
 const passwords = require('../services/passwords');
 const emailService = require('../services/emailService');
+const access = require('../services/access');
 
 // Everyone signs in again at least this often, however active they are —
 // so access decisions (removed from the team, password reset) can't be
@@ -58,22 +59,59 @@ async function _sessionUser(req) {
 
 async function requireLogin(req, res, next) {
   try {
-    if (!(await _sessionUser(req))) return res.status(401).json({ error: 'Your session has ended — please sign in again.' });
+    if (!(await _sessionUser(req))) return res.status(401).json({ error: SESSION_ENDED });
     next();
   } catch (err) {
     next(err);
   }
 }
 
-async function requireAdmin(req, res, next) {
-  try {
-    const user = await _sessionUser(req);
-    if (!user) return res.status(401).json({ error: 'Your session has ended — please sign in again.' });
-    if (user.role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
-    next();
-  } catch (err) {
-    next(err);
-  }
+const SESSION_ENDED = 'Your session has ended — please sign in again.';
+
+/**
+ * Builds a middleware that requires a valid session, loads the user's
+ * access (services/access.js) onto req.access, then runs `allowed(req)`.
+ */
+function _requireAccess(allowed, deniedMessage) {
+  return async (req, res, next) => {
+    try {
+      if (!(await _sessionUser(req))) return res.status(401).json({ error: SESSION_ENDED });
+      req.access = await access.getAccess(req.session.userId);
+      if (!allowed(req)) return res.status(403).json({ error: deniedMessage });
+      next();
+    } catch (err) {
+      next(err);
+    }
+  };
+}
+
+// License admins (and the primary): pairings, license/hub, app-wide settings.
+const requireLicenseAdmin = _requireAccess((req) => req.access.isLicenseAdmin, 'License admin access required.');
+
+// Only the primary license admin: managing who the license admins are.
+const requirePrimaryAdmin = _requireAccess((req) => req.access.isPrimary, 'Only the primary license admin can do this.');
+
+/**
+ * At least `minRole` ('standard' or 'project_admin') on the project in
+ * req.params.id — license admins pass for every project. Someone with no
+ * role on the project gets a 404, same as a project that doesn't exist,
+ * so project ids can't be probed.
+ */
+function requireProjectRole(minRole) {
+  return async (req, res, next) => {
+    try {
+      if (!(await _sessionUser(req))) return res.status(401).json({ error: SESSION_ENDED });
+      req.access = await access.getAccess(req.session.userId);
+      const role = access.effectiveProjectRole(req.access, req.params.id);
+      if (!role) return res.status(404).json({ error: 'Project not found' });
+      if (!access.hasProjectRole(req.access, req.params.id, minRole)) {
+        return res.status(403).json({ error: minRole === 'project_admin' ? 'Project admin access required.' : 'No access to this project.' });
+      }
+      next();
+    } catch (err) {
+      next(err);
+    }
+  };
 }
 
 // ─── 1. App identity ────────────────────────────────────────────────
@@ -97,6 +135,34 @@ async function _emailPasswordCode(user, purpose) {
     console.error(`[auth] Couldn't email the ${purpose}-password code to ${user.email} (${err.message}). Code: ${code}`);
     throw err;
   }
+}
+
+/** The active invite link for `code` ({ project_id, role, created_by }), or null. */
+async function _validInviteLink(code) {
+  if (!code) return null;
+  const { rows } = await pool.query(
+    'SELECT project_id, role, created_by FROM invite_links WHERE code = $1 AND revoked_at IS NULL AND project_id IS NOT NULL',
+    [code]
+  );
+  return rows[0] || null;
+}
+
+/**
+ * Adds the user to an invite link's project with the link's role. Only
+ * called once the person has proven the email is theirs (right password,
+ * or a code), so a link can't be used to attach it to someone else's
+ * account. Never changes a role they already have on that project, and a
+ * license admin doesn't need project rows at all.
+ */
+async function _applyInviteLink(userId, code) {
+  const link = await _validInviteLink(code);
+  if (!link) return;
+  await pool.query(
+    `INSERT INTO project_members (project_id, user_id, role, invited_by)
+     SELECT $1, $2, $3, $4 WHERE NOT EXISTS (SELECT 1 FROM users WHERE id = $2 AND role IN ('primary_license_admin', 'license_admin'))
+     ON CONFLICT (project_id, user_id) DO NOTHING`,
+    [link.project_id, userId, link.role, link.created_by]
+  );
 }
 
 /** Starts a fresh session for `user` (new session id — no session fixation). */
@@ -159,19 +225,20 @@ router.post('/auth/login', async (req, res) => {
   if (!user) {
     const { rows: countRows } = await pool.query('SELECT count(*) FROM users');
     const isFirstEverUser = Number(countRows[0].count) === 0;
-    // Bootstrap: the very first user ever created becomes admin
-    // immediately, no invite needed — otherwise nobody could ever create
-    // the first invite link in the first place.
-    let role = 'admin';
+    // Bootstrap: the very first user ever created is the primary license
+    // admin, no invite needed — otherwise nobody could ever create the
+    // first project or invite anyone. Everyone else starts as a 'member'
+    // whose project access comes from the invite (granted once they've
+    // proven the email is theirs — see _applyInviteLink).
+    let role = 'primary_license_admin';
     if (!isFirstEverUser) {
       if (!inviteCode) {
-        return res.status(403).json({ error: 'No account for this email. Ask a team admin for an invite link.' });
+        return res.status(403).json({ error: 'No account for this email. Ask a project admin for an invite link.' });
       }
-      const { rows: linkRows } = await pool.query('SELECT role FROM invite_links WHERE code = $1 AND revoked_at IS NULL', [inviteCode]);
-      if (!linkRows[0]) {
-        return res.status(403).json({ error: 'This invite link is invalid or has been revoked. Ask a team admin for a new one.' });
+      if (!(await _validInviteLink(inviteCode))) {
+        return res.status(403).json({ error: 'This invite link is invalid or has been revoked. Ask a project admin for a new one.' });
       }
-      role = linkRows[0].role;
+      role = 'member';
     }
     const { rows: createdRows } = await pool.query(
       'INSERT INTO users (email, role) VALUES ($1, $2) RETURNING id, email, role, password_hash',
@@ -196,6 +263,7 @@ router.post('/auth/login', async (req, res) => {
     return res.status(401).json({ error: 'Incorrect email or password.' });
   }
   _failedLogins.delete(`${req.ip}|${email}`);
+  await _applyInviteLink(user.id, inviteCode);
   await _startSession(req, user);
   res.json({ user: { id: user.id, email: user.email, role: user.role } });
 });
@@ -223,6 +291,7 @@ router.post('/auth/forgot-password', async (req, res) => {
 router.post('/auth/verify-code', async (req, res) => {
   const email = req.body.email?.toLowerCase().trim();
   const { code, password } = req.body;
+  const inviteCode = req.body.invite?.trim() || null;
   const problem = passwords.validatePassword(password);
   if (problem) return res.status(400).json({ error: problem });
   const { rows } = await pool.query('SELECT id, email, role FROM users WHERE email = $1', [email || '']);
@@ -235,6 +304,7 @@ router.post('/auth/verify-code', async (req, res) => {
         : "That code is incorrect or has expired. Check the latest email, or request a new code.",
     });
   }
+  await _applyInviteLink(user.id, inviteCode);
   await _startSession(req, user);
   res.json({ user: { id: user.id, email: user.email, role: user.role } });
 });
@@ -247,6 +317,15 @@ router.get('/auth/me', async (req, res) => {
   const sessionUser = await _sessionUser(req);
   if (!sessionUser) return res.json({ user: null });
   const role = sessionUser.role;
+  // What the page shell needs to decide which tabs to show — the server
+  // still enforces every one of these on each route.
+  const userAccess = await access.getAccess(req.session.userId);
+  const permissions = {
+    roleLabel: access.displayRole(userAccess),
+    isLicenseAdmin: userAccess.isLicenseAdmin,
+    isPrimary: userAccess.isPrimary,
+    isAnyProjectAdmin: access.isAnyProjectAdmin(userAccess),
+  };
   const accTokens = await tokenStore.getAccTokens(req.session.userId);
   const reviztoTokens = await tokenStore.getReviztoTokens(req.session.userId);
 
@@ -267,7 +346,7 @@ router.get('/auth/me', async (req, res) => {
   const reviztoStillValid = !!reviztoTokens && new Date(reviztoTokens.refresh_expires_at) > new Date();
 
   res.json({
-    user: { id: req.session.userId, email: req.session.userEmail, role },
+    user: { id: req.session.userId, email: req.session.userEmail, role, ...permissions },
     acc: accStillValid
       ? {
           connected: true,
@@ -295,7 +374,7 @@ router.get('/auth/me', async (req, res) => {
 
 // License ID is needed to browse "my Revizto projects" (GET /project/list)
 // but not to connect — kept as a separate step so connecting stays simple.
-router.post('/auth/revizto/license', requireAdmin, async (req, res) => {
+router.post('/auth/revizto/license', requireLicenseAdmin, async (req, res) => {
   const { licenseId, licenseRegion } = req.body;
   if (!licenseId) return res.status(400).json({ error: 'licenseId required' });
   const tokens = await tokenStore.getReviztoTokens(req.session.userId);
@@ -309,7 +388,7 @@ router.post('/auth/revizto/license', requireAdmin, async (req, res) => {
 // Mirrors /auth/revizto/license — the ACC hub is the equivalent "current
 // context" selection that scopes the ACC project dropdown, the same way
 // license scopes the Revizto project dropdown.
-router.post('/auth/acc/hub', requireAdmin, async (req, res) => {
+router.post('/auth/acc/hub', requireLicenseAdmin, async (req, res) => {
   const { hubId } = req.body;
   if (!hubId) return res.status(400).json({ error: 'hubId required' });
   const tokens = await tokenStore.getAccTokens(req.session.userId);
@@ -368,4 +447,4 @@ router.post('/auth/revizto/exchange', requireLogin, async (req, res) => {
   }
 });
 
-module.exports = { router, requireLogin, requireAdmin };
+module.exports = { router, requireLogin, requireLicenseAdmin, requirePrimaryAdmin, requireProjectRole };

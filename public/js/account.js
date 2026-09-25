@@ -169,7 +169,7 @@ document.getElementById('code-form').addEventListener('submit', async (e) => {
   const btn = document.getElementById('code-submit');
   btn.disabled = true;
   try {
-    await api('/auth/verify-code', { method: 'POST', body: JSON.stringify({ email: codeEmail, code, password }) });
+    await api('/auth/verify-code', { method: 'POST', body: JSON.stringify({ email: codeEmail, code, password, invite: inviteCode }) });
     location.reload(); // signed in
   } catch (err) {
     whoamiEl.textContent = err.message;
