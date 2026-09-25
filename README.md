@@ -1660,6 +1660,17 @@ revocation) during exactly the kind of extended pause this toggle is for.
 
 ## Webhooks — registering the ACC side
 
+**The hook id comes from the `Location` header** (fixed 2026-09-25): ACC
+answers "create hook" with 201 and an **empty body**; the new hook's id is
+only in `Location` (…/hooks/{hookId}). Reading it from the body left
+`webhook_id` empty, so newly paired projects showed "Webhook not registered
+yet" even though the hook existed in ACC (and deleting such a project left
+its hook behind). `accService.registerWebhook` now reads the header, falls
+back to finding the hook in ACC's list, and on 409 (a hook already exists
+for that project + callback) adopts the existing one — so **re-saving a
+pairing repairs a project whose hook id wasn't saved**. Re-pairing to a
+different ACC project unregisters the old project's hook first.
+
 Registration is now **automatic**: `routes/index.js`'s `_autoRegisterWebhook`
 fires right after a project pairing is created or modified (Setup page, see
 "Adding a project pairing" below) — no manual button anymore. It still

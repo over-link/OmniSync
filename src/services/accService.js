@@ -277,15 +277,39 @@ async function getLocationNodes(userId, project) {
 
 // ─── Webhooks ───────────────────────────────────────────────────────
 
+/**
+ * Registers the issue.updated webhook for a project and returns
+ * { hookId, adopted }. Creating one answers 201 with an EMPTY body — the
+ * new hook's id is only in the Location header (…/hooks/{hookId}); reading
+ * it from the body is why paired projects kept showing "webhook not
+ * registered" although the hook existed (seen live 2026-09-25). If ACC
+ * says one already exists for this project and callback (409), that one is
+ * adopted instead (adopted: true) — so re-saving a pairing repairs it.
+ */
 async function registerWebhook(userId, project, callbackUrl) {
   const token = await getValidAccToken(userId);
   const projectId = _containerId(project);
-  const { data } = await axios.post(
-    `${APS_BASE}/webhooks/v1/systems/autodesk.construction.issues/events/issue.updated-1.0/hooks`,
-    { callbackUrl, scope: { project: projectId } },
-    { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'x-ads-region': 'US' } }
-  );
-  return data;
+  const findExisting = async () => {
+    const hooks = await listWebhooks(userId);
+    return (Array.isArray(hooks) ? hooks : []).find((h) => h.scope?.project === projectId && h.callbackUrl === callbackUrl) || null;
+  };
+  let response;
+  try {
+    response = await axios.post(
+      `${APS_BASE}/webhooks/v1/systems/autodesk.construction.issues/events/issue.updated-1.0/hooks`,
+      { callbackUrl, scope: { project: projectId } },
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'x-ads-region': 'US' } }
+    );
+  } catch (err) {
+    if (err.response?.status !== 409) throw err;
+    const existing = await findExisting();
+    if (!existing) throw err;
+    return { hookId: existing.hookId, adopted: true };
+  }
+  const location = response.headers?.location || '';
+  const hookId = location.split('?')[0].split('/').filter(Boolean).pop() || response.data?.hookId || (await findExisting())?.hookId || null;
+  if (!hookId) throw new Error('ACC created the webhook but its id could not be found.');
+  return { hookId, adopted: false };
 }
 
 /**

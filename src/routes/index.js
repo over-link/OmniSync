@@ -152,20 +152,33 @@ router.get('/api/projects', requireLogin, async (req, res) => {
  * button used to require a click for (see /register-webhook below, kept
  * for recovery but no longer surfaced in the Setup UI). Never blocks the
  * save itself: PUBLIC_BASE_URL unset (e.g. local dev) or a registration
- * failure just leaves webhook_id unset, logged, recoverable later.
+ * failure just leaves webhook_id unset, logged, recoverable later — re-save
+ * the pairing and an already-existing hook is adopted (registerWebhook).
+ * `previous` is the project row before a re-pair: if it pointed at a
+ * different ACC project, that project's old hook is unregistered first so
+ * it doesn't linger.
  */
-async function _autoRegisterWebhook(userId, project) {
+async function _autoRegisterWebhook(userId, project, previous = null) {
   if (!process.env.PUBLIC_BASE_URL || process.env.PUBLIC_BASE_URL.includes('localhost')) {
     console.warn(`[webhook] Skipping auto-registration for project "${project.name}" — PUBLIC_BASE_URL not set to a real deployed URL.`);
     return;
+  }
+  if (previous?.webhook_id && previous.acc_project_id && previous.acc_project_id !== project.acc_project_id) {
+    try {
+      await accService.deleteWebhook(previous.owner_user_id || userId, previous.webhook_id);
+    } catch (err) {
+      console.warn(`[webhook] Couldn't unregister the old hook of "${project.name}" (continuing):`, err.response?.data || err.message);
+    }
   }
   try {
     // /webhook/acc-v2, not /webhook/acc — see the manual route below for
     // why (kept identical so registrations behave the same either way).
     const callbackUrl = `${process.env.PUBLIC_BASE_URL}/webhook/acc-v2`;
-    const hook = await accService.registerWebhook(userId, project, callbackUrl);
-    await pool.query('UPDATE projects SET webhook_id = $2 WHERE id = $1', [project.id, hook.hookId || hook.id || null]);
+    const { hookId, adopted } = await accService.registerWebhook(userId, project, callbackUrl);
+    await pool.query('UPDATE projects SET webhook_id = $2 WHERE id = $1', [project.id, hookId]);
+    console.log(`[webhook] "${project.name}": ${adopted ? 'adopted the existing' : 'registered a new'} ACC webhook ${hookId}.`);
   } catch (err) {
+    await pool.query('UPDATE projects SET webhook_id = NULL WHERE id = $1', [project.id]).catch(() => {});
     console.error(`[webhook] Auto-registration failed for project "${project.name}":`, err.response?.data || err.message);
   }
 }
@@ -292,10 +305,10 @@ router.patch('/api/projects/:id', requireProjectRole('project_admin'), async (re
   if (!name || !revizto_license_uuid || !revizto_project_uuid || !acc_hub_id || !acc_project_id) {
     return res.status(400).json({ error: 'name, revizto_license_uuid, revizto_project_uuid, acc_hub_id, acc_project_id are required' });
   }
-  if (!req.access.isLicenseAdmin) {
-    const existing = await _getProject(req.params.id);
-    if (!existing) return res.status(404).json({ error: 'Project not found' });
-    if (_isPaired(existing)) return res.status(403).json({ error: 'Only a license admin can change an existing pairing.' });
+  const existing = await _getProject(req.params.id); // the pairing before this change
+  if (!existing) return res.status(404).json({ error: 'Project not found' });
+  if (!req.access.isLicenseAdmin && _isPaired(existing)) {
+    return res.status(403).json({ error: 'Only a license admin can change an existing pairing.' });
   }
   if (await _refuseUnlessProjectAdminOnBoth(req, res, { revizto_region: revizto_region || 'virginia', revizto_license_uuid, revizto_project_uuid, acc_project_id })) return;
   const { rows } = await pool.query(
@@ -323,7 +336,7 @@ router.patch('/api/projects/:id', requireProjectRole('project_admin'), async (re
   );
   if (!rows[0]) return res.status(404).json({ error: 'Project not found' });
   membership.forget(rows[0].id); // re-paired: re-read who belongs to it
-  await _autoRegisterWebhook(req.session.userId, rows[0]);
+  await _autoRegisterWebhook(req.session.userId, rows[0], existing);
   res.json({ project: rows[0] });
 });
 
@@ -468,9 +481,9 @@ router.post('/api/projects/:id/register-webhook', requireProjectRole('project_ad
     // path is kept alive (still handled by the same code) in case it
     // recovers on its own over time, but new registrations use v2.
     const callbackUrl = `${process.env.PUBLIC_BASE_URL}/webhook/acc-v2`;
-    const hook = await accService.registerWebhook(req.session.userId, project, callbackUrl);
-    await pool.query('UPDATE projects SET webhook_id = $2 WHERE id = $1', [project.id, hook.hookId || hook.id || null]);
-    res.json({ ok: true, hook });
+    const { hookId, adopted } = await accService.registerWebhook(req.session.userId, project, callbackUrl);
+    await pool.query('UPDATE projects SET webhook_id = $2 WHERE id = $1', [project.id, hookId]);
+    res.json({ ok: true, hookId, adopted });
   } catch (err) {
     if (err instanceof ReconnectRequiredError) {
       return res.status(409).json({ error: `Reconnect required: ${err.provider}`, reason: err.reason });
