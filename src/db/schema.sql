@@ -546,4 +546,9 @@ UPDATE projects p SET revizto_license_uuid = t.license_id
   WHERE t.user_id = p.owner_user_id AND p.revizto_license_uuid IS NULL
     AND p.revizto_project_uuid IS NOT NULL AND t.license_id IS NOT NULL;
 
+-- Archived projects (License Administration → ⋯ → Archive): kept, but
+-- not synced (poll and webhook skip them) and hidden from everyone but
+-- license admins until unarchived.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+
 -- connect-pg-simple creates its own "session" table automatically on first run.

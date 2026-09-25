@@ -104,9 +104,6 @@ function _requireAccess(allowed, deniedMessage) {
 // License admins (and the primary): pairings, license/hub, app-wide settings.
 const requireLicenseAdmin = _requireAccess((req) => req.access.isLicenseAdmin, 'License admin access required.');
 
-// Only the primary license admin: managing who the license admins are.
-const requirePrimaryAdmin = _requireAccess((req) => req.access.isPrimary, 'Only the primary license admin can do this.');
-
 // Anyone who administers a project (license admins, project admins):
 // choosing their own Revizto license / ACC hub and browsing its projects,
 // to pair a project (project admins: only ones not paired yet).
@@ -195,7 +192,7 @@ async function _applyInviteLink(userId, code) {
 async function _denyUnlessMember(res, user) {
   const denied = access.denialMessage(await access.getAccess(user.id));
   if (!denied) return false;
-  console.warn(`[auth] Sign-in refused for ${user.email}: not a member of both Revizto and ACC on any of their projects (or couldn't verify).`);
+  console.warn(`[auth] Sign-in refused for ${user.email}: ${denied}`);
   res.status(403).json({ error: denied, code: 'access_denied' });
   return true;
 }
@@ -488,4 +485,4 @@ router.post('/auth/revizto/exchange', requireLogin, async (req, res) => {
   }
 });
 
-module.exports = { router, requireLogin, requireLicenseAdmin, requirePrimaryAdmin, requireAnyProjectAdmin, requireProjectRole };
+module.exports = { router, requireLogin, requireLicenseAdmin, requireAnyProjectAdmin, requireProjectRole };

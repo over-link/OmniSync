@@ -964,3 +964,51 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
 }
 .modal h2 { margin: 0 0 0.5rem; font-size: 1.1rem; color: var(--danger); }
 .modal p { margin: 0 0 1.1rem; line-height: 1.5; }
+.modal-neutral h2 { color: var(--ink); }
+.modal-actions { display: flex; gap: 0.5rem; }
+.btn.btn-danger { background: var(--danger); }
+.btn.btn-danger:hover { background: #8f1c13; }
+
+/* ── Row "⋯" menu (License Administration project actions) ────────── */
+.row-menu { position: relative; display: inline-block; margin-left: 0.4rem; vertical-align: middle; }
+button.row-menu-btn {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  padding: 0.2rem 0.45rem;
+  font-size: 1.05rem;
+  line-height: 1;
+  letter-spacing: 0.05em;
+}
+button.row-menu-btn:hover,
+button.row-menu-btn[aria-expanded="true"] { background: var(--paper); border-color: var(--line); color: var(--ink); }
+.row-menu-list {
+  position: fixed; /* top/right set from the button (license.js) */
+  z-index: 50;
+  min-width: 150px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 0.3rem 0;
+  text-align: left;
+}
+button.row-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: var(--ink);
+  font-weight: 500;
+  border-radius: 0;
+  padding: 0.45rem 0.9rem;
+}
+button.row-menu-item:hover { background: var(--paper); }
+button.row-menu-item.danger { color: var(--danger); }
+.license-table tr.archived td { color: var(--muted); }
+/* License admins: the "add" row at the bottom of the table — bubble box
+   starting under the Email column, button underneath. */
+.license-table tfoot td,
+.license-table tfoot td:last-child { border-bottom: none; padding-top: 0.8rem; text-align: left; white-space: normal; }
+.add-admin-chipbox { max-width: 440px; min-width: 0; }
+.add-admin-btn { display: block; margin-top: 0.6rem; }

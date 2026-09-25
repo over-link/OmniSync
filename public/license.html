@@ -18,6 +18,25 @@
     </header>
 
     <div id="license-app" class="hidden">
+      <div class="dash-tiles">
+        <div class="card dash-tile">
+          <div class="dash-tile-label">Project slot capacity</div>
+          <div class="dash-tile-value" id="tile-slots">—</div>
+        </div>
+        <div class="card dash-tile">
+          <div class="dash-tile-label">Project slots used</div>
+          <div class="dash-tile-value" id="tile-slots-used">—</div>
+        </div>
+        <div class="card dash-tile">
+          <div class="dash-tile-label">License expires</div>
+          <div class="dash-tile-value" id="tile-expires">—</div>
+        </div>
+        <div class="card dash-tile">
+          <div class="dash-tile-label">Total synced issues</div>
+          <div class="dash-tile-value" id="tile-synced">—</div>
+        </div>
+      </div>
+
       <section class="card">
         <div class="card-header-row">
           <h2>Projects</h2>
@@ -35,7 +54,7 @@
         <span id="new-project-result" class="result-text" role="status"></span>
         <div class="license-table-wrap">
           <table class="license-table">
-            <thead><tr><th>Project</th><th>Pairing</th><th>Owner</th><th>Members</th><th></th></tr></thead>
+            <thead><tr><th>Project</th><th>Pairing</th><th>Owner</th><th>Members</th><th>Synced issues</th><th></th></tr></thead>
             <tbody id="license-projects"></tbody>
           </table>
         </div>
@@ -44,19 +63,29 @@
 
       <section class="card">
         <h2>License admins</h2>
-        <p class="hint">License admins can create and pair projects and see every project under the license. Only the primary license admin can add or remove them.</p>
+        <p class="hint">License admins can create and pair projects, see every project under the license, and add or remove other license admins. The primary license admin can't be removed.</p>
         <div class="license-table-wrap">
           <table class="license-table">
             <thead><tr><th>Email</th><th>Role</th><th>Last sign-in</th><th></th></tr></thead>
             <tbody id="license-admins"></tbody>
+            <!-- Adding license admins (primary license admin only): a last row
+                 under the Email column — emails become bubbles like on the Team
+                 page (js/chips.js), with the button underneath. -->
+            <tfoot id="add-admin-row" class="hidden">
+              <tr>
+                <td colspan="4">
+                  <div id="add-admin-chipbox" class="chipbox add-admin-chipbox">
+                    <span id="add-admin-chips" class="chip-list"></span>
+                    <input id="add-admin-email" type="text" class="chipbox-input" placeholder="colleague@company.com" aria-label="New license admins' emails" />
+                  </div>
+                  <button type="submit" form="add-admin-form" class="btn add-admin-btn">Add license admin</button>
+                </td>
+              </tr>
+            </tfoot>
           </table>
         </div>
-        <form id="add-admin-form" class="field-row hidden" novalidate>
-          <input id="add-admin-email" type="email" placeholder="colleague@company.com" required />
-          <label class="inline-check"><input id="add-admin-send-email" type="checkbox" checked /> Email them</label>
-          <button type="submit" class="btn">Add license admin</button>
-        </form>
-        <span id="add-admin-result" class="result-text" role="status"></span>
+        <form id="add-admin-form" novalidate></form>
+        <div id="add-admin-result" class="result-text" role="status"></div>
       </section>
 
       <!-- App-wide, not per project: pauses the background sync (2-minute
@@ -79,6 +108,7 @@
     </div>
   </div>
   <script src="/js/nav.js"></script>
+  <script src="/js/chips.js"></script>
   <script src="/js/license.js"></script>
 </body>
 </html>

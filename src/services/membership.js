@@ -25,6 +25,7 @@ const reviztoService = require('./reviztoService');
 const MEMBER_CACHE_MS = 15 * 60 * 1000;
 
 const ACCESS_DENIED_MESSAGE = 'Access denied. You are not a member of both Revizto & ACC. Please contact your administrator.';
+const PROJECT_ARCHIVED_MESSAGE = 'Access denied. Your project has been archived. Please contact your administrator.';
 const COULD_NOT_VERIFY_MESSAGE =
   "Couldn't confirm your project membership right now — the project's Revizto or ACC connection isn't responding. Please try again later or contact your administrator.";
 
@@ -178,6 +179,7 @@ function forget(projectId) {
 
 module.exports = {
   ACCESS_DENIED_MESSAGE,
+  PROJECT_ARCHIVED_MESSAGE,
   COULD_NOT_VERIFY_MESSAGE,
   REVIZTO_LICENSE_ROLE_MESSAGE,
   MEMBER_CACHE_MS,

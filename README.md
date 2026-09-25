@@ -69,6 +69,21 @@ reminder before expiry once this goes beyond a prototype.
   to and when. See "Audit log" below. Open to Standard and Admin alike.
 - **Dashboards** — issues synced over time and sync activity charts (see "Dashboards page" below).
 - **License Administration** — projects (+ New Project), license admins, app-wide sync pause (see "Roles and project access").
+  Metric boxes at the top (same style as Dashboards): project slot capacity,
+  project slots used (projects created and not archived), license expiry, and
+  total synced issues (linked pairs across all projects; also a column per project).
+  Slots used can never exceed capacity: creating or unarchiving a project when
+  every slot is taken is refused with "No available project slots remain." (a
+  pop-up; server-side in `services/licenseTerms.js` `withProjectSlot`, which also
+  stops two admins taking the last slot at once). **Capacity (5) and expiry
+  (7/15/27) are placeholders** — `PROJECT_SLOT_CAPACITY` / `LICENSE_EXPIRES_ON` in
+  services/licenseTerms.js until the real license terms are wired up.
+  Each project row has a ⋯ menu (license admins), each action confirmed in a pop-up:
+  **Archive** (kept, but not synced — poll and webhook skip it — and hidden from
+  everyone but license admins; `projects.archived_at`), **Unarchive**, and
+  **Delete** (removes the project from this app with its links, mappings, members
+  and invite links, and unregisters its ACC webhook; Activity Log rows stay;
+  issues in Revizto and ACC are never touched).
 
 Navigation is a shared left sidebar (`public/js/nav.js`), loaded first on
 every page — it fetches auth state once, renders links based on role, and
@@ -1257,12 +1272,12 @@ Revizto→ACC direction can return the favor and recognize *this* comment.
 
 Two layers (`services/access.js` is the single source of truth; every
 route enforces it server-side via `routes/auth.js` `requireLicenseAdmin` /
-`requirePrimaryAdmin` / `requireProjectRole(minRole)`):
+`requireAnyProjectAdmin` / `requireProjectRole(minRole)`):
 
 | Role | Where it comes from | Can |
 |---|---|---|
-| **Primary license admin** | `users.role` (whoever set up the license) | everything below, plus add/remove license admins |
-| **License admin** | `users.role` | create projects (License Administration), pair and re-pair them (Project Setup step 1), app-wide sync pause; sees **every** project |
+| **Primary license admin** | `users.role` (whoever set up the license) | everything a license admin can; can't be removed |
+| **License admin** | `users.role` | create projects (License Administration), pair and re-pair them (Project Setup step 1), add or remove other license admins, app-wide sync pause; sees **every** project |
 | **Project admin** | `project_members.role`, per project | on their projects: field mapping, auto-sync, issue linking, webhooks, add, change or remove project admins and standard users; can pair one of their projects that isn't paired yet, never change an existing pairing |
 | **Standard** | `project_members.role`, per project | on their projects: Issues, Activity Log, Dashboards, Team (read-only), My Connections |
 
@@ -1313,8 +1328,10 @@ route enforces it server-side via `routes/auth.js` `requireLicenseAdmin` /
 - **You can give, change or remove roles up to your own** — a project
   admin can add, change or remove project admins and standard users on
   their projects (e.g. when someone leaves the company); a license admin
-  manages both; only the primary manages license admins. Nobody can change
-  their own role, and license admins are never managed from a project.
+  manages both; any license admin can add or remove other license admins
+  (never the primary, since 2026-09-25 — it used to be primary-only).
+  Nobody can change their own role, and license admins are never managed
+  from a project.
 - **New projects:** License Administration → "+ New Project" (name only,
   creator is owner until someone pairs it) → opens Project Setup with the project's pairing
   row ready. Until paired it shows "Not paired yet"; routes that need

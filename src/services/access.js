@@ -31,23 +31,27 @@ const isLicenseAdminRole = (role) => LICENSE_ROLES.includes(role);
  * Everything needed to decide access for one user:
  * { userId, email, licenseRole (or null), isLicenseAdmin, isPrimary,
  *   projectRoles: Map(projectId -> 'project_admin' | 'standard'),
- *   invitedProjectCount, unverifiedProjectIds: Set }.
+ *   invitedProjectCount, archivedProjectCount, unverifiedProjectIds: Set }.
  *
  * projectRoles holds only projects the person is invited to here AND
  * really belongs to in both Revizto and ACC (services/membership.js) — an
  * invite alone isn't access. invitedProjectCount counts every invite, so
  * callers can tell "invited but not a member anywhere" from "not invited";
- * unverifiedProjectIds are invites whose member lists couldn't be read.
+ * archived projects never count (archivedProjectCount says how many of
+ * their invites are to one); unverifiedProjectIds are invites whose member
+ * lists couldn't be read.
  */
 async function getAccess(userId) {
-  const [{ rows: userRows }, { rows: memberRows }] = await Promise.all([
+  const [{ rows: userRows }, { rows: inviteRows }] = await Promise.all([
     pool.query('SELECT id, email, role FROM users WHERE id = $1', [userId]),
     pool.query(
-      `SELECT pm.project_id, pm.role, p.id, p.name, p.owner_user_id, p.revizto_region, p.revizto_project_uuid, p.acc_project_id
-       FROM project_members pm JOIN projects p ON p.id = pm.project_id WHERE pm.user_id = $1`,
+      `SELECT pm.project_id, pm.role, p.id, p.name, p.owner_user_id, p.revizto_region, p.revizto_project_uuid, p.acc_project_id, p.archived_at
+       FROM project_members pm JOIN projects p ON p.id = pm.project_id
+       WHERE pm.user_id = $1`,
       [userId]
     ),
   ]);
+  const memberRows = inviteRows.filter((r) => !r.archived_at); // archived: no access
   const user = userRows[0];
   if (!user) return null;
   const licenseRole = isLicenseAdminRole(user.role) ? user.role : null;
@@ -73,6 +77,7 @@ async function getAccess(userId) {
     isPrimary: licenseRole === 'primary_license_admin',
     projectRoles,
     invitedProjectCount: memberRows.length,
+    archivedProjectCount: inviteRows.length - memberRows.length,
     unverifiedProjectIds,
   };
 }
@@ -89,6 +94,9 @@ function denialMessage(access) {
   // Couldn't read a project's lists at all — don't tell a real member
   // they aren't one.
   if (access.unverifiedProjectIds.size) return membership.COULD_NOT_VERIFY_MESSAGE;
+  // A project of theirs was archived and nothing else gives them access —
+  // say that, rather than "you're not a member".
+  if (access.archivedProjectCount) return membership.PROJECT_ARCHIVED_MESSAGE;
   return membership.ACCESS_DENIED_MESSAGE;
 }
 

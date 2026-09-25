@@ -35,35 +35,75 @@ const NAV_LINKS = [
 ];
 
 /**
- * Blocking pop-up with a title, a message and OK. On window so page
- * scripts can use it (account.js, setup.js).
+ * Blocking pop-up: a title, a message and buttons ({ label, className,
+ * value }). Resolves with the clicked button's value (Escape = the last
+ * button's). Built with textContent — messages can hold user data.
  */
-function showAlertDialog(titleText, message) {
+function _showDialog(titleText, message, buttons, { tone = 'danger' } = {}) {
   document.getElementById('alert-dialog')?.remove();
-  const backdrop = document.createElement('div');
-  backdrop.id = 'alert-dialog';
-  backdrop.className = 'modal-backdrop';
-  const dialog = document.createElement('div');
-  dialog.className = 'modal';
-  dialog.setAttribute('role', 'alertdialog');
-  dialog.setAttribute('aria-modal', 'true');
-  dialog.setAttribute('aria-labelledby', 'alert-dialog-title');
-  const title = document.createElement('h2');
-  title.id = 'alert-dialog-title';
-  title.textContent = titleText;
-  const body = document.createElement('p');
-  body.textContent = message;
-  const ok = document.createElement('button');
-  ok.className = 'btn';
-  ok.type = 'button';
-  ok.textContent = 'OK';
-  ok.addEventListener('click', () => backdrop.remove());
-  dialog.append(title, body, ok);
-  backdrop.appendChild(dialog);
-  document.body.appendChild(backdrop);
-  ok.focus();
+  return new Promise((resolve) => {
+    const backdrop = document.createElement('div');
+    backdrop.id = 'alert-dialog';
+    backdrop.className = 'modal-backdrop';
+    const dialog = document.createElement('div');
+    dialog.className = `modal${tone === 'neutral' ? ' modal-neutral' : ''}`;
+    dialog.setAttribute('role', 'alertdialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-labelledby', 'alert-dialog-title');
+    const title = document.createElement('h2');
+    title.id = 'alert-dialog-title';
+    title.textContent = titleText;
+    const body = document.createElement('p');
+    body.textContent = message;
+    const actions = document.createElement('div');
+    actions.className = 'modal-actions';
+    const close = (value) => {
+      document.removeEventListener('keydown', onKey);
+      backdrop.remove();
+      resolve(value);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') close(buttons[buttons.length - 1].value);
+    };
+    document.addEventListener('keydown', onKey);
+    const buttonEls = buttons.map((b) => {
+      const el = document.createElement('button');
+      el.type = 'button';
+      el.className = b.className || 'btn';
+      el.textContent = b.label;
+      el.addEventListener('click', () => close(b.value));
+      return el;
+    });
+    actions.append(...buttonEls);
+    dialog.append(title, body, actions);
+    backdrop.appendChild(dialog);
+    document.body.appendChild(backdrop);
+    buttonEls[buttonEls.length - 1].focus(); // the safe choice (OK / Cancel)
+  });
+}
+
+/** Pop-up with OK. On window so page scripts can use it (account.js, setup.js). */
+function showAlertDialog(titleText, message) {
+  return _showDialog(titleText, message, [{ label: 'OK', value: true }]);
 }
 window.showAlertDialog = showAlertDialog;
+
+/**
+ * "Are you sure?" pop-up — resolves true only if the person clicks the
+ * confirm button. `danger` makes the title and button red (e.g. Delete).
+ */
+function showConfirmDialog(titleText, message, { confirmLabel = 'Confirm', danger = false } = {}) {
+  return _showDialog(
+    titleText,
+    message,
+    [
+      { label: confirmLabel, className: danger ? 'btn btn-danger' : 'btn', value: true },
+      { label: 'Cancel', className: 'btn secondary', value: false },
+    ],
+    { tone: danger ? 'danger' : 'neutral' }
+  );
+}
+window.showConfirmDialog = showConfirmDialog;
 
 /**
  * "Access denied" — when sign-in is refused because the person isn't a

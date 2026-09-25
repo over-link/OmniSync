@@ -149,86 +149,17 @@ async function loadTeam() {
 }
 
 // ─── Chip-list email input ("Add someone") ─────────────────────────
-// Paste a whole list — from a spreadsheet, Word doc, email "To:" field,
-// however it's separated — and each parsed address becomes its own
-// removable chip, so it's unambiguous exactly who's queued to be added.
-
-// Splits on commas, semicolons, and any whitespace (newlines included).
-function _parseEmails(raw) {
-  return raw.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
-}
-
-let pendingEmails = [];
-
-function _renderChips() {
-  const list = document.getElementById('invite-email-chips');
-  list.innerHTML = '';
-  pendingEmails.forEach((email, i) => {
-    const chip = document.createElement('span');
-    chip.className = 'chip';
-    chip.textContent = email; // pasted text — never as HTML
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'chip-remove';
-    remove.title = 'Remove';
-    remove.setAttribute('aria-label', `Remove ${email}`);
-    remove.textContent = '×';
-    remove.addEventListener('click', () => {
-      pendingEmails.splice(i, 1);
-      _renderChips();
-    });
-    chip.appendChild(remove);
-    list.appendChild(chip);
-  });
-}
-
-// Adds every email parsed out of `raw` as a chip, deduped against what's
-// already queued.
-function _addEmailsFromText(raw) {
-  for (const email of _parseEmails(raw)) {
-    if (!pendingEmails.includes(email)) pendingEmails.push(email);
-  }
-  _renderChips();
-}
-
-const chipInput = document.getElementById('invite-email-input');
-const chipbox = document.getElementById('invite-email-chipbox');
-
-chipInput.addEventListener('paste', (e) => {
-  e.preventDefault();
-  _addEmailsFromText(e.clipboardData.getData('text'));
-  chipInput.value = '';
-});
-
-// Enter, comma, or semicolon commits what's typed; Backspace on an empty
-// input removes the last chip.
-chipInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' || e.key === ',' || e.key === ';') {
-    e.preventDefault();
-    if (chipInput.value.trim()) _addEmailsFromText(chipInput.value);
-    chipInput.value = '';
-  } else if (e.key === 'Backspace' && !chipInput.value && pendingEmails.length) {
-    pendingEmails.pop();
-    _renderChips();
-  }
-});
-
-// Anything left half-typed still becomes a chip when focus leaves.
-chipInput.addEventListener('blur', () => {
-  if (chipInput.value.trim()) _addEmailsFromText(chipInput.value);
-  chipInput.value = '';
-});
-
-chipbox.addEventListener('click', (e) => {
-  if (e.target === chipbox || e.target.id === 'invite-email-chips') chipInput.focus();
+// Paste a whole list and each address becomes its own removable bubble
+// (public/js/chips.js, shared with License Administration).
+const inviteChips = createEmailChipInput({
+  box: document.getElementById('invite-email-chipbox'),
+  list: document.getElementById('invite-email-chips'),
+  input: document.getElementById('invite-email-input'),
 });
 
 document.getElementById('invite-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  if (chipInput.value.trim()) _addEmailsFromText(chipInput.value);
-  chipInput.value = '';
-
-  const emails = pendingEmails;
+  const emails = inviteChips.take();
   const role = document.getElementById('invite-role').value;
   const resultEl = document.getElementById('invite-result');
   if (!emails.length) {
@@ -254,8 +185,7 @@ document.getElementById('invite-form').addEventListener('submit', async (e) => {
     div.textContent = line;
     resultEl.appendChild(div);
   }
-  pendingEmails = [];
-  _renderChips();
+  inviteChips.clear();
   await loadTeam();
 });
 

@@ -13,6 +13,7 @@ const auditLog = require('../services/auditLog');
 const dashboards = require('../services/dashboards');
 const access = require('../services/access');
 const membership = require('../services/membership');
+const licenseTerms = require('../services/licenseTerms');
 const { ReconnectRequiredError } = require('../services/authManager');
 
 // ─── Revizto license browser (for the license dropdown) ─────────────
@@ -132,13 +133,14 @@ async function _projectScope(req) {
   return allowed;
 }
 
-// Only the projects this person can access (license admins: all), each
+// Only the projects this person can access (license admins: all, except
+// archived ones — those are only on License Administration), each
 // with their role on it, so pages can show/hide admin-only controls.
 router.get('/api/projects', requireLogin, async (req, res) => {
   const userAccess = req.access; // loaded by requireLogin
   const allowed = access.accessibleProjectIds(userAccess);
   const { rows } = await pool.query(
-    'SELECT * FROM projects WHERE ($1::int[] IS NULL OR id = ANY($1)) ORDER BY created_at DESC',
+    'SELECT * FROM projects WHERE archived_at IS NULL AND ($1::int[] IS NULL OR id = ANY($1)) ORDER BY created_at DESC',
     [allowed]
   );
   res.json({ projects: rows.map((p) => ({ ...p, my_role: access.effectiveProjectRole(userAccess, p.id) })) });
@@ -230,27 +232,36 @@ router.post('/api/projects', requireLicenseAdmin, async (req, res) => {
   ) {
     return;
   }
-  const { rows } = await pool.query(
-    `INSERT INTO projects (name, revizto_project_uuid, revizto_project_id, revizto_region, acc_hub_id, acc_project_id, acc_project_name, acc_default_subtype_id, owner_user_id,
-                           revizto_license_uuid, revizto_license_name, acc_hub_name)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
-    [
-      trimmedName,
-      revizto_project_uuid || null,
-      revizto_project_id || null,
-      revizto_region || 'virginia',
-      acc_hub_id || null,
-      acc_project_id || null,
-      acc_project_name || null,
-      acc_default_subtype_id || null,
-      // The creating license admin owns it by default — background syncing
-      // runs on the owner's Revizto/ACC connections.
-      makeMeOwner === false ? null : req.session.userId,
-      revizto_license_uuid || null,
-      revizto_license_name || null,
-      acc_hub_name || null,
-    ]
-  );
+  // Takes a project slot — refused when the license has none left.
+  let rows;
+  try {
+    ({ rows } = await licenseTerms.withProjectSlot((db) =>
+      db.query(
+        `INSERT INTO projects (name, revizto_project_uuid, revizto_project_id, revizto_region, acc_hub_id, acc_project_id, acc_project_name, acc_default_subtype_id, owner_user_id,
+                               revizto_license_uuid, revizto_license_name, acc_hub_name)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+        [
+          trimmedName,
+          revizto_project_uuid || null,
+          revizto_project_id || null,
+          revizto_region || 'virginia',
+          acc_hub_id || null,
+          acc_project_id || null,
+          acc_project_name || null,
+          acc_default_subtype_id || null,
+          // The creating license admin owns it by default — background syncing
+          // runs on the owner's Revizto/ACC connections.
+          makeMeOwner === false ? null : req.session.userId,
+          revizto_license_uuid || null,
+          revizto_license_name || null,
+          acc_hub_name || null,
+        ]
+      )
+    ));
+  } catch (err) {
+    if (err instanceof licenseTerms.NoProjectSlotsError) return res.status(409).json({ error: err.message, code: err.code });
+    throw err;
+  }
   if (_isPaired(rows[0])) await _autoRegisterWebhook(req.session.userId, rows[0]);
   res.json({ project: rows[0] });
 });
@@ -748,7 +759,7 @@ async function _handleAccWebhookRequest(req, res) {
   // Confirmed from a real webhook delivery: scope is nested under
   // hook.scope.project, not top-level hookScope.project as originally
   // guessed.
-  const { rows: projects } = await pool.query('SELECT * FROM projects WHERE acc_project_id IS NOT NULL');
+  const { rows: projects } = await pool.query('SELECT * FROM projects WHERE acc_project_id IS NOT NULL AND archived_at IS NULL'); // archived: not synced
   const project = projects.find((p) => req.body?.hook?.scope?.project === p.acc_project_id.replace(/^b\./, ''));
   if (!project || !project.owner_user_id) {
     console.warn('[webhook] No matching project/owner for payload:', req.body?.hook?.scope);
@@ -798,6 +809,9 @@ async function requirePaired(req, res, next) {
   try {
     const project = await _getProject(req.params.id);
     if (!project) return res.status(404).json({ error: 'Project not found' });
+    if (project.archived_at) {
+      return res.status(409).json({ error: `"${project.name}" is archived — a license admin can unarchive it on License Administration.` });
+    }
     if (!_isPaired(project)) {
       return res.status(409).json({ error: `"${project.name}" isn't paired to Revizto and ACC yet — a license admin can pair it on Project Setup.` });
     }
