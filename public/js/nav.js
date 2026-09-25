@@ -83,16 +83,25 @@ async function loadNav() {
           ${NAV_LINKS.filter((l) => !l.adminOnly || isAdmin)
             .map((l) => {
               if (l.disabled) return `<span class="sidebar-link disabled" title="Not built yet">${l.label}</span>`;
+              // Locked until signed in with both accounts connected — only My
+              // Connections, where that happens, stays open.
+              if (!fullyConnected && l.href !== '/account') {
+                return `<span class="sidebar-link disabled" title="${user ? 'Connect both Revizto and ACC first' : 'Sign in first'}">${l.label}</span>`;
+              }
               const active = path === l.href ? ' active' : '';
               return `<a href="${l.href}" class="sidebar-link${active}">${l.label}</a>`;
             })
             .join('')}
         </nav>
         <div class="sidebar-footer">
-          ${user ? `<div class="sidebar-user">${user.email}<span class="badge badge-${isAdmin ? 'warning' : 'neutral'}">${user.role}</span></div>` : ''}
+          ${user ? `<div class="sidebar-user">${user.email}<span class="badge badge-${isAdmin ? 'warning' : 'neutral'}">${user.role}</span><button type="button" id="sidebar-signout" class="link-btn sidebar-signout">Sign out</button></div>` : ''}
         </div>
       </div>
     `;
+    document.getElementById('sidebar-signout')?.addEventListener('click', async () => {
+      await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+      window.location.replace('/account');
+    });
   }
 
   // Wait until every page script has run before announcing. /auth/me can

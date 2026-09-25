@@ -33,7 +33,9 @@ app.use(
     cookie: {
       secure: process.env.NODE_ENV === 'production',
       httpOnly: true,
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      // Sign-in lasts 14 days, then everyone signs in again (enforced
+      // server-side too, see routes/auth.js SESSION_MAX_AGE_MS).
+      maxAge: 14 * 24 * 60 * 60 * 1000,
     },
   })
 );

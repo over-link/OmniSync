@@ -2,85 +2,224 @@
  * routes/auth.js
  *
  * Three separate auth concerns, don't confuse them:
- *   1. App identity — who is using THIS app. Prototype-level: just an
- *      email, no password. Replace with real auth (e.g. Clerk/Auth0)
- *      before onboarding real customers — this is intentionally minimal.
+ *   1. App identity — who is using THIS app: email + password sign-in
+ *      (services/passwords.js), with emailed set/reset-password links and
+ *      sessions that end 14 days after sign-in regardless of activity.
  *   2. ACC connection — per-user 3-legged Autodesk OAuth (redirect flow).
  *   3. Revizto connection — per-user access-code paste flow (no redirect
  *      support on Revizto's side, per their docs).
  */
 const express = require('express');
+const path = require('path');
 const router = express.Router();
 const pool = require('../db/pool');
 const accAuth = require('../services/accAuth');
 const reviztoAuth = require('../services/reviztoAuth');
 const tokenStore = require('../services/tokenStore');
+const passwords = require('../services/passwords');
+const emailService = require('../services/emailService');
 
-function requireLogin(req, res, next) {
-  if (!req.session.userId) return res.status(401).json({ error: 'Not logged in' });
-  next();
+// Everyone signs in again at least this often, however active they are —
+// so access decisions (removed from the team, password reset) can't be
+// outlived by a long-running session. Matches the cookie's maxAge in
+// server.js; this is the server-side enforcement of it.
+const SESSION_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * The signed-in user's row if this session is still valid, else null
+ * (and the session is destroyed). Invalid when: no sign-in time recorded
+ * (sessions from before password sign-in existed — everyone signs in with
+ * a password once), older than SESSION_MAX_AGE_MS, started before the
+ * user's last password change, or the user no longer exists.
+ */
+async function _sessionUser(req) {
+  if (!req.session.userId) return null;
+  const signedInAt = req.session.signedInAt || 0;
+  const { rows } = await pool.query('SELECT id, email, role, password_changed_at FROM users WHERE id = $1', [req.session.userId]);
+  const user = rows[0];
+  const expired =
+    !user ||
+    Date.now() - signedInAt > SESSION_MAX_AGE_MS ||
+    (user.password_changed_at && new Date(user.password_changed_at).getTime() > signedInAt);
+  if (expired) {
+    await new Promise((resolve) => req.session.destroy(resolve));
+    return null;
+  }
+  req.session.role = user.role; // keep the session's cached role current
+  return user;
+}
+
+async function requireLogin(req, res, next) {
+  try {
+    if (!(await _sessionUser(req))) return res.status(401).json({ error: 'Your session has ended — please sign in again.' });
+    next();
+  } catch (err) {
+    next(err);
+  }
 }
 
 async function requireAdmin(req, res, next) {
-  if (!req.session.userId) return res.status(401).json({ error: 'Not logged in' });
-  const { rows } = await pool.query('SELECT role FROM users WHERE id = $1', [req.session.userId]);
-  if (rows[0]?.role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
-  req.session.role = 'admin'; // keep session cache in sync
-  next();
+  try {
+    const user = await _sessionUser(req);
+    if (!user) return res.status(401).json({ error: 'Your session has ended — please sign in again.' });
+    if (user.role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
+    next();
+  } catch (err) {
+    next(err);
+  }
 }
 
 // ─── 1. App identity ────────────────────────────────────────────────
 
-// Signing back in (email already has a users row) never needs an invite
-// code — this only gates brand-new account creation. Two exemptions from
-// needing a code at all: the very first user ever (bootstrap admin, same
-// as before) and, obviously, anyone already in `users`. Everyone else
-// creating a NEW account needs a valid, non-revoked code from
-// invite_links (see "Copy invite link" on the Team page) — closes what
-// was previously open self-signup for anyone who found the URL.
-router.post('/auth/identify', async (req, res) => {
-  const email = req.body.email?.toLowerCase().trim();
-  const inviteCode = req.body.invite?.trim() || null;
-  if (!email) return res.status(400).json({ error: 'email required' });
+function _appUrl(req) {
+  return process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
+}
 
-  const { rows: existingRows } = await pool.query('SELECT id, email, role FROM users WHERE email = $1', [email]);
+/**
+ * Emails a set/reset link. Without SMTP (local dev), or if sending fails,
+ * the link is written to the server log instead so an admin with log
+ * access can still get someone in — then rethrows a send failure so the
+ * caller can say so rather than claim an email went out.
+ */
+async function _emailPasswordLink(req, user, purpose) {
+  const token = await passwords.createLinkToken(user.id, purpose);
+  const url = `${_appUrl(req)}/reset-password?token=${encodeURIComponent(token)}`;
+  if (!emailService.isConfigured()) {
+    console.warn(`[auth] SMTP not configured — ${purpose}-password link for ${user.email}: ${url}`);
+    return;
+  }
+  try {
+    await emailService.sendPasswordLinkEmail({ toEmail: user.email, url, purpose });
+  } catch (err) {
+    console.error(`[auth] Couldn't email the ${purpose}-password link to ${user.email} (${err.message}). Link: ${url}`);
+    throw err;
+  }
+}
+
+// Brute-force brake: at most FAILED_LOGIN_LIMIT wrong passwords per
+// email+IP per window. In memory (resets on restart) — enough to make
+// online guessing impractical without a new dependency.
+const FAILED_LOGIN_LIMIT = 10;
+const FAILED_LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const _failedLogins = new Map();
+
+function _recentFailures(key) {
+  const recent = (_failedLogins.get(key) || []).filter((t) => Date.now() - t < FAILED_LOGIN_WINDOW_MS);
+  _failedLogins.set(key, recent);
+  return recent;
+}
+
+const PASSWORD_LINK_SENT = 'Check your email — we sent you a link to set your password. It expires in 72 hours.';
+
+// Sign-in. An account with no password yet (invited, or created before
+// passwords existed) gets a set-password link emailed instead of signing
+// in — email ownership is proven by that link, so nobody can claim an
+// account just by typing its address. New accounts still need a valid
+// invite code, except the very first user ever (bootstrap admin).
+router.post('/auth/login', async (req, res) => {
+  const email = req.body.email?.toLowerCase().trim();
+  const password = req.body.password || '';
+  const inviteCode = req.body.invite?.trim() || null;
+  if (!email) return res.status(400).json({ error: 'Enter your email.' });
+
+  const failures = _recentFailures(`${req.ip}|${email}`);
+  if (failures.length >= FAILED_LOGIN_LIMIT) {
+    return res.status(429).json({ error: 'Too many sign-in attempts. Wait 15 minutes, or reset your password.' });
+  }
+
+  const { rows: existingRows } = await pool.query('SELECT id, email, role, password_hash FROM users WHERE email = $1', [email]);
   let user = existingRows[0];
 
-  if (user) {
-    await pool.query('UPDATE users SET last_login_at = now() WHERE id = $1', [user.id]);
-  } else {
+  if (!user) {
     const { rows: countRows } = await pool.query('SELECT count(*) FROM users');
     const isFirstEverUser = Number(countRows[0].count) === 0;
-
     // Bootstrap: the very first user ever created becomes admin
     // immediately, no invite needed — otherwise nobody could ever create
     // the first invite link in the first place.
     let role = 'admin';
     if (!isFirstEverUser) {
       if (!inviteCode) {
-        return res.status(403).json({ error: 'An invite link is required to sign up. Ask a team admin for one.' });
+        return res.status(403).json({ error: 'No account for this email. Ask a team admin for an invite link.' });
       }
-      const { rows: linkRows } = await pool.query(
-        'SELECT role FROM invite_links WHERE code = $1 AND revoked_at IS NULL',
-        [inviteCode]
-      );
+      const { rows: linkRows } = await pool.query('SELECT role FROM invite_links WHERE code = $1 AND revoked_at IS NULL', [inviteCode]);
       if (!linkRows[0]) {
         return res.status(403).json({ error: 'This invite link is invalid or has been revoked. Ask a team admin for a new one.' });
       }
       role = linkRows[0].role;
     }
-
     const { rows: createdRows } = await pool.query(
-      'INSERT INTO users (email, role, last_login_at) VALUES ($1, $2, now()) RETURNING id, email, role',
+      'INSERT INTO users (email, role) VALUES ($1, $2) RETURNING id, email, role, password_hash',
       [email, role]
     );
     user = createdRows[0];
   }
 
+  if (!user.password_hash) {
+    try {
+      await _emailPasswordLink(req, user, 'set');
+    } catch {
+      return res.status(502).json({ error: "We couldn't send your set-password email just now. Try again in a few minutes, or contact your administrator." });
+    }
+    return res.json({ status: 'password_link_sent', message: PASSWORD_LINK_SENT });
+  }
+
+  if (!(await passwords.verifyPassword(password, user.password_hash))) {
+    failures.push(Date.now());
+    return res.status(401).json({ error: 'Incorrect email or password.' });
+  }
+  _failedLogins.delete(`${req.ip}|${email}`);
+
+  // A fresh session id on every sign-in (no session fixation).
+  await new Promise((resolve, reject) => req.session.regenerate((err) => (err ? reject(err) : resolve())));
   req.session.userId = user.id;
   req.session.userEmail = user.email;
   req.session.role = user.role;
+  req.session.signedInAt = Date.now();
+  await pool.query('UPDATE users SET last_login_at = now() WHERE id = $1', [user.id]);
   res.json({ user: { id: user.id, email: user.email, role: user.role } });
+});
+
+// "Forgot password": always the same answer whether or not the email has
+// an account, so this can't be used to discover who's on the team. At
+// most one email per address per minute.
+const _lastResetEmail = new Map();
+router.post('/auth/forgot-password', async (req, res) => {
+  const email = req.body.email?.toLowerCase().trim();
+  if (!email) return res.status(400).json({ error: 'Enter your email.' });
+  const reply = { message: 'If that email has an account, we sent a link to reset the password. It expires in 1 hour.' };
+  if (Date.now() - (_lastResetEmail.get(email) || 0) < 60 * 1000) return res.json(reply);
+  _lastResetEmail.set(email, Date.now());
+  const { rows } = await pool.query('SELECT id, email FROM users WHERE email = $1', [email]);
+  if (rows[0]) {
+    try {
+      await _emailPasswordLink(req, rows[0], 'reset');
+    } catch (err) {
+      console.error(`[auth] Couldn't send reset email to ${email}:`, err.message);
+    }
+  }
+  res.json(reply);
+});
+
+const LINK_INVALID = 'This link is invalid, expired, or already used. Request a new one from the sign-in page.';
+
+// What the set/reset page shows before the new password is entered.
+router.get('/auth/password-link', async (req, res) => {
+  const link = await passwords.lookupLinkToken(req.query.token);
+  if (!link) return res.status(404).json({ error: LINK_INVALID });
+  res.json({ email: link.email, purpose: link.purpose });
+});
+
+router.post('/auth/set-password', async (req, res) => {
+  const { token, password } = req.body;
+  const problem = passwords.validatePassword(password);
+  if (problem) return res.status(400).json({ error: problem });
+  const result = await passwords.setPasswordWithToken(token, password);
+  if (!result) return res.status(404).json({ error: LINK_INVALID });
+  res.json({ ok: true, email: result.email });
+});
+
+router.get('/reset-password', (req, res) => {
+  res.sendFile(path.join(__dirname, '../../public/reset-password.html'));
 });
 
 router.post('/auth/logout', (req, res) => {
@@ -88,10 +227,9 @@ router.post('/auth/logout', (req, res) => {
 });
 
 router.get('/auth/me', async (req, res) => {
-  if (!req.session.userId) return res.json({ user: null });
-  const { rows: userRows } = await pool.query('SELECT role FROM users WHERE id = $1', [req.session.userId]);
-  const role = userRows[0]?.role || 'standard';
-  req.session.role = role;
+  const sessionUser = await _sessionUser(req);
+  if (!sessionUser) return res.json({ user: null });
+  const role = sessionUser.role;
   const accTokens = await tokenStore.getAccTokens(req.session.userId);
   const reviztoTokens = await tokenStore.getReviztoTokens(req.session.userId);
 
@@ -140,7 +278,7 @@ router.get('/auth/me', async (req, res) => {
 
 // License ID is needed to browse "my Revizto projects" (GET /project/list)
 // but not to connect — kept as a separate step so connecting stays simple.
-router.post('/auth/revizto/license', requireLogin, async (req, res) => {
+router.post('/auth/revizto/license', requireAdmin, async (req, res) => {
   const { licenseId, licenseRegion } = req.body;
   if (!licenseId) return res.status(400).json({ error: 'licenseId required' });
   const tokens = await tokenStore.getReviztoTokens(req.session.userId);
@@ -154,7 +292,7 @@ router.post('/auth/revizto/license', requireLogin, async (req, res) => {
 // Mirrors /auth/revizto/license — the ACC hub is the equivalent "current
 // context" selection that scopes the ACC project dropdown, the same way
 // license scopes the Revizto project dropdown.
-router.post('/auth/acc/hub', requireLogin, async (req, res) => {
+router.post('/auth/acc/hub', requireAdmin, async (req, res) => {
   const { hubId } = req.body;
   if (!hubId) return res.status(400).json({ error: 'hubId required' });
   const tokens = await tokenStore.getAccTokens(req.session.userId);

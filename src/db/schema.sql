@@ -460,4 +460,24 @@ ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS last_seen_acc_attachment_count INT
 -- one, so that timestamp IS the sync date.
 ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS linked_at TIMESTAMPTZ;
 
+-- Password sign-in (services/passwords.js). password_hash is NULL for an
+-- account that hasn't set one yet (invited, or created before passwords
+-- existed) — signing in then emails a "set your password" link instead.
+-- password_changed_at ends every session that started before it.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ;
+
+-- One-time emailed links for setting/resetting a password. Only a SHA-256
+-- of the token is stored. purpose: 'set' | 'reset'.
+CREATE TABLE IF NOT EXISTS password_tokens (
+  id          SERIAL PRIMARY KEY,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash  TEXT UNIQUE NOT NULL,
+  purpose     TEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at  TIMESTAMPTZ NOT NULL,
+  used_at     TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS password_tokens_user_idx ON password_tokens(user_id);
+
 -- connect-pg-simple creates its own "session" table automatically on first run.

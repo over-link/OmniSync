@@ -14,6 +14,9 @@ function render({ user, acc, revizto }) {
     document.getElementById('connections-section').classList.add('hidden');
     return;
   }
+  // Signed in: the sign-in forms are done with.
+  document.getElementById('signin-form').classList.add('hidden');
+  document.getElementById('forgot-form').classList.add('hidden');
   document.getElementById('whoami').textContent = `Signed in as ${user.email}`;
   document.getElementById('connections-section').classList.remove('hidden');
 
@@ -48,14 +51,56 @@ window.addEventListener('app:ready', (e) => render(e.detail));
 // server-side), but harmless to always include.
 const inviteCode = new URLSearchParams(location.search).get('invite');
 
-document.getElementById('identify-btn').addEventListener('click', async () => {
+document.getElementById('signin-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
   const email = document.getElementById('email-input').value.trim();
+  const password = document.getElementById('password-input').value;
   const whoamiEl = document.getElementById('whoami');
-  if (!email) return;
+  if (!email) {
+    whoamiEl.textContent = 'Enter your email.';
+    return;
+  }
+  const btn = document.getElementById('identify-btn');
+  btn.disabled = true;
   try {
-    await api('/auth/identify', { method: 'POST', body: JSON.stringify({ email, invite: inviteCode }) });
-    await refreshMe();
+    const result = await api('/auth/login', { method: 'POST', body: JSON.stringify({ email, password, invite: inviteCode }) });
+    // No password on this account yet — a set-password link was emailed.
+    if (result.status === 'password_link_sent') {
+      whoamiEl.textContent = result.message;
+      return;
+    }
     location.reload(); // refresh sidebar too, now that we're signed in
+  } catch (err) {
+    whoamiEl.textContent = err.message;
+    document.getElementById('password-input').value = '';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function _showForgot(show) {
+  document.getElementById('signin-form').classList.toggle('hidden', show);
+  document.getElementById('forgot-form').classList.toggle('hidden', !show);
+  document.getElementById('whoami').textContent = '';
+  if (show) {
+    document.getElementById('forgot-email-input').value = document.getElementById('email-input').value;
+    document.getElementById('forgot-email-input').focus();
+  }
+}
+document.getElementById('forgot-toggle').addEventListener('click', () => _showForgot(true));
+document.getElementById('forgot-cancel').addEventListener('click', () => _showForgot(false));
+
+document.getElementById('forgot-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = document.getElementById('forgot-email-input').value.trim();
+  const whoamiEl = document.getElementById('whoami');
+  if (!email) {
+    whoamiEl.textContent = 'Enter your email.';
+    return;
+  }
+  try {
+    const { message } = await api('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) });
+    whoamiEl.textContent = message;
   } catch (err) {
     whoamiEl.textContent = err.message;
   }

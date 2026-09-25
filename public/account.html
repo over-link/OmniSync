@@ -20,11 +20,27 @@
     <section id="identify-section" class="card">
       <div class="step-label">Step 1</div>
       <h2>Sign in</h2>
-      <div class="field-row">
-        <input id="email-input" type="email" placeholder="you@company.com" />
-        <button id="identify-btn" class="btn">Continue</button>
-      </div>
-      <div id="whoami" class="whoami"></div>
+      <form id="signin-form" class="signin-form" novalidate>
+        <label for="email-input">Email</label>
+        <input id="email-input" type="email" autocomplete="username" placeholder="you@company.com" required />
+        <label for="password-input">Password</label>
+        <input id="password-input" type="password" autocomplete="current-password" required />
+        <div class="signin-actions">
+          <button id="identify-btn" type="submit" class="btn">Sign in</button>
+          <button id="forgot-toggle" type="button" class="link-btn">Forgot password?</button>
+        </div>
+        <p class="hint">First time signing in? Enter your email and leave the password blank — we'll email you a link to set one.</p>
+      </form>
+      <form id="forgot-form" class="signin-form hidden" novalidate>
+        <p class="hint">Enter your email and we'll send you a link to reset your password.</p>
+        <label for="forgot-email-input">Email</label>
+        <input id="forgot-email-input" type="email" autocomplete="username" placeholder="you@company.com" required />
+        <div class="signin-actions">
+          <button type="submit" class="btn">Send reset link</button>
+          <button id="forgot-cancel" type="button" class="link-btn">Back to sign in</button>
+        </div>
+      </form>
+      <div id="whoami" class="whoami" role="status"></div>
     </section>
 
     <section id="connections-section" class="card hidden">
