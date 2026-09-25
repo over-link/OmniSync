@@ -93,15 +93,32 @@ async function loadNav() {
             })
             .join('')}
         </nav>
-        <div class="sidebar-footer">
-          ${user ? `<div class="sidebar-user">${user.email}<span class="badge badge-${isAdmin ? 'warning' : 'neutral'}">${user.role}</span><button type="button" id="sidebar-signout" class="link-btn sidebar-signout">Sign out</button></div>` : ''}
-        </div>
       </div>
     `;
-    document.getElementById('sidebar-signout')?.addEventListener('click', async () => {
+  }
+
+  // Who's signed in + Sign out: top right of every page, in a slim strip
+  // above the page title (so it never collides with a header's own buttons).
+  const app = document.getElementById('app');
+  if (user && app) {
+    const bar = document.createElement('div');
+    bar.className = 'header-user';
+    const email = document.createElement('span');
+    email.className = 'header-user-email';
+    email.textContent = user.email;
+    const badge = document.createElement('span');
+    badge.className = `badge badge-${isAdmin ? 'warning' : 'neutral'}`;
+    badge.textContent = user.role;
+    const signOut = document.createElement('button');
+    signOut.type = 'button';
+    signOut.className = 'btn secondary header-signout';
+    signOut.textContent = 'Sign out';
+    signOut.addEventListener('click', async () => {
       await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
       window.location.replace('/account');
     });
+    bar.append(email, badge, signOut);
+    app.prepend(bar);
   }
 
   // Wait until every page script has run before announcing. /auth/me can
