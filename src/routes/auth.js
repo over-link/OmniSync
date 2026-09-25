@@ -116,7 +116,7 @@ async function _startSession(req, user) {
 // email+IP per window. In memory (resets on restart) — enough to make
 // online guessing impractical without a new dependency. (Wrong codes have
 // their own, stricter per-code limit — see passwords.MAX_CODE_ATTEMPTS.)
-const FAILED_LOGIN_LIMIT = 10;
+const FAILED_LOGIN_LIMIT = 5;
 const FAILED_LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const _failedLogins = new Map();
 

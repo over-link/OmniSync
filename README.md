@@ -1272,7 +1272,7 @@ Revizto→ACC direction can return the favor and recognize *this* comment.
   not timestamps: the database's and the app server's clocks can differ
   slightly). Sessions from before passwords existed end on deploy, so
   everyone signs in with a password once.
-- **Brute force:** 10 wrong passwords per email+IP per 15 minutes, then a
+- **Brute force:** 5 wrong passwords per email+IP per 15 minutes, then a
   pause (in memory).
 - **Tested end to end** against a local server with a throwaway account
   (first-time code, wrong/reused code, password rules, sign-in/out, wrong
