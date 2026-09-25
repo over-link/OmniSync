@@ -7,7 +7,7 @@ const emailService = require('../services/emailService');
 
 const VALID_ROLES = ['admin', 'standard'];
 
-// last_login_at is its own column (set on every /auth/identify); latest
+// last_login_at is its own column (set on every sign-in, /auth/login); latest
 // sync activity isn't stored separately — it's read live from audit_log,
 // which already records every real action (field change/comment/
 // attachment/link/unlink) traced back to a specific person. Case-
@@ -91,7 +91,7 @@ router.patch('/api/team/:id/role', requireAdmin, async (req, res) => {
 // ─── Invite links ("Copy invite link", one per role) ──────────────────
 // Shareable and reusable by design — meant to be pasted into an email/
 // Slack message to a whole group at once, not a single-use, single-
-// recipient token. See invite_links in schema.sql and /auth/identify for
+// recipient token. See invite_links in schema.sql and /auth/login for
 // how a code is actually redeemed on signup.
 
 router.get('/api/team/invite-links', requireAdmin, async (req, res) => {
