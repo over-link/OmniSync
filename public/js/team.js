@@ -1,6 +1,7 @@
 // Team: members of one project at a time, with their role. Anyone on the
 // project can see it; project admins and above get the invite/role/remove
-// controls, limited to roles below their own (enforced server-side in
+// controls — adding, changing and removing people up to their own role,
+// never themselves (enforced server-side in
 // routes/team.js — the page just doesn't offer what would be refused).
 
 async function api(url, options = {}) {

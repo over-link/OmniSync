@@ -57,10 +57,29 @@ app.use('/', mainRoutes);
 app.use('/', teamRoutes);
 app.use('/', licenseRoutes);
 
+// Express 4 only catches errors THROWN synchronously by a route handler;
+// a rejected promise from an async handler escapes as an unhandled
+// rejection, which makes Node exit — one malformed request (e.g. a
+// non-numeric id reaching a query) took the whole server down in testing.
+// Route rejected promises to the error handler below instead, the same
+// thing the express-async-errors package does.
+const Layer = require('express/lib/router/layer');
+Layer.prototype.handle_request = function handleRequest(req, res, next) {
+  const fn = this.handle;
+  if (fn.length > 3) return next(); // an error handler, not a request handler
+  try {
+    const result = fn(req, res, next);
+    if (result && typeof result.catch === 'function') result.catch(next);
+  } catch (err) {
+    next(err);
+  }
+};
+
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 app.use((err, req, res, _next) => {
   console.error('[server] Unhandled error:', err);
-  res.status(500).json({ error: err.message });
+  if (res.headersSent) return; // the handler already answered before failing
+  res.status(500).json({ error: 'Something went wrong on the server. Please try again.' });
 });
 
 app.listen(PORT, () => {

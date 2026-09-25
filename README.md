@@ -1263,16 +1263,17 @@ route enforces it server-side via `routes/auth.js` `requireLicenseAdmin` /
 |---|---|---|
 | **Primary license admin** | `users.role` (whoever set up the license) | everything below, plus add/remove license admins |
 | **License admin** | `users.role` | create projects (License Administration), pair them (Project Setup step 1), app-wide sync pause, ACC hub / Revizto license; sees **every** project |
-| **Project admin** | `project_members.role`, per project | on their projects: field mapping, auto-sync, issue linking, webhooks, invite/manage standard users; pairing shown read-only |
+| **Project admin** | `project_members.role`, per project | on their projects: field mapping, auto-sync, issue linking, webhooks, add, change or remove project admins and standard users; pairing shown read-only |
 | **Standard** | `project_members.role`, per project | on their projects: Issues, Activity Log, Dashboards, Team (read-only), My Connections |
 
 - **A member only sees projects they've been invited to** (`/api/projects`,
   Activity Log and Dashboards are all scoped — `_projectScope`); a project
   they're not on returns 404, same as one that doesn't exist.
-- **Roles can only be given, changed or removed strictly below your own**
-  — a project admin manages standard users, a license admin manages
-  project admins and standard users, only the primary manages license
-  admins. Nobody can change their own role.
+- **You can give, change or remove roles up to your own** — a project
+  admin can add, change or remove project admins and standard users on
+  their projects (e.g. when someone leaves the company); a license admin
+  manages both; only the primary manages license admins. Nobody can change
+  their own role, and license admins are never managed from a project.
 - **New projects:** License Administration → "+ New Project" (name only,
   creator becomes owner) → opens Project Setup with the project's pairing
   row ready. Until paired it shows "Not paired yet"; routes that need
@@ -1284,7 +1285,7 @@ route enforces it server-side via `routes/auth.js` `requireLicenseAdmin` /
 - **Migration** (schema.sql, idempotent): the earliest `admin` became
   primary license admin, other admins license admins, `standard` users
   standard on every existing project; old app-wide invite links retired.
-- **Tested** on an isolated copy of the schema with a local server (52
+- **Tested** on an isolated copy of the schema with a local server (57
   permission checks: project visibility, setup access, pairing, every
   invite/role rule, license-admin management, invite links, log/dashboard
   scoping) plus a browser pass as primary, project admin and standard.

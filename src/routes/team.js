@@ -1,11 +1,11 @@
 /**
  * routes/team.js
  * Per-project membership: who's on a project and with which role, invites,
- * and shareable invite links. Every change follows one rule (see
- * services/access.js): you can only give, change, or remove roles strictly
- * below your own — a project admin manages standard users, a license admin
- * manages project admins and standard users. License admins themselves are
- * managed on License Administration (routes/license.js), not here.
+ * and shareable invite links. The rules (see services/access.js): you can
+ * give, change or remove roles up to your own — a project admin can add,
+ * change or remove project admins and standard users (e.g. when someone
+ * leaves the company), but nobody can change their own role, and license
+ * admins are managed on License Administration (routes/license.js), not here.
  */
 const express = require('express');
 const router = express.Router();
@@ -63,7 +63,7 @@ function _checkAssignable(req, res, role) {
     return null;
   }
   if (!access.assignableProjectRoles(req.access, req.params.id).includes(role)) {
-    res.status(403).json({ error: 'You can only give people a role below your own.' });
+    res.status(403).json({ error: "You can't give someone a role above your own." });
     return null;
   }
   return role;
@@ -132,6 +132,10 @@ router.post('/api/projects/:id/team/invite', requireProjectRole('project_admin')
 async function _manageableTarget(req, res) {
   const projectId = Number(req.params.id);
   const targetId = Number(req.params.userId);
+  if (!Number.isInteger(targetId)) {
+    res.status(404).json({ error: "That person isn't on this project." });
+    return null;
+  }
   if (targetId === req.session.userId) {
     res.status(403).json({ error: "You can't change your own role." });
     return null;
@@ -142,7 +146,7 @@ async function _manageableTarget(req, res) {
     return null;
   }
   if (!access.canManageMember(req.access, projectId, rows[0].role)) {
-    res.status(403).json({ error: 'You can only change people whose role is below your own.' });
+    res.status(403).json({ error: "You can't change someone whose role is above your own." });
     return null;
   }
   return rows[0].role;

@@ -493,7 +493,7 @@ CREATE INDEX IF NOT EXISTS password_codes_user_idx ON password_codes(user_id);
 -- project_members gives a member a role on one project:
 --   'project_admin' — all tools for that project except pairing
 --   'standard'      — everything except Project Setup / License Administration
--- Anyone can only assign roles below their own.
+-- You can give, change or remove roles up to your own — never your own role.
 CREATE TABLE IF NOT EXISTS project_members (
   project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

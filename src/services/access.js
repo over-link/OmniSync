@@ -8,7 +8,8 @@
  *     project. A member sees ONLY projects they've been added to.
  *
  * Everyone's effective role on a project is one rank on a single ladder,
- * so "can only assign roles below your own" is just a rank comparison.
+ * so "assign up to your own role, manage only those below it" is just a
+ * rank comparison.
  */
 const pool = require('../db/pool');
 
@@ -78,21 +79,29 @@ function isAnyProjectAdmin(access) {
 }
 
 /**
- * Project roles this user may give someone on `projectId` — strictly
- * below their own effective role (so nobody can raise themselves or a peer).
+ * Project roles this user may give someone on `projectId` — up to and
+ * including their own role, never above it: a project admin can bring in
+ * fellow project admins (and standard users), a license admin either. A
+ * standard user can't give roles at all.
  */
 function assignableProjectRoles(access, projectId) {
   const mine = RANK[effectiveProjectRole(access, projectId)] || 0;
-  return PROJECT_ROLES.filter((r) => RANK[r] < mine);
+  if (mine < RANK.project_admin) return [];
+  return PROJECT_ROLES.filter((r) => RANK[r] <= mine);
 }
 
 /**
  * Whether `access` may change or remove a member currently holding
- * `targetRole` on the project: only people strictly below you.
+ * `targetRole` on the project: anyone at or below your own role — so a
+ * project admin can also change or remove a fellow project admin (e.g.
+ * someone who's left the company) without waiting on a license admin.
+ * Callers separately block changing your own role, and license admins
+ * are never managed from a project (see routes/team.js).
  */
 function canManageMember(access, projectId, targetRole) {
   const mine = RANK[effectiveProjectRole(access, projectId)] || 0;
-  return (RANK[targetRole] || 0) < mine;
+  if (mine < RANK.project_admin) return false;
+  return (RANK[targetRole] || 0) <= mine;
 }
 
 /** Short label for the badge next to someone's name. */
