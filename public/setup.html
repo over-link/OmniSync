@@ -40,20 +40,15 @@
           <span class="accordion-caret" aria-hidden="true">▾</span>
         </button>
         <div class="accordion-panel">
-          <p id="pairing-readonly-note" class="hint hidden">Only license admins can change the license, hub or pairing — shown here for reference.</p>
+          <p id="pairing-readonly-note" class="hint hidden">Only license admins can change an existing pairing — shown here for reference. You can pair a project of yours that isn't paired yet if you're a Revizto license administrator of its license, and a project admin of both projects in Revizto and ACC.</p>
           <div id="license-hub-section">
           <h3>Revizto license ↔ ACC hub</h3>
-          <p class="hint">Sets the context both project dropdowns below pull from — connect Revizto and ACC first on <a href="/account">My Connections</a> if either is empty. Locks once both are saved; click "Modify" to change it.</p>
+          <p class="hint">For the project selected above: the Revizto license and ACC hub it belongs to. The project dropdowns below list what's in them — connect Revizto and ACC first on <a href="/account">My Connections</a> if either is empty.</p>
           <div id="license-hub-row"></div>
           </div>
 
           <h3 style="margin-top:1.75rem;">Project pairing</h3>
-          <p class="hint">Links this project's Revizto side to its ACC side — this is what makes syncing work. A project created on License Administration shows here as "Not paired yet" — pick its Revizto and ACC projects and save. Locked once saved; click "Modify pairing" to change it. The sync webhook registers automatically when you save.</p>
-          <div class="pairing-column-headers">
-            <span>Revizto</span>
-            <span aria-hidden="true"></span>
-            <span>ACC</span>
-          </div>
+          <p class="hint">Links the selected project's Revizto side to its ACC side — this is what makes syncing work. A new project starts blank: pick its license and hub above, then its Revizto and ACC projects, and save. Locked once saved; license admins can click "Modify pairing" to change it. The sync webhook registers automatically when you save.</p>
           <div id="project-pairing-rows"></div>
 
           <input type="hidden" id="revizto-region-hidden" />

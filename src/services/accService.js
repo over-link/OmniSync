@@ -53,6 +53,22 @@ async function getIssuesByIds(userId, project, issueIds) {
   return issues;
 }
 
+/**
+ * Which of these ACC issues have been deleted in ACC: the list endpoint
+ * with filter[deleted]=true returns deleted issues, each with a
+ * `deletedAt` (confirmed live 2026-09-25). Positive proof of deletion,
+ * unlike a 403, which ACC also gives for an issue you just can't see.
+ * Returns a Map(issueId -> deletedAt).
+ */
+async function getDeletedIssueIds(userId, project, issueIds) {
+  const deleted = new Map();
+  for (let i = 0; i < issueIds.length; i += 50) {
+    const issues = await getIssues(userId, project, { 'filter[id]': issueIds.slice(i, i + 50).join(','), 'filter[deleted]': true });
+    for (const issue of issues) if (issue.deletedAt) deleted.set(issue.id, issue.deletedAt);
+  }
+  return deleted;
+}
+
 async function getIssue(userId, project, issueId) {
   const { token, baseURL } = await _client(userId, project);
   const { data } = await axios.get(`${baseURL}/issues/${issueId}`, {
@@ -555,6 +571,7 @@ module.exports = {
   getIssues,
   getIssue,
   getIssuesByIds,
+  getDeletedIssueIds,
   createIssue,
   updateIssue,
   addComment,

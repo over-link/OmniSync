@@ -12,6 +12,7 @@
  * rank comparison.
  */
 const pool = require('../db/pool');
+const membership = require('./membership');
 
 const RANK = { standard: 1, project_admin: 2, license_admin: 3, primary_license_admin: 4 };
 const LICENSE_ROLES = ['primary_license_admin', 'license_admin'];
@@ -29,24 +30,66 @@ const isLicenseAdminRole = (role) => LICENSE_ROLES.includes(role);
 /**
  * Everything needed to decide access for one user:
  * { userId, email, licenseRole (or null), isLicenseAdmin, isPrimary,
- *   projectRoles: Map(projectId -> 'project_admin' | 'standard') }.
+ *   projectRoles: Map(projectId -> 'project_admin' | 'standard'),
+ *   invitedProjectCount, unverifiedProjectIds: Set }.
+ *
+ * projectRoles holds only projects the person is invited to here AND
+ * really belongs to in both Revizto and ACC (services/membership.js) — an
+ * invite alone isn't access. invitedProjectCount counts every invite, so
+ * callers can tell "invited but not a member anywhere" from "not invited";
+ * unverifiedProjectIds are invites whose member lists couldn't be read.
  */
 async function getAccess(userId) {
   const [{ rows: userRows }, { rows: memberRows }] = await Promise.all([
     pool.query('SELECT id, email, role FROM users WHERE id = $1', [userId]),
-    pool.query('SELECT project_id, role FROM project_members WHERE user_id = $1', [userId]),
+    pool.query(
+      `SELECT pm.project_id, pm.role, p.id, p.name, p.owner_user_id, p.revizto_region, p.revizto_project_uuid, p.acc_project_id
+       FROM project_members pm JOIN projects p ON p.id = pm.project_id WHERE pm.user_id = $1`,
+      [userId]
+    ),
   ]);
   const user = userRows[0];
   if (!user) return null;
   const licenseRole = isLicenseAdminRole(user.role) ? user.role : null;
+  let projectRoles = new Map();
+  let unverifiedProjectIds = new Set();
+  if (!licenseRole && memberRows.length) {
+    const { memberIds, unknownIds } = await membership.checkProjects(user.email, memberRows);
+    // A project admin of a not-yet-paired project keeps it — pairing it is
+    // their job, and there's no Revizto/ACC membership to check (or data to
+    // see) until then. Pairing itself requires being a project admin in both
+    // (membership.projectAdminProblems), and from then on the normal check applies.
+    const pairsIt = (r) => r.role === 'project_admin' && !membership.isPaired(r);
+    projectRoles = new Map(
+      memberRows.filter((r) => memberIds.has(Number(r.project_id)) || pairsIt(r)).map((r) => [Number(r.project_id), r.role])
+    );
+    unverifiedProjectIds = unknownIds;
+  }
   return {
     userId: user.id,
     email: user.email,
     licenseRole,
     isLicenseAdmin: !!licenseRole,
     isPrimary: licenseRole === 'primary_license_admin',
-    projectRoles: new Map(memberRows.map((r) => [Number(r.project_id), r.role])),
+    projectRoles,
+    invitedProjectCount: memberRows.length,
+    unverifiedProjectIds,
   };
+}
+
+/**
+ * Why this person can't use the app right now, or null if they can: a
+ * license admin always can; anyone else needs at least one project they
+ * really belong to (see getAccess). The message is what the sign-in page
+ * shows in its pop-up.
+ */
+function denialMessage(access) {
+  if (!access) return membership.ACCESS_DENIED_MESSAGE;
+  if (access.isLicenseAdmin || access.projectRoles.size) return null;
+  // Couldn't read a project's lists at all — don't tell a real member
+  // they aren't one.
+  if (access.unverifiedProjectIds.size) return membership.COULD_NOT_VERIFY_MESSAGE;
+  return membership.ACCESS_DENIED_MESSAGE;
 }
 
 /**
@@ -118,6 +161,7 @@ module.exports = {
   LICENSE_ROLES,
   isLicenseAdminRole,
   getAccess,
+  denialMessage,
   effectiveProjectRole,
   hasProjectRole,
   accessibleProjectIds,

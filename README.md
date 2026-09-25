@@ -1262,20 +1262,61 @@ route enforces it server-side via `routes/auth.js` `requireLicenseAdmin` /
 | Role | Where it comes from | Can |
 |---|---|---|
 | **Primary license admin** | `users.role` (whoever set up the license) | everything below, plus add/remove license admins |
-| **License admin** | `users.role` | create projects (License Administration), pair them (Project Setup step 1), app-wide sync pause, ACC hub / Revizto license; sees **every** project |
-| **Project admin** | `project_members.role`, per project | on their projects: field mapping, auto-sync, issue linking, webhooks, add, change or remove project admins and standard users; pairing shown read-only |
+| **License admin** | `users.role` | create projects (License Administration), pair and re-pair them (Project Setup step 1), app-wide sync pause; sees **every** project |
+| **Project admin** | `project_members.role`, per project | on their projects: field mapping, auto-sync, issue linking, webhooks, add, change or remove project admins and standard users; can pair one of their projects that isn't paired yet, never change an existing pairing |
 | **Standard** | `project_members.role`, per project | on their projects: Issues, Activity Log, Dashboards, Team (read-only), My Connections |
 
-- **A member only sees projects they've been invited to** (`/api/projects`,
-  Activity Log and Dashboards are all scoped — `_projectScope`); a project
-  they're not on returns 404, same as one that doesn't exist.
+- **A member only sees projects they've been invited to AND really belong
+  to in both Revizto and ACC** (`services/membership.js`, applied in
+  `access.getAccess`). "Belong" means Revizto: on the project team
+  (`GET /v5/project/{uuid}/team`), invite accepted (`invited: false`) and
+  an active license member (`status: 1`); ACC: Admin API project user with
+  `status: "active"` (`pending` = invite not accepted). Member lists are
+  read through the project OWNER's connections and cached 15 minutes. If
+  none of someone's invited projects qualify, sign-in is refused with the
+  pop-up "Access denied. You are not a member of both Revizto & ACC.
+  Please contact your administrator." — and a signed-in session that loses
+  its last project ends the same way within 15 minutes. If a list can't be
+  read at all, they get a "couldn't confirm" message instead (a failed
+  refresh keeps using the last list). Exception: a project admin keeps an
+  unpaired project, so they can pair it. License admins aren't checked.
+  `/api/projects`, Activity Log and Dashboards are all scoped
+  (`_projectScope`); a project they can't see returns 404, same as one
+  that doesn't exist.
+- **Whoever pairs must be a project admin (or higher) of both projects**
+  (`membership.projectAdminProblems`, checked with the pairer's own
+  connections on `PATCH /api/projects/:id` and create-and-pair): Revizto
+  role Owner, License administrator or "Administrate" (Revizto's API gives
+  only role names, so this list is fixed — change `REVIZTO_ADMIN_ROLE_NAMES`
+  if your license's admin role is named differently); ACC project admin or
+  account admin, and an active member of the project. Applies to license
+  admins and project admins alike. A name-only "+ New Project" isn't
+  checked — there's nothing to check until it's paired. On a first pairing
+  the pairer becomes the project's owner (sync runs on their connections).
+- **…and a Revizto License administrator of the project's license.**
+  Project Setup's license dropdown lists only licenses where your Revizto
+  license role is 4 (License administrator) or 5 (Super administrator) —
+  `reviztoService.getAdminLicenses`: your own entry (matched by `GET /user`
+  uuid) in each license's member list; a list you can't read counts as
+  "not an admin". So someone who belongs to many licenses doesn't see them
+  all, and an app project admin who isn't a Revizto license admin can't
+  pair. The server re-checks the license, and that the Revizto project is
+  in it, on every pairing.
+- **Project Setup works on one project at a time** (the Project dropdown at
+  the top): step 1 shows that project's Revizto license ↔ ACC hub and its
+  pairing. A new project ("+ New Project" opens it here) starts with blank
+  pickers — license and hub, then the Revizto and ACC projects in them.
+  Each project stores its own license and hub (`projects.
+  revizto_license_uuid`/`revizto_license_name`/`acc_hub_name`; existing
+  pairings were backfilled from the owner's saved license), and license-
+  member lookups (real names, companies) use the project's license.
 - **You can give, change or remove roles up to your own** — a project
   admin can add, change or remove project admins and standard users on
   their projects (e.g. when someone leaves the company); a license admin
   manages both; only the primary manages license admins. Nobody can change
   their own role, and license admins are never managed from a project.
 - **New projects:** License Administration → "+ New Project" (name only,
-  creator becomes owner) → opens Project Setup with the project's pairing
+  creator is owner until someone pairs it) → opens Project Setup with the project's pairing
   row ready. Until paired it shows "Not paired yet"; routes that need
   Revizto/ACC return a clear 409 (`requirePaired`), and polling and the
   webhook skip it.
@@ -1436,14 +1477,47 @@ Construction Issues API apparently reports a nonexistent issue ID as an
 access error, not a not-found one — see `syncService.
 _isAccIssueGoneError`). Both places that read/write that ACC issue treat
 this the same way: `pushIssueToAcc` (the 2-minute auto-resync and manual
-pushes) and `getIssuesBoard` (the Issues page's own read) both clear the
-stale `sync_map` row rather than erroring on it forever. Deliberately does
+pushes), the poll's own presence check (`_checkLinkedIssuesStillExist`:
+an issue missing from the bulk fetch is confirmed with its own GET) and
+`getIssuesBoard` (the Issues page's own read) all clear the stale
+`sync_map` row rather than erroring on it forever. **Only the project
+owner's view counts** (`_isProjectOwner`): ACC also answers 403, or leaves
+the issue out of the list, for an issue someone simply isn't allowed to
+see, so when anyone else opens the Issues page or pushes by hand the issue
+shows "Not visible to your ACC account" and is never flagged or unlinked.
+(Before this, a non-member viewing the page flagged issues and a later view
+unlinked real, still-existing ones.) The poll also clears stale "looks
+gone" flags from its bulk fetch, since unchanged issues aren't pushed. Deliberately does
 **not** silently recreate a replacement issue in ACC on its own — an
 admin who intentionally deleted issues in ACC wants them to show up as
 unlinked and ready to review/relink deliberately, not have this app
 recreate them automatically on the next poll cycle. The issue just
 reverts to "unlinked" and becomes available to relink normally (manually,
 or via auto-sync-by-filter).
+
+#### Deleted issues: one red "Deleted" row on the Activity Log
+
+When a linked issue is **provably** deleted, the owner's poll removes the
+link on that cycle and writes one Activity Log row with action
+`deleted` (red row, red "deleted" badge; Action filter → Deleted):
+"Deleted in Revizto", "Deleted in ACC", or "Deleted in both". The other
+side's issue is never touched.
+
+- **Revizto:** a deleted issue isn't gone, it's moved to the project's
+  trash (not viewable in the Revizto app). A linked issue missing from the
+  poll's bulk fetch is looked up in `GET /project/{uuid}/issue-filter/
+  filter_deleted` ("Get deleted issues" — only project admins get results,
+  which the owner is). In the trash → deleted. Not in the trash → the push
+  reports "not found" as before and the link stays.
+- **ACC:** the issue list with `filter[deleted]=true` returns deleted
+  issues with a `deletedAt` (confirmed live 2026-09-25) — proof, unlike a
+  403. Checked by the poll for issues missing from its bulk fetch, and by
+  `_handlePossibleAccIssueGone` (so the owner's Issues page and pushes too).
+- **Unreachable but not provably deleted** (a 403 that isn't in ACC's
+  deleted list): the 10-minute grace period below, then a red **Unlinked**
+  row saying it's been unreachable for 10+ minutes.
+- Restoring an issue afterwards doesn't bring the link back — link it
+  again from the Issues page.
 
 #### Real incident: a transient blip once unlinked every issue at once
 

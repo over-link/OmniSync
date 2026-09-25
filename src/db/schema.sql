@@ -533,4 +533,17 @@ UPDATE users SET role = 'member' WHERE role = 'standard';
 UPDATE invite_links SET revoked_at = now() WHERE project_id IS NULL AND revoked_at IS NULL;
 ALTER TABLE users ALTER COLUMN role SET DEFAULT 'member';
 
+-- Each project remembers its own Revizto license and ACC hub (picked on
+-- Project Setup when pairing), rather than relying on whoever's looking's
+-- personal license/hub selection. Names are kept for display, so anyone
+-- can see them without being an admin of that license or hub.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS revizto_license_uuid TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS revizto_license_name TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS acc_hub_name TEXT;
+-- Existing pairings: the owner's license selection is the one they paired under.
+UPDATE projects p SET revizto_license_uuid = t.license_id
+  FROM revizto_tokens t
+  WHERE t.user_id = p.owner_user_id AND p.revizto_license_uuid IS NULL
+    AND p.revizto_project_uuid IS NOT NULL AND t.license_id IS NOT NULL;
+
 -- connect-pg-simple creates its own "session" table automatically on first run.

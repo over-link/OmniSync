@@ -105,6 +105,26 @@ async function getIssue(userId, region, projectUuid, issueId) {
   return issues[0];
 }
 
+/**
+ * IDs (as strings) of every issue in the project's Revizto trash — a
+ * deleted Revizto issue still exists, it's just moved there. GET
+ * /project/{uuid}/issue-filter/filter_deleted ("Get deleted issues"),
+ * 100 per page. Only project admins get results; anyone else gets an
+ * empty list, not an error — so an empty answer proves nothing unless the
+ * caller is a project admin (the project owner is: pairing requires it).
+ */
+async function getDeletedIssueIds(userId, region, projectUuid) {
+  const ids = new Set();
+  const MAX_PAGES = 50;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const response = await request(userId, region, 'GET', `/project/${projectUuid}/issue-filter/filter_deleted`, { params: { page, limit: 100 } });
+    const data = response.data || {};
+    for (const issue of data.data || []) ids.add(String(issue.id));
+    if (page + 1 >= (data.pages || 0)) break;
+  }
+  return ids;
+}
+
 let _workflowSettingsCache = {};
 
 /**
@@ -465,6 +485,19 @@ async function getLicenseMembers(userId, region, licenseUuid, withDeactivated = 
 }
 
 /**
+ * GET /v5/project/{projectUuid}/team — the project's own members
+ * ("Get project members" in Revizto's API docs). Each entry has `email`,
+ * `invited` (true until they accept the project invite), `status` (license
+ * member status: 1 = active; 4 suspended, 5 deactivated, 6/7 pending) and
+ * `accessRole` { name, system } — the project role, where system 1 is the
+ * project Owner and 2 License administrator. Confirmed live 2026-09-25.
+ */
+async function getProjectTeam(userId, region, projectUuid) {
+  const response = await request(userId, region, 'GET', `/project/${projectUuid}/team`);
+  return response.data?.entities || [];
+}
+
+/**
  * Builds { [email]: fullname } from getLicenseMembers' output.
  */
 function buildMemberNameLookup(members) {
@@ -591,6 +624,43 @@ async function getLicenses(userId, region, accountUuid) {
   return request(userId, region, 'GET', '/user/licenses', {
     params: accountUuid ? { accountUuid } : {},
   });
+}
+
+/** GET /v5/user — the connected Revizto account itself ({ uuid, email, ... }). */
+async function getCurrentUser(userId, region) {
+  const response = await request(userId, region, 'GET', '/user');
+  return response.data || null;
+}
+
+// Revizto license roles ("Assign license role" docs): 1 Guest,
+// 2 Collaborator, 3 Content creator, 4 License administrator; 5 is Super
+// administrator (seen live on the license owner, not assignable via API).
+const REVIZTO_LICENSE_ADMIN_MIN_ROLE = 4;
+
+/**
+ * The licenses this user is a Revizto License administrator (or Super
+ * administrator) of — the only ones Project Setup offers for pairing, so
+ * someone who's merely a member of many licenses doesn't see them all.
+ * Found per license from the license's member list (their own entry,
+ * matched by Revizto account uuid, active, role >= 4); a license whose
+ * member list they can't read counts as "not an admin".
+ */
+async function getAdminLicenses(userId, region) {
+  const [licensesResponse, me] = await Promise.all([getLicenses(userId, region), getCurrentUser(userId, region)]);
+  const licenses = licensesResponse.data?.entities || [];
+  if (!me?.uuid) return [];
+  const checked = await Promise.all(
+    licenses.map(async (license) => {
+      try {
+        const members = await getLicenseMembers(userId, region, license.uuid);
+        const mine = members.find((m) => m.user?.uuid === me.uuid);
+        return mine && !mine.deactivated && mine.role >= REVIZTO_LICENSE_ADMIN_MIN_ROLE ? license : null;
+      } catch {
+        return null;
+      }
+    })
+  );
+  return checked.filter(Boolean);
 }
 
 /**
@@ -1065,6 +1135,7 @@ module.exports = {
   getIssues,
   getIssue,
   getIssuesByIds,
+  getDeletedIssueIds,
   updateIssueStatus,
   updateIssueAssignee,
   updateIssueWatchers,
@@ -1079,7 +1150,10 @@ module.exports = {
   addAttachment,
   getProjects,
   getLicenses,
+  getCurrentUser,
+  getAdminLicenses,
   getLicenseMembers,
+  getProjectTeam,
   buildMemberNameLookup,
   buildMemberCompanyLookup,
   getStatusMap,

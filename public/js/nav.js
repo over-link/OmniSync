@@ -34,18 +34,82 @@ const NAV_LINKS = [
   { href: '#', label: 'Help Center', disabled: true },
 ];
 
+/**
+ * Blocking pop-up with a title, a message and OK. On window so page
+ * scripts can use it (account.js, setup.js).
+ */
+function showAlertDialog(titleText, message) {
+  document.getElementById('alert-dialog')?.remove();
+  const backdrop = document.createElement('div');
+  backdrop.id = 'alert-dialog';
+  backdrop.className = 'modal-backdrop';
+  const dialog = document.createElement('div');
+  dialog.className = 'modal';
+  dialog.setAttribute('role', 'alertdialog');
+  dialog.setAttribute('aria-modal', 'true');
+  dialog.setAttribute('aria-labelledby', 'alert-dialog-title');
+  const title = document.createElement('h2');
+  title.id = 'alert-dialog-title';
+  title.textContent = titleText;
+  const body = document.createElement('p');
+  body.textContent = message;
+  const ok = document.createElement('button');
+  ok.className = 'btn';
+  ok.type = 'button';
+  ok.textContent = 'OK';
+  ok.addEventListener('click', () => backdrop.remove());
+  dialog.append(title, body, ok);
+  backdrop.appendChild(dialog);
+  document.body.appendChild(backdrop);
+  ok.focus();
+}
+window.showAlertDialog = showAlertDialog;
+
+/**
+ * "Access denied" — when sign-in is refused because the person isn't a
+ * member of both the Revizto and ACC project, and when a signed-in session
+ * is ended for the same reason (services/membership.js re-checks every 15
+ * minutes).
+ */
+function showAccessDenied(message) {
+  showAlertDialog('Access denied', message);
+}
+window.showAccessDenied = showAccessDenied;
+
 async function loadNav() {
   let user = null;
   let acc = { connected: false };
   let revizto = { connected: false };
+  let accessDenied = null;
   try {
     const res = await fetch('/auth/me', { credentials: 'same-origin' });
     const data = await res.json();
     user = data.user;
     acc = data.acc;
     revizto = data.revizto;
+    accessDenied = data.accessDenied || null;
   } catch {
     // network/auth failure — treat as signed out
+  }
+
+  // Signed out just now because they're no longer a member of any of
+  // their projects: carry the reason to the sign-in page and show it there.
+  if (accessDenied && window.location.pathname !== '/account') {
+    try {
+      sessionStorage.setItem('accessDenied', accessDenied);
+    } catch {
+      // storage blocked — the redirect still signs them out, just without the pop-up
+    }
+    window.location.replace('/account');
+    return;
+  }
+  if (!accessDenied) {
+    try {
+      accessDenied = sessionStorage.getItem('accessDenied');
+      sessionStorage.removeItem('accessDenied');
+    } catch {
+      accessDenied = null;
+    }
   }
 
   const path = window.location.pathname;
@@ -125,6 +189,7 @@ async function loadNav() {
     await new Promise((resolve) => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
   }
   window.dispatchEvent(new CustomEvent('app:ready', { detail: { user, acc, revizto } }));
+  if (accessDenied) showAccessDenied(accessDenied);
 }
 
 loadNav();

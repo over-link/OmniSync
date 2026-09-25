@@ -53,13 +53,29 @@ async function _sessionUser(req) {
     await new Promise((resolve) => req.session.destroy(resolve));
     return null;
   }
+  // Still a real member of at least one project in both Revizto and ACC?
+  // (services/membership.js re-reads the member lists every 15 minutes, so
+  // someone removed from their last project is signed out within that.)
+  req.access = await access.getAccess(user.id);
+  const denied = access.denialMessage(req.access);
+  if (denied) {
+    await new Promise((resolve) => req.session.destroy(resolve));
+    req.accessDenied = denied;
+    return null;
+  }
   req.session.role = user.role; // keep the session's cached role current
   return user;
 }
 
+/** The 401 for a request whose session is gone — saying why if access was withdrawn. */
+function _sessionEnded(req, res) {
+  if (req.accessDenied) return res.status(401).json({ error: req.accessDenied, code: 'access_denied' });
+  return res.status(401).json({ error: SESSION_ENDED });
+}
+
 async function requireLogin(req, res, next) {
   try {
-    if (!(await _sessionUser(req))) return res.status(401).json({ error: SESSION_ENDED });
+    if (!(await _sessionUser(req))) return _sessionEnded(req, res);
     next();
   } catch (err) {
     next(err);
@@ -69,14 +85,14 @@ async function requireLogin(req, res, next) {
 const SESSION_ENDED = 'Your session has ended — please sign in again.';
 
 /**
- * Builds a middleware that requires a valid session, loads the user's
- * access (services/access.js) onto req.access, then runs `allowed(req)`.
+ * Builds a middleware that requires a valid session (which loads the
+ * user's access — services/access.js — onto req.access), then runs
+ * `allowed(req)`.
  */
 function _requireAccess(allowed, deniedMessage) {
   return async (req, res, next) => {
     try {
-      if (!(await _sessionUser(req))) return res.status(401).json({ error: SESSION_ENDED });
-      req.access = await access.getAccess(req.session.userId);
+      if (!(await _sessionUser(req))) return _sessionEnded(req, res);
       if (!allowed(req)) return res.status(403).json({ error: deniedMessage });
       next();
     } catch (err) {
@@ -91,6 +107,11 @@ const requireLicenseAdmin = _requireAccess((req) => req.access.isLicenseAdmin, '
 // Only the primary license admin: managing who the license admins are.
 const requirePrimaryAdmin = _requireAccess((req) => req.access.isPrimary, 'Only the primary license admin can do this.');
 
+// Anyone who administers a project (license admins, project admins):
+// choosing their own Revizto license / ACC hub and browsing its projects,
+// to pair a project (project admins: only ones not paired yet).
+const requireAnyProjectAdmin = _requireAccess((req) => access.isAnyProjectAdmin(req.access), 'Project admin access required.');
+
 /**
  * At least `minRole` ('standard' or 'project_admin') on the project in
  * req.params.id — license admins pass for every project. Someone with no
@@ -100,8 +121,7 @@ const requirePrimaryAdmin = _requireAccess((req) => req.access.isPrimary, 'Only 
 function requireProjectRole(minRole) {
   return async (req, res, next) => {
     try {
-      if (!(await _sessionUser(req))) return res.status(401).json({ error: SESSION_ENDED });
-      req.access = await access.getAccess(req.session.userId);
+      if (!(await _sessionUser(req))) return _sessionEnded(req, res);
       const role = access.effectiveProjectRole(req.access, req.params.id);
       if (!role) return res.status(404).json({ error: 'Project not found' });
       if (!access.hasProjectRole(req.access, req.params.id, minRole)) {
@@ -163,6 +183,21 @@ async function _applyInviteLink(userId, code) {
      ON CONFLICT (project_id, user_id) DO NOTHING`,
     [link.project_id, userId, link.role, link.created_by]
   );
+}
+
+/**
+ * Sign-in gate: sends the "Access denied" answer (shown as a pop-up) and
+ * returns true unless the person may use the app — a license admin, or a
+ * real member of at least one of their projects in both Revizto and ACC
+ * (see services/membership.js). Runs after the password or code is
+ * proven, so it never reveals anything about an account to a stranger.
+ */
+async function _denyUnlessMember(res, user) {
+  const denied = access.denialMessage(await access.getAccess(user.id));
+  if (!denied) return false;
+  console.warn(`[auth] Sign-in refused for ${user.email}: not a member of both Revizto and ACC on any of their projects (or couldn't verify).`);
+  res.status(403).json({ error: denied, code: 'access_denied' });
+  return true;
 }
 
 /** Starts a fresh session for `user` (new session id — no session fixation). */
@@ -264,6 +299,7 @@ router.post('/auth/login', async (req, res) => {
   }
   _failedLogins.delete(`${req.ip}|${email}`);
   await _applyInviteLink(user.id, inviteCode);
+  if (await _denyUnlessMember(res, user)) return;
   await _startSession(req, user);
   res.json({ user: { id: user.id, email: user.email, role: user.role } });
 });
@@ -305,6 +341,9 @@ router.post('/auth/verify-code', async (req, res) => {
     });
   }
   await _applyInviteLink(user.id, inviteCode);
+  // The new password is saved either way — they just can't get in until
+  // they're a member of a project on both sides.
+  if (await _denyUnlessMember(res, user)) return;
   await _startSession(req, user);
   res.json({ user: { id: user.id, email: user.email, role: user.role } });
 });
@@ -315,11 +354,13 @@ router.post('/auth/logout', (req, res) => {
 
 router.get('/auth/me', async (req, res) => {
   const sessionUser = await _sessionUser(req);
-  if (!sessionUser) return res.json({ user: null });
+  // accessDenied: signed out just now because they're no longer a member
+  // of any of their projects — the page shows it in a pop-up.
+  if (!sessionUser) return res.json({ user: null, accessDenied: req.accessDenied || null });
   const role = sessionUser.role;
   // What the page shell needs to decide which tabs to show — the server
   // still enforces every one of these on each route.
-  const userAccess = await access.getAccess(req.session.userId);
+  const userAccess = req.access;
   const permissions = {
     roleLabel: access.displayRole(userAccess),
     isLicenseAdmin: userAccess.isLicenseAdmin,
@@ -374,7 +415,7 @@ router.get('/auth/me', async (req, res) => {
 
 // License ID is needed to browse "my Revizto projects" (GET /project/list)
 // but not to connect — kept as a separate step so connecting stays simple.
-router.post('/auth/revizto/license', requireLicenseAdmin, async (req, res) => {
+router.post('/auth/revizto/license', requireAnyProjectAdmin, async (req, res) => {
   const { licenseId, licenseRegion } = req.body;
   if (!licenseId) return res.status(400).json({ error: 'licenseId required' });
   const tokens = await tokenStore.getReviztoTokens(req.session.userId);
@@ -388,7 +429,7 @@ router.post('/auth/revizto/license', requireLicenseAdmin, async (req, res) => {
 // Mirrors /auth/revizto/license — the ACC hub is the equivalent "current
 // context" selection that scopes the ACC project dropdown, the same way
 // license scopes the Revizto project dropdown.
-router.post('/auth/acc/hub', requireLicenseAdmin, async (req, res) => {
+router.post('/auth/acc/hub', requireAnyProjectAdmin, async (req, res) => {
   const { hubId } = req.body;
   if (!hubId) return res.status(400).json({ error: 'hubId required' });
   const tokens = await tokenStore.getAccTokens(req.session.userId);
@@ -447,4 +488,4 @@ router.post('/auth/revizto/exchange', requireLogin, async (req, res) => {
   }
 });
 
-module.exports = { router, requireLogin, requireLicenseAdmin, requirePrimaryAdmin, requireProjectRole };
+module.exports = { router, requireLogin, requireLicenseAdmin, requirePrimaryAdmin, requireAnyProjectAdmin, requireProjectRole };

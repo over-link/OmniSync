@@ -75,6 +75,15 @@ function _showCodeForm(email, purpose, message) {
   document.getElementById('code-input').focus();
 }
 
+// Sign-in refused because they aren't a member of both the Revizto and
+// ACC project: a blocking pop-up (nav.js showAccessDenied), not inline text.
+function _showIfAccessDenied(err) {
+  if (err.data?.code !== 'access_denied') return false;
+  whoamiEl.textContent = '';
+  window.showAccessDenied(err.message);
+  return true;
+}
+
 document.getElementById('signin-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const email = document.getElementById('email-input').value.trim();
@@ -94,8 +103,9 @@ document.getElementById('signin-form').addEventListener('submit', async (e) => {
     }
     location.reload(); // refresh sidebar too, now that we're signed in
   } catch (err) {
-    whoamiEl.textContent = err.message;
     document.getElementById('password-input').value = '';
+    if (_showIfAccessDenied(err)) return;
+    whoamiEl.textContent = err.message;
   } finally {
     btn.disabled = false;
   }
@@ -172,6 +182,11 @@ document.getElementById('code-form').addEventListener('submit', async (e) => {
     await api('/auth/verify-code', { method: 'POST', body: JSON.stringify({ email: codeEmail, code, password, invite: inviteCode }) });
     location.reload(); // signed in
   } catch (err) {
+    // Password was saved, but they can't get in yet — back to sign-in.
+    if (_showIfAccessDenied(err)) {
+      _showPanel('signin-form');
+      return;
+    }
     whoamiEl.textContent = err.message;
   } finally {
     btn.disabled = false;

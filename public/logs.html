@@ -32,6 +32,19 @@
           </select>
         </div>
         <div class="filter-group">
+          <label for="log-action-select">Action</label>
+          <select id="log-action-select">
+            <option value="">All actions</option>
+            <option value="deleted">Deleted</option>
+            <option value="error">Errors</option>
+            <option value="link">Linked</option>
+            <option value="unlink">Unlinked</option>
+            <option value="field_change">Field changes</option>
+            <option value="comment">Comments</option>
+            <option value="attachment">Attachments</option>
+          </select>
+        </div>
+        <div class="filter-group">
           <label for="log-from-date">From</label>
           <input type="date" id="log-from-date" />
         </div>

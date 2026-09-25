@@ -119,13 +119,69 @@ async function clearLink(projectId, reviztoIssueId) {
 const ACC_ISSUE_GONE_GRACE_MS = 10 * 60 * 1000;
 
 /**
- * Call when an ACC issue looks gone. Doesn't unlink on the first sighting
- * — flags it (sync_map.acc_issue_missing_since) and only actually calls
- * clearLink once that flag has stood for ACC_ISSUE_GONE_GRACE_MS,
- * confirmed by a later, separate check finding it still gone. Returns
- * true if this call actually unlinked it, false if just flagged/waiting.
+ * The Revizto license a project was paired under (saved on the project
+ * since 2026-09-25), falling back to a person's own saved license
+ * selection for projects paired before that. Used for license-member
+ * lookups (real names, companies).
  */
-async function _handlePossibleAccIssueGone(project, reviztoIssueId, accIssueId, reasonLabel) {
+function _projectLicenseId(project, reviztoTokens) {
+  return project.revizto_license_uuid || reviztoTokens?.license_id || null;
+}
+
+/**
+ * Only the project owner's view of ACC may decide an issue is gone — the
+ * owner's connection is what the poll and webhook sync with. Anyone else
+ * (a Standard user or project admin opening the Issues page or pushing by
+ * hand) may simply not be allowed to see some ACC issues: ACC answers 403
+ * for an issue you can't see just as it does for a deleted one, and the
+ * bulk list silently leaves it out. Treating that as "gone" once unlinked
+ * real, still-existing issues after a non-member looked at the page.
+ */
+function _isProjectOwner(userId, project) {
+  return project.owner_user_id != null && Number(userId) === Number(project.owner_user_id);
+}
+
+const NOT_VISIBLE_TO_YOUR_ACC = 'Not visible to your ACC account';
+
+/**
+ * A linked issue was deleted on one side (proven: it's in ACC's deleted
+ * list or Revizto's trash) — remove the link and write one "Deleted" row,
+ * shown in red on the Activity Log. The other side's issue is left alone.
+ */
+const _DELETED_DETAIL = {
+  Revizto: 'Deleted in Revizto (moved to the trash) — link removed. The ACC issue was left as is.',
+  ACC: 'Deleted in ACC — link removed. The Revizto issue was left as is and can be linked again.',
+  both: 'Deleted in both Revizto (moved to the trash) and ACC — link removed.',
+};
+
+async function _unlinkDeletedIssue(project, reviztoIssueId, accIssueId, side) {
+  console.warn(`[sync] Issue deleted in ${side} (Revizto ${reviztoIssueId} / ACC ${accIssueId}) — removing the link.`);
+  await clearLink(project.id, reviztoIssueId);
+  await _audit({ projectId: project.id, reviztoIssueId, accIssueId, action: 'deleted', outcome: 'error', detail: _DELETED_DETAIL[side] });
+}
+
+/**
+ * Call when an ACC issue looks gone to the project owner. If ACC lists it
+ * among its deleted issues, that's proof: unlink now, logged as "Deleted
+ * in ACC". Otherwise (can't tell why it's unreachable) don't unlink on the
+ * first sighting — flag it (sync_map.acc_issue_missing_since) and only
+ * call clearLink once that flag has stood for ACC_ISSUE_GONE_GRACE_MS,
+ * confirmed by a later, separate check finding it still gone. Returns
+ * true if this call actually unlinked it, false if just flagged/waiting —
+ * and always false for anyone but the owner (see _isProjectOwner), who
+ * never flags or unlinks.
+ */
+async function _handlePossibleAccIssueGone(userId, project, reviztoIssueId, accIssueId, reasonLabel) {
+  if (!_isProjectOwner(userId, project)) return false;
+  try {
+    const deleted = await accService.getDeletedIssueIds(userId, project, [accIssueId]);
+    if (deleted.has(accIssueId)) {
+      await _unlinkDeletedIssue(project, reviztoIssueId, accIssueId, 'ACC');
+      return true;
+    }
+  } catch (err) {
+    console.warn(`[sync] Couldn't check ACC's deleted issues for ${accIssueId} (falling back to the grace period):`, err.message);
+  }
   const { rows } = await pool.query(
     'SELECT acc_issue_missing_since FROM sync_map WHERE project_id = $1 AND revizto_issue_id = $2',
     [project.id, String(reviztoIssueId)]
@@ -142,7 +198,7 @@ async function _handlePossibleAccIssueGone(project, reviztoIssueId, accIssueId, 
       accIssueId,
       action: 'unlink',
       outcome: 'error',
-      detail: `Auto-unlinked (self-heal): ${reasonLabel}`,
+      detail: `Unlinked automatically: the ACC issue has been unreachable for ${ACC_ISSUE_GONE_GRACE_MS / 60000}+ minutes and isn't among ACC's deleted issues (${reasonLabel}).`,
     });
     return true;
   }
@@ -582,10 +638,11 @@ async function labelAuditEntries(entries) {
       }
     }
     const ownerTokens = await tokenStore.getReviztoTokens(ownerId).catch(() => null);
-    if (ownerTokens?.license_id && !loadedLicenses.has(ownerTokens.license_id)) {
-      loadedLicenses.add(ownerTokens.license_id);
+    const licenseId = _projectLicenseId(project, ownerTokens);
+    if (licenseId && !loadedLicenses.has(licenseId)) {
+      loadedLicenses.add(licenseId);
       try {
-        const members = await reviztoService.getLicenseMembers(ownerId, project.revizto_region, ownerTokens.license_id, true);
+        const members = await reviztoService.getLicenseMembers(ownerId, project.revizto_region, licenseId, true);
         Object.assign(nameByEmail, reviztoService.buildMemberNameLookup(members));
       } catch (err) {
         console.warn('[audit] Could not load license member names:', err.message);
@@ -846,6 +903,9 @@ async function pushIssueToAcc(userId, project, reviztoIssue, ctx = null) {
       await _clearAccIssueMissingFlag(project, reviztoIssue.id);
     } catch (err) {
       if (!_isAccIssueGoneError(err)) throw err;
+      // Not the owner: this person's ACC account just can't see it — say
+      // so, and leave the link alone (see _isProjectOwner).
+      if (!_isProjectOwner(userId, project)) throw new Error(`${NOT_VISIBLE_TO_YOUR_ACC} (ACC issue ${existingAccId})`);
       // The linked ACC issue MIGHT no longer exist (e.g. deleted directly
       // in ACC, outside this app) — self-heal by clearing the stale link
       // (same treatment as getIssuesBoard's read-path handling of the
@@ -859,7 +919,7 @@ async function pushIssueToAcc(userId, project, reviztoIssue, ctx = null) {
       // incident this guards against. Not yet past the grace period just
       // rethrows, so this cycle's push shows as a normal transient error
       // and retries next cycle rather than unlinking.
-      const unlinked = await _handlePossibleAccIssueGone(project, reviztoIssue.id, existingAccId, `push failed with ${err.response?.status}`);
+      const unlinked = await _handlePossibleAccIssueGone(userId, project, reviztoIssue.id, existingAccId, `push failed with ${err.response?.status}`);
       if (!unlinked) throw err;
       return { action: 'unlinked', reason: `ACC issue ${existingAccId} no longer exists` };
     }
@@ -1106,9 +1166,9 @@ async function _pushLatestFileAttachmentToAcc(userId, project, reviztoIssue, acc
 async function _resolveReviztoAuthorName(userId, project, email) {
   if (!email) return null;
   try {
-    const reviztoTokens = await tokenStore.getReviztoTokens(userId);
-    if (!reviztoTokens?.license_id) return email;
-    const members = await reviztoService.getLicenseMembers(userId, project.revizto_region, reviztoTokens.license_id);
+    const licenseId = _projectLicenseId(project, await tokenStore.getReviztoTokens(userId));
+    if (!licenseId) return email;
+    const members = await reviztoService.getLicenseMembers(userId, project.revizto_region, licenseId);
     const nameByEmail = reviztoService.buildMemberNameLookup(members);
     return nameByEmail[email.toLowerCase()] || email;
   } catch (err) {
@@ -1304,6 +1364,81 @@ async function prefetchLinkedIssues(userId, project) {
 }
 
 /**
+ * The poll's "is every linked ACC issue still there?" check, from the
+ * owner's bulk fetch. Change-detection means unchanged issues are never
+ * pushed (or GET) any more, so without this a flag set by one bad cycle
+ * would never clear, and an issue deleted in ACC would stay linked until
+ * someone edited it in Revizto. Present in the bulk list → clear any
+ * stale flag. Missing → confirm with its own GET before flagging, since
+ * the list leaving it out is not an error in itself.
+ *
+ * Also the Revizto side: a linked Revizto issue missing from the bulk
+ * fetch that's in the project's Revizto trash was deleted — unlinked here,
+ * logged once as "Deleted in Revizto", instead of the push failing with
+ * "not found" (and logging an error) every cycle forever.
+ *
+ * Returns the Revizto ids this call unlinked, so the push loop skips them
+ * (and never re-creates them in ACC).
+ */
+async function _checkLinkedIssuesStillExist(userId, project, snap) {
+  const unlinkedIds = new Set();
+  if (!_isProjectOwner(userId, project)) return unlinkedIds;
+
+  const reviztoMissing = snap.links.filter((l) => !snap.reviztoById.has(String(l.revizto_issue_id)));
+  const accMissing = snap.accById ? snap.links.filter((l) => !snap.accById.has(l.acc_issue_id)) : [];
+  let reviztoTrash = new Set();
+  if (reviztoMissing.length) {
+    try {
+      reviztoTrash = await reviztoService.getDeletedIssueIds(userId, project.revizto_region, project.revizto_project_uuid);
+    } catch (err) {
+      console.warn(`[sync] Couldn't read the Revizto trash for "${project.name}" (checking again next cycle):`, err.message);
+    }
+  }
+  let accDeleted = new Map();
+  if (accMissing.length) {
+    try {
+      accDeleted = await accService.getDeletedIssueIds(userId, project, accMissing.map((l) => l.acc_issue_id));
+    } catch (err) {
+      console.warn(`[sync] Couldn't read ACC's deleted issues for "${project.name}" (checking again next cycle):`, err.message);
+    }
+  }
+  for (const row of reviztoMissing) {
+    if (!reviztoTrash.has(String(row.revizto_issue_id))) continue; // not in the trash — the push reports it as before
+    await _unlinkDeletedIssue(project, row.revizto_issue_id, row.acc_issue_id, accDeleted.has(row.acc_issue_id) ? 'both' : 'Revizto');
+    unlinkedIds.add(String(row.revizto_issue_id));
+  }
+  if (!snap.accById) return unlinkedIds;
+
+  const { rows: flagged } = await pool.query(
+    'SELECT revizto_issue_id FROM sync_map WHERE project_id = $1 AND acc_issue_missing_since IS NOT NULL',
+    [project.id]
+  );
+  const flaggedIds = new Set(flagged.map((r) => String(r.revizto_issue_id)));
+  for (const row of snap.links) {
+    const reviztoIssueId = String(row.revizto_issue_id);
+    if (unlinkedIds.has(reviztoIssueId)) continue;
+    if (accDeleted.has(row.acc_issue_id)) {
+      await _unlinkDeletedIssue(project, reviztoIssueId, row.acc_issue_id, 'ACC');
+      unlinkedIds.add(reviztoIssueId);
+      continue;
+    }
+    if (snap.accById.has(row.acc_issue_id)) {
+      if (flaggedIds.has(reviztoIssueId)) await _clearAccIssueMissingFlag(project, reviztoIssueId);
+      continue;
+    }
+    try {
+      await accService.getIssue(userId, project, row.acc_issue_id);
+      if (flaggedIds.has(reviztoIssueId)) await _clearAccIssueMissingFlag(project, reviztoIssueId);
+    } catch (err) {
+      if (!_isAccIssueGoneError(err)) continue; // transient — next cycle checks again
+      const unlinked = await _handlePossibleAccIssueGone(userId, project, reviztoIssueId, row.acc_issue_id, `poll GET failed with ${err.response?.status}`);
+      if (unlinked) unlinkedIds.add(reviztoIssueId);
+    }
+  }
+  return unlinkedIds;
+}
+
+/**
  * Re-pushes linked issues to ACC — but only the ones that changed in
  * Revizto since they were last pushed, judged by the issue's own
  * `updated` (any field) and `commented` (any comment, including file
@@ -1316,9 +1451,14 @@ async function prefetchLinkedIssues(userId, project) {
 async function pushLinkedIssues(userId, project, { snapshot = null, full = false } = {}) {
   const snap = snapshot || (await prefetchLinkedIssues(userId, project));
   if (!snap.links.length) return [];
+  const unlinkedIds = await _checkLinkedIssuesStillExist(userId, project, snap);
   let ctx = null; // built on the first issue that actually needs a push
   const results = [];
   for (const row of snap.links) {
+    if (unlinkedIds.has(String(row.revizto_issue_id))) {
+      results.push({ reviztoId: row.revizto_issue_id, action: 'unlinked', reason: 'deleted or no longer reachable' });
+      continue;
+    }
     try {
       const issue =
         snap.reviztoById.get(String(row.revizto_issue_id)) ||
@@ -1808,17 +1948,16 @@ async function _loadFilterableFieldLookups(userId, project) {
   const stampTitleByAbbr = reviztoService.buildStampTitleLookup(stampPresets);
 
   // Resolve assignee email -> display name/company via the license's
-  // member list. Uses the CALLING USER's own saved license (from their
-  // Revizto connection) as the license context — assumes the project was
-  // set up under that same license, which is true for the normal "browse
-  // my Revizto projects" setup flow. Falls back to showing the bare email
-  // if license isn't set or the person isn't found (e.g. assigned but not
-  // a license member, or a different license than assumed).
+  // member list — the license the project was paired under
+  // (_projectLicenseId). Falls back to showing the bare email if there's
+  // no license, the viewer can't read its member list, or the person
+  // isn't on it (e.g. assigned but not a license member).
   let assigneeNameByEmail = {};
   let assigneeCompanyByEmail = {};
-  if (reviztoTokens?.license_id) {
+  const licenseId = _projectLicenseId(project, reviztoTokens);
+  if (licenseId) {
     try {
-      const members = await reviztoService.getLicenseMembers(userId, project.revizto_region, reviztoTokens.license_id);
+      const members = await reviztoService.getLicenseMembers(userId, project.revizto_region, licenseId);
       assigneeNameByEmail = reviztoService.buildMemberNameLookup(members);
       assigneeCompanyByEmail = reviztoService.buildMemberCompanyLookup(members);
     } catch (err) {
@@ -1911,6 +2050,7 @@ async function getIssuesBoard(userId, project) {
     _loadFilterableFieldLookups(userId, project),
     accService.getIssues(userId, project).catch(() => null),
   ]);
+  const isOwner = _isProjectOwner(userId, project);
   const linkMap = new Map(linkRows.map((r) => [String(r.revizto_issue_id), r.acc_issue_id]));
   const linkedAtById = new Map(linkRows.map((r) => [String(r.revizto_issue_id), r.linked_at]));
   const accIssueById = accIssues ? new Map(accIssues.map((i) => [i.id, i])) : null;
@@ -1941,10 +2081,12 @@ async function getIssuesBoard(userId, project) {
           // _handlePossibleAccIssueGone) rather than concluding "gone" from
           // a single missing appearance — this path in particular requires
           // no error at all to trigger, which is exactly what caused the
-          // real incident that guard fixes.
-          const unlinked = await _handlePossibleAccIssueGone(project, issue.id, accIssueId, 'absent from ACC bulk issue list');
+          // real incident that guard fixes. Only the owner's list counts.
+          const unlinked = await _handlePossibleAccIssueGone(userId, project, issue.id, accIssueId, 'absent from ACC bulk issue list');
           if (unlinked) {
             linked = false;
+          } else if (!isOwner) {
+            acc = { id: accIssueId, error: NOT_VISIBLE_TO_YOUR_ACC };
           } else {
             acc = { id: accIssueId, error: 'Not found in this cycle\'s ACC issue list — confirming before unlinking' };
           }
@@ -1958,9 +2100,11 @@ async function getIssuesBoard(userId, project) {
           await _clearAccIssueMissingFlag(project, issue.id);
         } catch (err) {
           if (_isAccIssueGoneError(err)) {
-            const unlinked = await _handlePossibleAccIssueGone(project, issue.id, accIssueId, `GET failed with ${err.response?.status}`);
+            const unlinked = await _handlePossibleAccIssueGone(userId, project, issue.id, accIssueId, `GET failed with ${err.response?.status}`);
             if (unlinked) {
               linked = false;
+            } else if (!isOwner) {
+              acc = { id: accIssueId, error: NOT_VISIBLE_TO_YOUR_ACC };
             } else {
               acc = { id: accIssueId, error: 'Temporarily unreachable in ACC — confirming before unlinking' };
             }
@@ -2114,9 +2258,9 @@ async function _resolveAccAuthor(userId, project, autodeskId) {
 async function _resolveReviztoReporterEmail(userId, project, accCommenterEmail) {
   if (!accCommenterEmail) return null;
   try {
-    const reviztoTokens = await tokenStore.getReviztoTokens(userId);
-    if (!reviztoTokens?.license_id) return null;
-    const members = await reviztoService.getLicenseMembers(userId, project.revizto_region, reviztoTokens.license_id);
+    const licenseId = _projectLicenseId(project, await tokenStore.getReviztoTokens(userId));
+    if (!licenseId) return null;
+    const members = await reviztoService.getLicenseMembers(userId, project.revizto_region, licenseId);
     const match = members.find((m) => m.user?.email?.toLowerCase() === accCommenterEmail.toLowerCase());
     return match?.user?.email || null;
   } catch (err) {

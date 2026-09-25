@@ -99,6 +99,7 @@ const ACTION_LABELS = {
   attachment: 'Attachment',
   link: 'Linked',
   unlink: 'Unlinked',
+  deleted: 'Deleted',
   error: 'Error',
 };
 
@@ -118,10 +119,14 @@ function _rowHtml(entry) {
   }
   const subline = directionArrow ? `<div class="hint" style="margin:0;">${directionArrow}</div>` : '';
 
+  // A linked issue deleted in Revizto or ACC (link removed) — red, and
+  // called what it is rather than a generic "error".
   const outcomeBadge =
-    entry.outcome === 'error'
-      ? '<span class="badge badge-danger">error</span>'
-      : '<span class="badge badge-success">ok</span>';
+    entry.action === 'deleted'
+      ? '<span class="badge badge-danger">deleted</span>'
+      : entry.outcome === 'error'
+        ? '<span class="badge badge-danger">error</span>'
+        : '<span class="badge badge-success">ok</span>';
 
   const reviztoNum = entry.revizto_issue_id ? `#${_escape(entry.revizto_issue_id)}` : '—';
   const accNum = entry.acc_display_id ? `#${_escape(entry.acc_display_id)}` : '—';
@@ -181,6 +186,8 @@ async function loadEntries({ reset } = {}) {
   if (currentProjectId) params.set('projectId', currentProjectId);
   if (from) params.set('from', from.toISOString());
   if (to) params.set('to', to.toISOString());
+  const action = document.getElementById('log-action-select').value;
+  if (action) params.set('action', action);
 
   if (reset) {
     statusEl.textContent = 'Loading…';
@@ -223,6 +230,7 @@ document.getElementById('log-project-select').addEventListener('change', (e) => 
   currentProjectId = e.target.value;
   _reload();
 });
+document.getElementById('log-action-select').addEventListener('change', _reload);
 document.getElementById('log-from-date').addEventListener('change', _reload);
 document.getElementById('log-to-date').addEventListener('change', _reload);
 document.getElementById('log-clear-dates-btn').addEventListener('click', () => {

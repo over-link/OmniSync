@@ -51,8 +51,8 @@ async function record({
  * limits to those projects (null = all — license admins; the routes work
  * out which projects a user may see — see routes/index.js _projectScope).
  */
-async function list({ projectIds = null, from = null, to = null, limit = 100, offset = 0 } = {}) {
-  const { where, params } = _filters({ projectIds, from, to });
+async function list({ projectIds = null, from = null, to = null, action = null, limit = 100, offset = 0 } = {}) {
+  const { where, params } = _filters({ projectIds, from, to, action });
   params.push(limit, offset);
   // acc_display_id: ACC's human-readable issue number. Rows without an
   // acc_issue_id of their own (e.g. errors) borrow it from the issue's
@@ -80,11 +80,14 @@ async function list({ projectIds = null, from = null, to = null, limit = 100, of
  * Total matching rows for the same filters as `list`, so the page can
  * show "Page X of Y" instead of an open-ended "Load more".
  */
-async function count({ projectIds = null, from = null, to = null } = {}) {
-  const { where, params } = _filters({ projectIds, from, to });
+async function count({ projectIds = null, from = null, to = null, action = null } = {}) {
+  const { where, params } = _filters({ projectIds, from, to, action });
   const { rows } = await pool.query(`SELECT count(*)::int AS total FROM audit_log ${where}`, params);
   return rows[0].total;
 }
+
+// Every audit_log.action value (the Activity Log's Action filter accepts only these).
+const ACTIONS = ['field_change', 'comment', 'attachment', 'link', 'unlink', 'deleted', 'error'];
 
 /**
  * Shared WHERE clause for list/count. `from` is inclusive and `to` is
@@ -92,7 +95,7 @@ async function count({ projectIds = null, from = null, to = null } = {}) {
  * day and the start of the day AFTER the last one, in the viewer's own
  * timezone, so a "7/15 – 7/22" range covers all of 7/22 locally.
  */
-function _filters({ projectIds, from, to }) {
+function _filters({ projectIds, from, to, action }) {
   const params = [];
   const clauses = [];
   // projectIds: null = every project (license admins); otherwise only
@@ -109,7 +112,12 @@ function _filters({ projectIds, from, to }) {
     params.push(to);
     clauses.push(`audit_log.created_at < $${params.length}`);
   }
+  // One action type (the Activity Log's Action filter), e.g. 'deleted'.
+  if (action) {
+    params.push(action);
+    clauses.push(`audit_log.action = $${params.length}`);
+  }
   return { where: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', params };
 }
 
-module.exports = { record, list, count };
+module.exports = { record, list, count, ACTIONS };

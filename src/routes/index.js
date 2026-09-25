@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const path = require('path');
 const pool = require('../db/pool');
-const { requireLogin, requireLicenseAdmin, requireProjectRole } = require('./auth');
+const { requireLogin, requireLicenseAdmin, requireAnyProjectAdmin, requireProjectRole } = require('./auth');
 const syncService = require('../services/syncService');
 const accService = require('../services/accService');
 const reviztoService = require('../services/reviztoService');
@@ -12,16 +12,19 @@ const appSettings = require('../services/appSettings');
 const auditLog = require('../services/auditLog');
 const dashboards = require('../services/dashboards');
 const access = require('../services/access');
+const membership = require('../services/membership');
 const { ReconnectRequiredError } = require('../services/authManager');
 
 // ─── Revizto license browser (for the license dropdown) ─────────────
 
-router.get('/api/revizto/licenses', requireLicenseAdmin, async (req, res) => {
+// Only licenses you're a Revizto License administrator (or Super
+// administrator) of — pairing needs that, and someone who belongs to many
+// licenses shouldn't see them all (reviztoService.getAdminLicenses).
+router.get('/api/revizto/licenses', requireAnyProjectAdmin, async (req, res) => {
   const tokens = await tokenStore.getReviztoTokens(req.session.userId);
   if (!tokens) return res.status(409).json({ error: 'Connect Revizto first' });
   try {
-    const response = await reviztoService.getLicenses(req.session.userId, tokens.region);
-    const licenses = (response.data?.entities || []).map((l) => ({
+    const licenses = (await reviztoService.getAdminLicenses(req.session.userId, tokens.region)).map((l) => ({
       id: l.id,
       uuid: l.uuid,
       name: l.name,
@@ -30,21 +33,24 @@ router.get('/api/revizto/licenses', requireLicenseAdmin, async (req, res) => {
     }));
     res.json({ licenses });
   } catch (err) {
-    console.error('[revizto] getLicenses failed:', err.response?.data || err.message);
+    console.error('[revizto] getAdminLicenses failed:', err.response?.data || err.message);
     res.status(500).json({ error: err.response?.data?.message || err.message });
   }
 });
 
-router.get('/api/revizto/projects', requireLicenseAdmin, async (req, res) => {
+// The Revizto projects in one license (?licenseId=<uuid>), which must be
+// one you administer.
+router.get('/api/revizto/projects', requireAnyProjectAdmin, async (req, res) => {
   const tokens = await tokenStore.getReviztoTokens(req.session.userId);
   if (!tokens) return res.status(409).json({ error: 'Connect Revizto first' });
-  if (!tokens.license_id) {
-    return res.status(409).json({ error: 'missing_license_id', message: 'Select your Revizto license first' });
-  }
+  const licenseId = String(req.query.licenseId || '');
+  if (!licenseId) return res.status(400).json({ error: 'Pick a Revizto license first.' });
   try {
-    // tokens.license_id now holds the license UUID (not the numeric id) —
-    // see reviztoService.getProjects for why.
-    const items = await reviztoService.getProjects(req.session.userId, tokens.region, tokens.license_id);
+    const adminLicenses = await reviztoService.getAdminLicenses(req.session.userId, tokens.region);
+    if (!adminLicenses.some((l) => l.uuid === licenseId)) {
+      return res.status(403).json({ error: membership.REVIZTO_LICENSE_ROLE_MESSAGE });
+    }
+    const items = await reviztoService.getProjects(req.session.userId, tokens.region, licenseId);
     // id/uuid/title confirmed from real ProjectListItem docs.
     const projects = items.map((p) => ({ id: p.id, uuid: p.uuid, title: p.title || p.name }));
     res.json({ projects });
@@ -56,7 +62,7 @@ router.get('/api/revizto/projects', requireLicenseAdmin, async (req, res) => {
 
 // ─── ACC hub/project browser (for the "add project" dropdowns) ──────
 
-router.get('/api/acc/hubs', requireLicenseAdmin, async (req, res) => {
+router.get('/api/acc/hubs', requireAnyProjectAdmin, async (req, res) => {
   try {
     const hubs = await accService.getHubs(req.session.userId);
     res.json({ hubs });
@@ -69,7 +75,7 @@ router.get('/api/acc/hubs', requireLicenseAdmin, async (req, res) => {
   }
 });
 
-router.get('/api/acc/hubs/:hubId/projects', requireLicenseAdmin, async (req, res) => {
+router.get('/api/acc/hubs/:hubId/projects', requireAnyProjectAdmin, async (req, res) => {
   try {
     const projects = await accService.getHubProjects(req.session.userId, req.params.hubId);
     res.json({ projects });
@@ -119,7 +125,7 @@ router.get('/dashboards', (req, res) => {
  * aren't on any project). Used by every cross-project read below.
  */
 async function _projectScope(req) {
-  const userAccess = await access.getAccess(req.session.userId);
+  const userAccess = req.access; // loaded by requireLogin
   const allowed = access.accessibleProjectIds(userAccess); // null = all
   const requested = req.query.projectId ? Number(req.query.projectId) : null;
   if (requested) return allowed === null || allowed.includes(requested) ? [requested] : [];
@@ -129,7 +135,7 @@ async function _projectScope(req) {
 // Only the projects this person can access (license admins: all), each
 // with their role on it, so pages can show/hide admin-only controls.
 router.get('/api/projects', requireLogin, async (req, res) => {
-  const userAccess = await access.getAccess(req.session.userId);
+  const userAccess = req.access; // loaded by requireLogin
   const allowed = access.accessibleProjectIds(userAccess);
   const { rows } = await pool.query(
     'SELECT * FROM projects WHERE ($1::int[] IS NULL OR id = ANY($1)) ORDER BY created_at DESC',
@@ -162,13 +168,48 @@ async function _autoRegisterWebhook(userId, project) {
   }
 }
 
+/**
+ * A license admin may only pair projects they're a project admin of in
+ * both Revizto and ACC (services/membership.js projectAdminProblems).
+ * Sends the refusal and returns true if they aren't, or if it can't be
+ * checked right now.
+ */
+async function _refuseUnlessProjectAdminOnBoth(req, res, pairing) {
+  let problems;
+  try {
+    problems = await membership.projectAdminProblems(req.session.userId, req.access.email, pairing);
+  } catch (err) {
+    if (err instanceof ReconnectRequiredError) {
+      res.status(409).json({ error: `Reconnect ${err.provider} on My Connections, then try again.` });
+      return true;
+    }
+    console.error('[pairing] Project admin check failed:', err.response?.data || err.message);
+    res.status(502).json({ error: "Couldn't check your project admin rights in Revizto and ACC just now — try again in a minute." });
+    return true;
+  }
+  if (!problems.length) return false;
+  // No Revizto license role is the first blocker — say just that (Project
+  // Setup shows it as a pop-up), not the whole list.
+  if (problems.includes(membership.REVIZTO_LICENSE_ROLE_MESSAGE)) {
+    res.status(403).json({ error: membership.REVIZTO_LICENSE_ROLE_MESSAGE, code: 'revizto_license_role' });
+    return true;
+  }
+  res.status(403).json({
+    error: `To pair these projects you need to be a Revizto license administrator of the license, and a project admin of both projects in Revizto and ACC. ${problems.join(' ')}`,
+  });
+  return true;
+}
+
 router.post('/api/projects', requireLicenseAdmin, async (req, res) => {
   const {
     name,
     revizto_project_uuid,
     revizto_project_id,
     revizto_region,
+    revizto_license_uuid,
+    revizto_license_name,
     acc_hub_id,
+    acc_hub_name,
     acc_project_id,
     acc_project_name,
     acc_default_subtype_id,
@@ -179,13 +220,20 @@ router.post('/api/projects', requireLicenseAdmin, async (req, res) => {
   // are still accepted here, all-or-nothing, for a create-and-pair in one go.
   const trimmedName = String(name || '').trim();
   if (!trimmedName) return res.status(400).json({ error: 'Give the project a name.' });
-  const pairing = [revizto_project_uuid, acc_hub_id, acc_project_id];
+  const pairing = [revizto_license_uuid, revizto_project_uuid, acc_hub_id, acc_project_id];
   if (pairing.some(Boolean) && !pairing.every(Boolean)) {
-    return res.status(400).json({ error: 'To pair while creating, send revizto_project_uuid, acc_hub_id and acc_project_id together.' });
+    return res.status(400).json({ error: 'To pair while creating, send revizto_license_uuid, revizto_project_uuid, acc_hub_id and acc_project_id together.' });
+  }
+  if (
+    pairing.every(Boolean) &&
+    (await _refuseUnlessProjectAdminOnBoth(req, res, { revizto_region: revizto_region || 'virginia', revizto_license_uuid, revizto_project_uuid, acc_project_id }))
+  ) {
+    return;
   }
   const { rows } = await pool.query(
-    `INSERT INTO projects (name, revizto_project_uuid, revizto_project_id, revizto_region, acc_hub_id, acc_project_id, acc_project_name, acc_default_subtype_id, owner_user_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+    `INSERT INTO projects (name, revizto_project_uuid, revizto_project_id, revizto_region, acc_hub_id, acc_project_id, acc_project_name, acc_default_subtype_id, owner_user_id,
+                           revizto_license_uuid, revizto_license_name, acc_hub_name)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
     [
       trimmedName,
       revizto_project_uuid || null,
@@ -198,6 +246,9 @@ router.post('/api/projects', requireLicenseAdmin, async (req, res) => {
       // The creating license admin owns it by default — background syncing
       // runs on the owner's Revizto/ACC connections.
       makeMeOwner === false ? null : req.session.userId,
+      revizto_license_uuid || null,
+      revizto_license_name || null,
+      acc_hub_name || null,
     ]
   );
   if (_isPaired(rows[0])) await _autoRegisterWebhook(req.session.userId, rows[0]);
@@ -209,18 +260,58 @@ router.post('/api/projects', requireLicenseAdmin, async (req, res) => {
 // makeMeOwner (those have their own dedicated routes already). Re-runs
 // webhook auto-registration too, since a changed ACC project/hub makes any
 // existing webhook stale.
-router.patch('/api/projects/:id', requireLicenseAdmin, async (req, res) => {
-  const { name, revizto_project_uuid, revizto_project_id, revizto_region, acc_hub_id, acc_project_id, acc_project_name } = req.body;
-  if (!name || !revizto_project_uuid || !acc_hub_id || !acc_project_id) {
-    return res.status(400).json({ error: 'name, revizto_project_uuid, acc_hub_id, acc_project_id are required' });
+//
+// License admins pair and re-pair any project; a project admin can only
+// pair one of theirs that isn't paired yet — never change an existing
+// pairing. Either way, only someone who's a project admin of both chosen
+// projects in Revizto and ACC (_refuseUnlessProjectAdminOnBoth).
+router.patch('/api/projects/:id', requireProjectRole('project_admin'), async (req, res) => {
+  const {
+    name,
+    revizto_license_uuid,
+    revizto_license_name,
+    revizto_project_uuid,
+    revizto_project_id,
+    revizto_region,
+    acc_hub_id,
+    acc_hub_name,
+    acc_project_id,
+    acc_project_name,
+  } = req.body;
+  if (!name || !revizto_license_uuid || !revizto_project_uuid || !acc_hub_id || !acc_project_id) {
+    return res.status(400).json({ error: 'name, revizto_license_uuid, revizto_project_uuid, acc_hub_id, acc_project_id are required' });
   }
+  if (!req.access.isLicenseAdmin) {
+    const existing = await _getProject(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Project not found' });
+    if (_isPaired(existing)) return res.status(403).json({ error: 'Only a license admin can change an existing pairing.' });
+  }
+  if (await _refuseUnlessProjectAdminOnBoth(req, res, { revizto_region: revizto_region || 'virginia', revizto_license_uuid, revizto_project_uuid, acc_project_id })) return;
   const { rows } = await pool.query(
     `UPDATE projects SET name = $2, revizto_project_uuid = $3, revizto_project_id = $4, revizto_region = $5, acc_hub_id = $6, acc_project_id = $7, acc_project_name = $8,
-       owner_user_id = COALESCE(owner_user_id, $9) -- first pairing: the pairing license admin owns it
+       revizto_license_uuid = $10, revizto_license_name = $11, acc_hub_name = $12,
+       -- First pairing: whoever pairs it owns it (sync runs on their connections,
+       -- and they've just been checked as project admin of both projects).
+       -- Re-pairing keeps the owner. (SET expressions see the old row.)
+       owner_user_id = CASE WHEN revizto_project_uuid IS NULL OR acc_project_id IS NULL THEN $9 ELSE COALESCE(owner_user_id, $9) END
      WHERE id = $1 RETURNING *`,
-    [req.params.id, name, revizto_project_uuid, revizto_project_id || null, revizto_region || 'virginia', acc_hub_id, acc_project_id, acc_project_name || null, req.session.userId]
+    [
+      req.params.id,
+      name,
+      revizto_project_uuid,
+      revizto_project_id || null,
+      revizto_region || 'virginia',
+      acc_hub_id,
+      acc_project_id,
+      acc_project_name || null,
+      req.session.userId,
+      revizto_license_uuid,
+      revizto_license_name || null,
+      acc_hub_name || null,
+    ]
   );
   if (!rows[0]) return res.status(404).json({ error: 'Project not found' });
+  membership.forget(rows[0].id); // re-paired: re-read who belongs to it
   await _autoRegisterWebhook(req.session.userId, rows[0]);
   res.json({ project: rows[0] });
 });
@@ -551,9 +642,10 @@ router.get('/api/audit-log', requireLogin, async (req, res) => {
   };
   const from = parseDate(req.query.from);
   const to = parseDate(req.query.to);
+  const action = auditLog.ACTIONS.includes(req.query.action) ? req.query.action : null;
   const [entries, total] = await Promise.all([
-    auditLog.list({ projectIds, from, to, limit, offset }),
-    auditLog.count({ projectIds, from, to }),
+    auditLog.list({ projectIds, from, to, action, limit, offset }),
+    auditLog.count({ projectIds, from, to, action }),
   ]);
   res.json({ entries: await syncService.labelAuditEntries(entries), total });
 });

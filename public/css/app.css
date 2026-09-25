@@ -942,3 +942,25 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
 .license-table td:last-child { text-align: right; white-space: nowrap; }
 .inline-check { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--muted); }
 .pairing-edit-name { font-size: 0.85rem; color: var(--muted); margin: 0.6rem 0 0.2rem; }
+
+/* ── Blocking pop-up (e.g. "Access denied") ───────────────────────── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(18, 22, 28, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+.modal {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+  padding: 1.4rem 1.5rem 1.2rem;
+  max-width: 420px;
+  width: 100%;
+}
+.modal h2 { margin: 0 0 0.5rem; font-size: 1.1rem; color: var(--danger); }
+.modal p { margin: 0 0 1.1rem; line-height: 1.5; }
