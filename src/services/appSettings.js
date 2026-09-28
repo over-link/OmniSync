@@ -8,11 +8,10 @@
 const pool = require('../db/pool');
 
 const SYNC_PAUSED_KEY = 'sync_paused';
-// Polling runs 6 AM–6 PM (pollService) unless this is 'true'. No UI yet —
-// intended to be switched on per paid tier (e.g. an "OmniSync+" plan)
-// once plans exist; until then set it directly if ever needed:
-//   INSERT INTO app_settings (key, value) VALUES ('poll_24_7', 'true')
-//   ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+// Polling runs 6 AM–6 PM (pollService) unless this is 'true'. Switched
+// on License Administration ("Sync outside working hours") — for testing
+// for now; intended to become a per-paid-tier setting (e.g. an
+// "OmniSync+" plan) once plans exist.
 const POLL_24_7_KEY = 'poll_24_7';
 // Local calendar date (YYYY-MM-DD) the daily full check last ran — kept
 // in the DB so a restart/deploy doesn't re-run it the same day.
@@ -43,6 +42,10 @@ async function isPoll247() {
   return (await _get(POLL_24_7_KEY)) === 'true';
 }
 
+async function setPoll247(on) {
+  await _set(POLL_24_7_KEY, on ? 'true' : 'false');
+}
+
 async function getLastFullCheckDate() {
   return _get(LAST_FULL_CHECK_KEY);
 }
@@ -51,4 +54,4 @@ async function setLastFullCheckDate(date) {
   await _set(LAST_FULL_CHECK_KEY, date);
 }
 
-module.exports = { isSyncPaused, setSyncPaused, isPoll247, getLastFullCheckDate, setLastFullCheckDate };
+module.exports = { isSyncPaused, setSyncPaused, isPoll247, setPoll247, getLastFullCheckDate, setLastFullCheckDate };

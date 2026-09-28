@@ -27,7 +27,7 @@ window.addEventListener('app:ready', async (e) => {
   if (!user || !user.isLicenseAdmin) return;
   document.getElementById('license-role-badge').textContent = user.roleLabel;
   document.getElementById('license-app').classList.remove('hidden');
-  await Promise.all([loadProjects(), loadAdmins(), loadSyncEnabledSetting()]);
+  await Promise.all([loadProjects(), loadAdmins(), loadSyncEnabledSetting(), loadPoll247Setting()]);
 });
 
 // ─── Projects ────────────────────────────────────────────────────────
@@ -354,6 +354,39 @@ document.getElementById('sync-enabled-toggle').addEventListener('change', async 
   } catch (err) {
     e.target.checked = !enabled; // revert — the save didn't take
     _renderSyncEnabledLabel(!enabled);
+    resultEl.textContent = err.message;
+  }
+});
+
+// ─── Sync outside 6 AM–6 PM (for testing after hours) ────────────────
+
+function _renderPoll247Label(on) {
+  document.getElementById('poll-247-label').textContent = on
+    ? 'Sync outside working hours — ON (around the clock)'
+    : 'Sync outside working hours — OFF (6 AM–6 PM only)';
+}
+
+async function loadPoll247Setting() {
+  const resultEl = document.getElementById('poll-247-result');
+  try {
+    const { on } = await api('/api/settings/poll-24-7');
+    document.getElementById('poll-247-toggle').checked = on;
+    _renderPoll247Label(on);
+  } catch (err) {
+    resultEl.textContent = err.message;
+  }
+}
+
+document.getElementById('poll-247-toggle').addEventListener('change', async (e) => {
+  const resultEl = document.getElementById('poll-247-result');
+  const on = e.target.checked;
+  try {
+    await api('/api/settings/poll-24-7', { method: 'POST', body: JSON.stringify({ on }) });
+    _renderPoll247Label(on);
+    resultEl.textContent = 'Saved ✓';
+  } catch (err) {
+    e.target.checked = !on; // revert — the save didn't take
+    _renderPoll247Label(!on);
     resultEl.textContent = err.message;
   }
 });

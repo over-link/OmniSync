@@ -625,6 +625,17 @@ router.post('/api/settings/sync-paused', requireLicenseAdmin, async (req, res) =
   res.json({ paused: !!req.body.paused });
 });
 
+// Background sync outside 6 AM–6 PM (pollService) — off by default; on
+// for testing after hours (License Administration).
+router.get('/api/settings/poll-24-7', requireLicenseAdmin, async (req, res) => {
+  res.json({ on: await appSettings.isPoll247() });
+});
+
+router.post('/api/settings/poll-24-7', requireLicenseAdmin, async (req, res) => {
+  await appSettings.setPoll247(!!req.body.on);
+  res.json({ on: !!req.body.on });
+});
+
 // ─── Audit log ("Activity Log" page) ────────────────────────────────────
 // Open to any signed-in user (requireLogin, not requireAdmin) — meant as
 // a shared, visible trail for the whole team, same access level as the
