@@ -15,6 +15,7 @@ const access = require('../services/access');
 const membership = require('../services/membership');
 const licenseTerms = require('../services/licenseTerms');
 const webhookHealth = require('../services/webhookHealth');
+const currentProject = require('../services/currentProject');
 const { ReconnectRequiredError } = require('../services/authManager');
 
 // ─── Revizto license browser (for the license dropdown) ─────────────
@@ -139,13 +140,17 @@ async function _projectScope(req) {
 // archived ones — those are only on License Administration), each
 // with their role on it, so pages can show/hide admin-only controls.
 router.get('/api/projects', requireLogin, async (req, res) => {
-  const userAccess = req.access; // loaded by requireLogin
-  const allowed = access.accessibleProjectIds(userAccess);
-  const { rows } = await pool.query(
-    'SELECT * FROM projects WHERE archived_at IS NULL AND ($1::int[] IS NULL OR id = ANY($1)) ORDER BY created_at DESC',
-    [allowed]
-  );
-  res.json({ projects: rows.map((p) => ({ ...p, my_role: access.effectiveProjectRole(userAccess, p.id) })) });
+  res.json({ projects: await currentProject.listProjects(req.access) }); // req.access: loaded by requireLogin
+});
+
+// Opens a project for this person on every page (sidebar switcher, My
+// Connections' "Open a project") — see services/currentProject.js.
+router.put('/api/me/current-project', requireLogin, async (req, res) => {
+  const projectId = Number(req.body.projectId);
+  if (!Number.isInteger(projectId) || !(await currentProject.set(req.session.userId, req.access, projectId))) {
+    return res.status(404).json({ error: "That project isn't one you can open." });
+  }
+  res.json({ currentProjectId: projectId });
 });
 
 /**

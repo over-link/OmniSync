@@ -66,33 +66,36 @@ window.addEventListener('app:ready', async (e) => {
   currentAcc = e.detail.acc;
   document.getElementById('revizto-region-hidden').value = e.detail.revizto.region || 'virginia';
   document.getElementById('pairing-readonly-note').classList.toggle('hidden', isLicenseAdmin);
-  // Coming from License Administration's "+ New Project": open that
-  // project, ready to pair (blank pickers — see renderStep1).
-  const requestedProjectId = Number(new URLSearchParams(location.search).get('project')) || null;
+  // The open project (sidebar switcher, nav.js). License Administration's
+  // "+ New Project" links here with ?project=, which nav.js opens first.
+  activeProjectId = e.detail.currentProject?.id || null;
   _renderStep1();
-  await loadActiveProjectOptions(requestedProjectId);
+  await loadActiveProject();
 });
 
-// ─── Shared project selector (warnings + field mapping) ───────────
+// ─── The open project (warnings + field mapping) ───────────────────
 
 // Only projects this person can administer (license admins: all). A
-// standard member of a project never sees it here.
+// standard member of a project can't set it up here.
 let adminProjects = [];
+let activeProjectId = null;
 
-async function loadActiveProjectOptions(requestedProjectId = null) {
+// (Re-)reads the open project and renders the page for it — also after a
+// save that changed it (pairing, Revizto project id).
+async function loadActiveProject() {
   const { projects } = await api('/api/projects');
   adminProjects = projects.filter((p) => p.my_role && p.my_role !== 'standard');
-  const select = document.getElementById('active-project-select');
-  select.innerHTML =
-    '<option value="">Select a project</option>' +
-    adminProjects.map((p) => `<option value="${p.id}">${p.name}${_isPaired(p) ? '' : ' — not paired yet'}</option>`).join('');
-
-  const preferred = requestedProjectId ? String(requestedProjectId) : localStorage.getItem('setup:lastProjectId');
-  if (preferred && adminProjects.some((p) => String(p.id) === preferred)) {
-    select.value = preferred;
-    localStorage.setItem('setup:lastProjectId', preferred);
-    await onActiveProjectChange(preferred);
-  }
+  const project = adminProjects.find((p) => p.id === activeProjectId);
+  const openProject = projects.find((p) => p.id === activeProjectId);
+  document.getElementById('active-project-name').textContent = openProject
+    ? `${openProject.name}${_isPaired(openProject) ? '' : ' — not paired yet'}`
+    : 'No project open';
+  // Open, but only as a standard member: say so, and hide the steps
+  // entirely rather than leave them empty.
+  const standardOnly = !!openProject && !project;
+  document.getElementById('setup-not-admin-note').classList.toggle('hidden', !standardOnly);
+  document.getElementById('setup-accordion').classList.toggle('hidden', standardOnly);
+  await onActiveProjectChange(project ? String(project.id) : '');
 }
 
 function _escapeHtml(value) {
@@ -145,12 +148,10 @@ async function onActiveProjectChange(projectId) {
   ]);
 }
 
-document.getElementById('active-project-select').addEventListener('change', async (e) => {
-  const projectId = e.target.value;
-  if (projectId) localStorage.setItem('setup:lastProjectId', projectId);
-  else localStorage.removeItem('setup:lastProjectId');
-  await onActiveProjectChange(projectId);
-});
+// The open project's id as a string, if this person can set it up; '' if not.
+function _setupProjectId() {
+  return adminProjects.some((p) => p.id === activeProjectId) ? String(activeProjectId) : '';
+}
 
 async function loadMappingWarnings(projectId) {
   const warningsEl = document.getElementById('setup-warnings');
@@ -344,7 +345,7 @@ function renderStatusMapRows(options, currentMap) {
 }
 
 document.getElementById('save-status-map-btn').addEventListener('click', async () => {
-  const projectId = document.getElementById('active-project-select').value;
+  const projectId = _setupProjectId();
   const resultEl = document.getElementById('status-map-result');
   const mappings = [...document.querySelectorAll('#status-map-rows .mapping-row')]
     .map((row) => ({
@@ -398,7 +399,7 @@ function renderTypeMapRows(options, currentMap) {
 }
 
 document.getElementById('save-type-map-btn').addEventListener('click', async () => {
-  const projectId = document.getElementById('active-project-select').value;
+  const projectId = _setupProjectId();
   const resultEl = document.getElementById('type-map-result');
   const mappings = [...document.querySelectorAll('#type-map-rows .mapping-row')]
     .map((row) => ({
@@ -686,7 +687,7 @@ function _renderStep1() {
   const pairingRows = document.getElementById('project-pairing-rows');
   const p = step1Project;
   if (!p) {
-    hubRow.innerHTML = '<p class="hint">Select a project above.</p>';
+    hubRow.innerHTML = '<p class="hint">Open a project with the Project menu at the top of the sidebar.</p>';
     pairingRows.innerHTML = '';
     return;
   }
@@ -840,7 +841,7 @@ function wirePairingRowHandlers() {
       if (!value) return;
       try {
         await api(`/api/projects/${id}/revizto-project-id`, { method: 'PATCH', body: JSON.stringify({ revizto_project_id: value }) });
-        await loadActiveProjectOptions(Number(id));
+        await loadActiveProject();
       } catch (err) {
         alert(err.message);
       }
@@ -908,7 +909,7 @@ function wirePairingRowHandlers() {
       resultEl.innerHTML = `<span class="pairing-loading">${SPINNER}Checking your admin rights and saving…</span>`;
       try {
         await api(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
-        await loadActiveProjectOptions(Number(id)); // re-reads the project and re-renders step 1
+        await loadActiveProject(); // re-reads the project and re-renders step 1
       } catch (err) {
         btn.disabled = false;
         if (err.data?.code === 'revizto_license_role') {
@@ -1008,7 +1009,7 @@ async function loadAutoSyncSettings(projectId) {
 }
 
 document.getElementById('save-auto-sync-btn').addEventListener('click', async () => {
-  const projectId = document.getElementById('active-project-select').value;
+  const projectId = _setupProjectId();
   const resultEl = document.getElementById('auto-sync-result');
   const enabled = document.getElementById('auto-sync-enabled-toggle').checked;
   try {
@@ -1037,7 +1038,7 @@ async function loadManualUnlinkSetting(projectId) {
 }
 
 document.getElementById('allow-manual-unlink-toggle').addEventListener('change', async (e) => {
-  const projectId = document.getElementById('active-project-select').value;
+  const projectId = _setupProjectId();
   const resultEl = document.getElementById('allow-manual-unlink-result');
   if (!projectId) {
     e.target.checked = false;

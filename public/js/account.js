@@ -9,7 +9,7 @@ async function api(url, options = {}) {
   return data;
 }
 
-function render({ user, acc, revizto }) {
+function render({ user, acc, revizto, projects, currentProject }) {
   if (!user) {
     document.getElementById('connections-section').classList.add('hidden');
     return;
@@ -35,11 +35,66 @@ function render({ user, acc, revizto }) {
   document.getElementById('revizto-status').textContent = revizto.connected ? 'Connected' : 'Not connected';
   document.getElementById('revizto-status').className = 'badge ' + (revizto.connected ? 'badge-success' : 'badge-neutral');
   document.getElementById('revizto-connect-btn').textContent = revizto.connected ? 'Reconnect Revizto' : 'Connect Revizto';
+
+  _renderOpenProject(user, acc.connected && revizto.connected, projects || [], currentProject);
 }
+
+// ─── Step 3: Open a project ─────────────────────────────────────────
+// Opening one saves it to the account (nav.js switchProject) — every page
+// then shows it until they switch. Arriving here because a page needed a
+// project (nav.js adds ?next=/that-page) goes back there afterwards.
+
+function _nextPage() {
+  const next = new URLSearchParams(location.search).get('next');
+  return next && /^\/[a-z]+$/.test(next) ? next : '/issues'; // own pages only
+}
+
+function _renderOpenProject(user, fullyConnected, projects, currentProject) {
+  const section = document.getElementById('open-project-section');
+  section.classList.toggle('hidden', !fullyConnected);
+  if (!fullyConnected) return;
+  const picker = document.getElementById('open-project-picker');
+  const select = document.getElementById('open-project-select');
+  const empty = document.getElementById('open-project-empty');
+  picker.classList.toggle('hidden', !projects.length);
+  empty.classList.toggle('hidden', projects.length > 0);
+  if (!projects.length) {
+    empty.textContent = user.isLicenseAdmin
+      ? 'No projects yet — create one on License Administration.'
+      : "You haven't been added to any projects yet — ask a project admin to invite you.";
+    return;
+  }
+  // new Option sets text, not HTML — project names are user data.
+  select.replaceChildren();
+  if (!currentProject) select.add(new Option('Select a project', ''));
+  for (const p of projects) {
+    select.add(new Option(p.revizto_project_uuid && p.acc_project_id ? p.name : `${p.name} (not paired yet)`, p.id));
+  }
+  select.value = currentProject ? String(currentProject.id) : '';
+}
+
+document.getElementById('open-project-btn').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  const projectId = document.getElementById('open-project-select').value;
+  const resultEl = document.getElementById('open-project-result');
+  resultEl.textContent = '';
+  if (!projectId) {
+    resultEl.textContent = 'Choose a project first.';
+    return;
+  }
+  btn.disabled = true;
+  try {
+    await window.switchProject(projectId);
+    window.location.href = _nextPage();
+  } catch (err) {
+    btn.disabled = false;
+    resultEl.textContent = err.message;
+  }
+});
 
 async function refreshMe() {
   const data = await api('/auth/me');
-  render(data);
+  render({ ...data, currentProject: (data.projects || []).find((p) => p.id === data.currentProjectId) || null });
 }
 
 window.addEventListener('app:ready', (e) => render(e.detail));

@@ -88,6 +88,19 @@
         <div id="revizto-exchange-result" class="result-text"></div>
       </div>
     </section>
+    <!-- Once both are connected: which project to work in. It stays open on
+         every page until switched here or in the sidebar (nav.js). -->
+    <section id="open-project-section" class="card hidden">
+      <div class="step-label">Step 3</div>
+      <h2>Open a project</h2>
+      <p class="hint">The project you open stays open on every page until you switch it — here, or with the Project menu at the top of the sidebar.</p>
+      <div id="open-project-picker" class="field-row">
+        <select id="open-project-select" aria-label="Project"></select>
+        <button id="open-project-btn" type="button" class="btn">Open project</button>
+      </div>
+      <p id="open-project-empty" class="hint hidden"></p>
+      <div id="open-project-result" class="result-text" role="status"></div>
+    </section>
   </div>
   <script src="/js/nav.js"></script>
   <script src="/js/account.js"></script>

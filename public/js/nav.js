@@ -7,7 +7,10 @@
  * redirects EVERYONE away from every page except /account until they're
  * signed in with both ACC and Revizto connected, and dispatches an
  * "app:ready" event so each page's own script can proceed without
- * re-fetching /auth/me.
+ * re-fetching /auth/me. Also owns the open project: the sidebar's
+ * project switcher, shared by every page (services/currentProject.js) —
+ * pages read it from app:ready's `currentProject` instead of their own
+ * drop-downs.
  *
  * Client-side hiding/redirects here are a UX convenience, not the security
  * boundary — every route checks the same rules server-side
@@ -20,6 +23,11 @@ const ADMIN_PAGES = {
   // License Administration: license admins only.
   '/license': (user) => user.isLicenseAdmin,
 };
+
+// Pages that show one project's data — they need a project open (the
+// sidebar switcher). Someone with several projects and none open yet is
+// sent to My Connections to pick one first.
+const PROJECT_PAGES = ['/issues', '/logs', '/setup', '/team', '/dashboards'];
 
 const NAV_LINKS = [
   { href: '/issues', label: 'Issues' },
@@ -116,11 +124,62 @@ function showAccessDenied(message) {
 }
 window.showAccessDenied = showAccessDenied;
 
+/**
+ * Opens a project on every page (saved to the account —
+ * services/currentProject.js). Throws with the server's message if it
+ * isn't one they can open.
+ */
+async function switchProject(projectId) {
+  const res = await fetch('/api/me/current-project', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ projectId: Number(projectId) }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+}
+window.switchProject = switchProject;
+
+/** The sidebar's project switcher. Built with textContent — names are user data. */
+function _projectSwitcher(projects, currentProjectId) {
+  const wrap = document.createElement('div');
+  wrap.className = 'sidebar-project';
+  const label = document.createElement('label');
+  label.htmlFor = 'sidebar-project-select';
+  label.textContent = 'Project';
+  const select = document.createElement('select');
+  select.id = 'sidebar-project-select';
+  if (!currentProjectId) select.add(new Option('Select a project', ''));
+  for (const p of projects) {
+    const paired = p.revizto_project_uuid && p.acc_project_id;
+    select.add(new Option(paired ? p.name : `${p.name} (not paired yet)`, p.id));
+  }
+  select.value = currentProjectId ? String(currentProjectId) : '';
+  select.title = select.selectedOptions[0]?.text || ''; // full name — the sidebar is narrow
+  select.addEventListener('change', async () => {
+    if (!select.value) return;
+    select.disabled = true;
+    try {
+      await switchProject(select.value);
+      window.location.reload(); // every page re-reads the open project on load
+    } catch (err) {
+      select.disabled = false;
+      select.value = currentProjectId ? String(currentProjectId) : '';
+      showAlertDialog("Couldn't switch project", err.message);
+    }
+  });
+  wrap.append(label, select);
+  return wrap;
+}
+
 async function loadNav() {
   let user = null;
   let acc = { connected: false };
   let revizto = { connected: false };
   let accessDenied = null;
+  let projects = [];
+  let currentProjectId = null;
   try {
     const res = await fetch('/auth/me', { credentials: 'same-origin' });
     const data = await res.json();
@@ -128,6 +187,8 @@ async function loadNav() {
     acc = data.acc;
     revizto = data.revizto;
     accessDenied = data.accessDenied || null;
+    projects = data.projects || [];
+    currentProjectId = data.currentProjectId || null;
   } catch {
     // network/auth failure — treat as signed out
   }
@@ -173,6 +234,26 @@ async function loadNav() {
     return;
   }
 
+  // A link naming a project (e.g. License Administration's "+ New Project"
+  // → /setup?project=12) opens that project, if it's one they can open.
+  const linkedProjectId = Number(new URLSearchParams(window.location.search).get('project')) || null;
+  if (fullyConnected && linkedProjectId && linkedProjectId !== currentProjectId && projects.some((p) => p.id === linkedProjectId)) {
+    try {
+      await switchProject(linkedProjectId);
+      currentProjectId = linkedProjectId;
+    } catch {
+      // keeps the project they had open
+    }
+  }
+
+  // Several projects and none open yet: pick one on My Connections first,
+  // then come back here.
+  if (fullyConnected && !currentProjectId && projects.length > 1 && PROJECT_PAGES.includes(path)) {
+    window.location.replace(`/account?next=${encodeURIComponent(path)}`);
+    return;
+  }
+  const currentProject = projects.find((p) => p.id === currentProjectId) || null;
+
   const mount = document.getElementById('sidebar-mount');
   if (mount) {
     mount.innerHTML = `
@@ -195,6 +276,10 @@ async function loadNav() {
         <div class="sidebar-footer" id="sidebar-footer"></div>
       </div>
     `;
+    // The open project, under the brand — one switcher for every page.
+    if (fullyConnected && projects.length) {
+      mount.querySelector('.sidebar-brand').after(_projectSwitcher(projects, currentProjectId));
+    }
     // Who's signed in + Sign out, bottom left of the sidebar. Built with
     // textContent — the email is user data.
     const footer = document.getElementById('sidebar-footer');
@@ -228,7 +313,9 @@ async function loadNav() {
   if (document.readyState === 'loading') {
     await new Promise((resolve) => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
   }
-  window.dispatchEvent(new CustomEvent('app:ready', { detail: { user, acc, revizto } }));
+  // projects: every project they can open (each with my_role);
+  // currentProject: the open one (null if none yet or they have none).
+  window.dispatchEvent(new CustomEvent('app:ready', { detail: { user, acc, revizto, projects, currentProject } }));
   if (accessDenied) showAccessDenied(accessDenied);
 }
 

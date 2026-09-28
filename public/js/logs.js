@@ -22,9 +22,19 @@ window.addEventListener('app:ready', async (e) => {
     return;
   }
   document.getElementById('logs-app').classList.remove('hidden');
-  await loadProjectOptions();
+  _initProjectFilter(e.detail);
   await loadEntries({ reset: true });
 });
+
+// Scoped to the open project (sidebar switcher, nav.js); "All projects"
+// widens this page only, for people with more than one.
+let openProjectId = '';
+function _initProjectFilter({ projects, currentProject }) {
+  openProjectId = currentProject ? String(currentProject.id) : '';
+  currentProjectId = openProjectId;
+  document.getElementById('log-project-name').textContent = currentProject?.name || 'All projects';
+  document.getElementById('log-all-projects-wrap').classList.toggle('hidden', !(currentProject && projects.length > 1));
+}
 
 // <input type="date"> gives "YYYY-MM-DD" with no timezone. Build the
 // boundary in the viewer's OWN timezone (new Date(y, m, d) is local
@@ -41,21 +51,6 @@ function _dateRange() {
   const fromValue = document.getElementById('log-from-date').value;
   const toValue = document.getElementById('log-to-date').value;
   return { from: _localDayStart(fromValue), to: _localDayStart(toValue, 1), fromValue, toValue };
-}
-
-async function loadProjectOptions() {
-  const select = document.getElementById('log-project-select');
-  try {
-    const { projects } = await api('/api/projects');
-    for (const p of projects) {
-      const opt = document.createElement('option');
-      opt.value = p.id;
-      opt.textContent = p.name;
-      select.appendChild(opt);
-    }
-  } catch (err) {
-    console.warn('Could not load project list for filter:', err.message);
-  }
 }
 
 // Internal field keys (Revizto's diff-comment keys) -> what people call them.
@@ -227,8 +222,9 @@ function _reload() {
   loadEntries({ reset: true });
 }
 
-document.getElementById('log-project-select').addEventListener('change', (e) => {
-  currentProjectId = e.target.value;
+document.getElementById('log-all-projects').addEventListener('change', (e) => {
+  currentProjectId = e.target.checked ? '' : openProjectId;
+  document.getElementById('log-project-name').classList.toggle('widened', e.target.checked);
   _reload();
 });
 document.getElementById('log-action-select').addEventListener('change', _reload);

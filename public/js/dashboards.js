@@ -47,23 +47,18 @@ window.addEventListener('app:ready', async (e) => {
   document.getElementById('dash-app').classList.remove('hidden');
   _renderLegend();
   _applyPreset(DEFAULT_MONTHS);
-  await loadProjectOptions();
+  _initProjectFilter(e.detail);
   await load();
 });
 
-async function loadProjectOptions() {
-  const select = document.getElementById('dash-project-select');
-  try {
-    const { projects } = await api('/api/projects');
-    for (const p of projects) {
-      const opt = document.createElement('option');
-      opt.value = p.id;
-      opt.textContent = p.name;
-      select.appendChild(opt);
-    }
-  } catch (err) {
-    console.warn('Could not load project list for filter:', err.message);
-  }
+// Scoped to the open project (sidebar switcher, nav.js); "All projects"
+// widens this page only, for people with more than one.
+let openProjectId = '';
+function _initProjectFilter({ projects, currentProject }) {
+  openProjectId = currentProject ? String(currentProject.id) : '';
+  currentProjectId = openProjectId;
+  document.getElementById('dash-project-name').textContent = currentProject?.name || 'All projects';
+  document.getElementById('dash-all-projects-wrap').classList.toggle('hidden', !(currentProject && projects.length > 1));
 }
 
 // ─── Dates ─────────────────────────────────────────────────────────
@@ -630,8 +625,9 @@ function _renderActivityTable(points, granularity) {
 
 // ─── Filters ───────────────────────────────────────────────────────
 
-document.getElementById('dash-project-select').addEventListener('change', (e) => {
-  currentProjectId = e.target.value;
+document.getElementById('dash-all-projects').addEventListener('change', (e) => {
+  currentProjectId = e.target.checked ? '' : openProjectId;
+  document.getElementById('dash-project-name').classList.toggle('widened', e.target.checked);
   load();
 });
 document.querySelectorAll('.dash-preset').forEach((btn) =>

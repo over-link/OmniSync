@@ -20,6 +20,7 @@ const tokenStore = require('../services/tokenStore');
 const passwords = require('../services/passwords');
 const emailService = require('../services/emailService');
 const access = require('../services/access');
+const currentProject = require('../services/currentProject');
 
 // Everyone signs in again at least this often, however active they are —
 // so access decisions (removed from the team, password reset) can't be
@@ -364,8 +365,13 @@ router.get('/auth/me', async (req, res) => {
     isPrimary: userAccess.isPrimary,
     isAnyProjectAdmin: access.isAnyProjectAdmin(userAccess),
   };
-  const accTokens = await tokenStore.getAccTokens(req.session.userId);
-  const reviztoTokens = await tokenStore.getReviztoTokens(req.session.userId);
+  const [accTokens, reviztoTokens, { projects, currentProjectId }] = await Promise.all([
+    tokenStore.getAccTokens(req.session.userId),
+    tokenStore.getReviztoTokens(req.session.userId),
+    // The projects they can open and the one that's open — every page's
+    // sidebar switcher (nav.js) uses this; see services/currentProject.js.
+    currentProject.resolve(req.session.userId, userAccess),
+  ]);
 
   // "Connected" means the refresh token is actually still usable, not
   // just "a row exists in the DB" — a row can outlive its own refresh
@@ -407,6 +413,8 @@ router.get('/auth/me', async (req, res) => {
           licenseId: reviztoTokens.license_id,
         }
       : { connected: false },
+    projects,
+    currentProjectId,
   });
 });
 

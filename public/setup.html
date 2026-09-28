@@ -22,13 +22,11 @@
     </button>
 
 
-    <!-- Today this only scopes Field mapping/Auto sync/Issue linking below
-         (one shared DB). Under the planned redesign this becomes the real
-         project switcher — each project's own DB, own team/mappings/issues
-         — see README "Planned: multi-project workspaces". -->
+    <!-- The open project (switched with the sidebar's Project menu —
+         nav.js), which everything below sets up. -->
     <div class="card setup-context-bar">
-      <label for="active-project-select">Project:</label>
-      <select id="active-project-select"><option value="">Select a project</option></select>
+      <strong id="active-project-name"></strong>
+      <p id="setup-not-admin-note" class="hint hidden">You're a standard member of this project — Project Setup is for its project admins. Open another project with the sidebar's Project menu.</p>
       <p id="unpaired-note" class="hint hidden">This project isn't paired yet — pair it in step 1 below before setting up field mapping, auto-sync or issue linking.</p>
     </div>
 

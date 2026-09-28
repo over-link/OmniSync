@@ -553,4 +553,10 @@ UPDATE projects p SET revizto_license_uuid = t.license_id
 -- license admins until unarchived.
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
 
+-- The project each person has open (sidebar switcher / My Connections'
+-- "Open a project"), shared by every page and kept across sign-ins and
+-- devices. Resolved on each /auth/me — see services/currentProject.js —
+-- so a project they lost access to, or that was archived, just drops out.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS current_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL;
+
 -- connect-pg-simple creates its own "session" table automatically on first run.

@@ -20,36 +20,16 @@ let assignableRoles = []; // [{ value, label }]
 
 window.addEventListener('app:ready', async (e) => {
   if (!e.detail.user) return;
-  const { projects } = await api('/api/projects');
-  const select = document.getElementById('team-project-select');
-  if (!projects.length) {
+  // The open project — switched with the sidebar's Project menu (nav.js).
+  const project = e.detail.currentProject;
+  const nameEl = document.getElementById('team-project-name');
+  if (!project) {
     document.getElementById('team-no-projects').classList.remove('hidden');
-    select.closest('.card').classList.add('hidden');
+    nameEl.closest('.card').classList.add('hidden');
     return;
   }
-  for (const p of projects) {
-    const opt = document.createElement('option');
-    opt.value = p.id;
-    opt.textContent = p.name;
-    select.appendChild(opt);
-  }
-  let saved = null;
-  try {
-    saved = localStorage.getItem('team:lastProjectId');
-  } catch {
-    // storage blocked — just start on the first project
-  }
-  if (saved && projects.some((p) => String(p.id) === saved)) select.value = saved;
-  await selectProject(select.value);
-});
-
-document.getElementById('team-project-select').addEventListener('change', (e) => {
-  try {
-    localStorage.setItem('team:lastProjectId', e.target.value);
-  } catch {
-    // storage blocked — selection still works for this visit
-  }
-  selectProject(e.target.value);
+  nameEl.textContent = project.name;
+  await selectProject(String(project.id));
 });
 
 async function selectProject(id) {

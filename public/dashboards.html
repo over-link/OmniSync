@@ -23,10 +23,12 @@
       <!-- One filter row scoping everything below it. -->
       <div class="card log-filters">
         <div class="filter-group">
-          <label for="dash-project-select">Project</label>
-          <select id="dash-project-select">
-            <option value="">All projects</option>
-          </select>
+          <label>Project</label>
+          <div class="filter-project">
+            <strong id="dash-project-name"></strong>
+            <!-- A wider view only — doesn't change the open project. -->
+            <label class="filter-check hidden" id="dash-all-projects-wrap"><input type="checkbox" id="dash-all-projects" /> All projects</label>
+          </div>
         </div>
         <div class="filter-group">
           <label>Range</label>

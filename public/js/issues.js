@@ -11,6 +11,7 @@ async function api(url, options = {}) {
 
 let currentBoard = [];
 let currentProjects = [];
+let currentProjectId = null; // the open project (sidebar switcher, nav.js)
 const SCALAR_FILTER_FIELDS = ['status', 'stampCategory', 'issueType', 'stamp', 'assignee', 'assigneeCompany', 'priority', 'isClash'];
 const ARRAY_FILTER_FIELDS = ['tags', 'level', 'zone', 'room']; // fields where board items hold an array, not a single value
 const ALL_FILTER_FIELDS = [...SCALAR_FILTER_FIELDS, ...ARRAY_FILTER_FIELDS];
@@ -80,37 +81,17 @@ window.addEventListener('app:ready', async (e) => {
     return;
   }
   document.getElementById('board-app').classList.remove('hidden');
-  await loadProjectOptions();
-});
-
-async function loadProjectOptions() {
-  const select = document.getElementById('project-select');
-  const { projects } = await api('/api/projects');
-  currentProjects = projects;
-  if (!projects.length) {
-    select.innerHTML = '<option value="">No projects set up yet — see Setup</option>';
-    return;
-  }
-  select.innerHTML = projects.map((p) => `<option value="${p.id}">${p.name}</option>`).join('');
-
-  const lastProjectId = localStorage.getItem('issues:lastProjectId');
-  if (lastProjectId && projects.some((p) => String(p.id) === lastProjectId)) {
-    select.value = lastProjectId;
-  }
+  // The open project — switched with the sidebar's Project menu (nav.js).
+  currentProjects = e.detail.projects;
+  currentProjectId = e.detail.currentProject?.id || null;
+  document.getElementById('issues-project-name').textContent = e.detail.currentProject?.name || 'No projects set up yet — see Setup';
   await loadBoard();
-}
-
-document.getElementById('project-select').addEventListener('change', () => {
-  const projectId = document.getElementById('project-select').value;
-  if (projectId) localStorage.setItem('issues:lastProjectId', projectId);
-  else localStorage.removeItem('issues:lastProjectId');
-  _resetPageAndSelection();
-  loadBoard();
 });
+
 document.getElementById('refresh-board-btn').addEventListener('click', loadBoard);
 
 async function loadBoard() {
-  const projectId = document.getElementById('project-select').value;
+  const projectId = currentProjectId;
   const rowsEl = document.getElementById('board-rows');
   if (!projectId) return;
   rowsEl.innerHTML = 'Loading issues...';
@@ -265,7 +246,7 @@ function renderBoard() {
   actionsEl.classList.toggle('hidden', !hasUnlinked);
   selectAllBar.classList.toggle('hidden', !hasUnlinked);
 
-  const projectId = document.getElementById('project-select').value;
+  const projectId = currentProjectId;
   const allowManualUnlink = !!currentProjects.find((p) => String(p.id) === String(projectId))?.allow_manual_unlink;
 
   rowsEl.innerHTML = pageIssues
@@ -351,7 +332,7 @@ document.getElementById('board-rows').addEventListener('click', async (e) => {
   if (!btn) return;
   const reviztoId = btn.dataset.id;
   if (!confirm(`Unlink Revizto issue #${reviztoId} from its ACC issue? This only removes the tracked link — neither issue is deleted.`)) return;
-  const projectId = document.getElementById('project-select').value;
+  const projectId = currentProjectId;
   btn.disabled = true;
   btn.textContent = 'Unlinking...';
   try {
@@ -365,7 +346,7 @@ document.getElementById('board-rows').addEventListener('click', async (e) => {
 });
 
 document.getElementById('link-selected-btn').addEventListener('click', async () => {
-  const projectId = document.getElementById('project-select').value;
+  const projectId = currentProjectId;
   const issueIds = [...selectedIds]; // across every page, not just this one
   const resultEl = document.getElementById('link-result');
   if (!issueIds.length) {

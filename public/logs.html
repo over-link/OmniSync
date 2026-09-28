@@ -26,10 +26,12 @@
     <div id="logs-app" class="hidden">
       <div class="card log-filters">
         <div class="filter-group">
-          <label for="log-project-select">Project</label>
-          <select id="log-project-select">
-            <option value="">All projects</option>
-          </select>
+          <label>Project</label>
+          <div class="filter-project">
+            <strong id="log-project-name"></strong>
+            <!-- A wider view only — doesn't change the open project. -->
+            <label class="filter-check hidden" id="log-all-projects-wrap"><input type="checkbox" id="log-all-projects" /> All projects</label>
+          </div>
         </div>
         <div class="filter-group">
           <label for="log-action-select">Action</label>
