@@ -47,19 +47,15 @@ window.addEventListener('app:ready', async (e) => {
   document.getElementById('dash-app').classList.remove('hidden');
   _renderLegend();
   _applyPreset(DEFAULT_MONTHS);
-  _initProjectFilter(e.detail);
+  // Starts on the open project; "All projects" is at the top (nav.js).
+  const { projects, currentProject } = e.detail;
+  currentProjectId = currentProject ? String(currentProject.id) : '';
+  window.fillProjectFilter(document.getElementById('dash-project-select'), projects, currentProject, (projectId) => {
+    currentProjectId = projectId;
+    load();
+  });
   await load();
 });
-
-// Scoped to the open project (sidebar switcher, nav.js); "All projects"
-// widens this page only, for people with more than one.
-let openProjectId = '';
-function _initProjectFilter({ projects, currentProject }) {
-  openProjectId = currentProject ? String(currentProject.id) : '';
-  currentProjectId = openProjectId;
-  document.getElementById('dash-project-name').textContent = currentProject?.name || 'All projects';
-  document.getElementById('dash-all-projects-wrap').classList.toggle('hidden', !(currentProject && projects.length > 1));
-}
 
 // ─── Dates ─────────────────────────────────────────────────────────
 // Everything is in the viewer's local calendar: "YYYY-MM-DD" strings from
@@ -625,11 +621,6 @@ function _renderActivityTable(points, granularity) {
 
 // ─── Filters ───────────────────────────────────────────────────────
 
-document.getElementById('dash-all-projects').addEventListener('change', (e) => {
-  currentProjectId = e.target.checked ? '' : openProjectId;
-  document.getElementById('dash-project-name').classList.toggle('widened', e.target.checked);
-  load();
-});
 document.querySelectorAll('.dash-preset').forEach((btn) =>
   btn.addEventListener('click', () => {
     _applyPreset(Number(btn.dataset.months));

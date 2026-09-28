@@ -311,21 +311,6 @@ body {
 .log-empty { padding: 1.5rem 0.4rem; color: var(--muted); text-align: center; }
 .log-filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.75rem 1.25rem; }
 .log-filters .filter-group label { margin: 0; }
-/* The open project's name + "All projects" (Dashboards, Activity Log). */
-.filter-project { display: flex; align-items: center; gap: 0.9rem; min-height: 2.25rem; font-size: 0.9rem; }
-.filter-project strong.widened { color: var(--muted); font-weight: 500; } /* "All projects" ticked */
-.log-filters .filter-group label.filter-check {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-family: var(--font-sans);
-  font-size: 0.85rem;
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--ink);
-  cursor: pointer;
-}
-.filter-check input { margin: 0; padding: 0; }
 .log-filter-actions { display: flex; gap: 0.6rem; }
 #log-date-hint { flex-basis: 100%; margin: 0; }
 #log-date-hint:empty { display: none; }

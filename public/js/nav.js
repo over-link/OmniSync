@@ -138,8 +138,50 @@ async function switchProject(projectId) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || res.statusText);
+  // Keep the sidebar's switcher showing it when a page switched without reloading.
+  const sidebarSelect = document.getElementById('sidebar-project-select');
+  if (sidebarSelect) {
+    sidebarSelect.querySelector('option[value=""]')?.remove();
+    sidebarSelect.value = String(projectId);
+    sidebarSelect.title = sidebarSelect.selectedOptions[0]?.text || '';
+  }
 }
 window.switchProject = switchProject;
+
+function _projectLabel(p) {
+  return p.revizto_project_uuid && p.acc_project_id ? p.name : `${p.name} (not paired yet)`;
+}
+
+/**
+ * The Project filter on Dashboards and Activity Log: "All projects" first,
+ * then every project they can open, starting on the open one. Picking a
+ * project opens it everywhere, like the sidebar; "All projects" only
+ * widens that page. onChange(projectId, or '' for all) runs after either.
+ */
+function fillProjectFilter(select, projects, currentProject, onChange) {
+  select.replaceChildren(new Option('All projects', ''));
+  for (const p of projects) select.add(new Option(_projectLabel(p), p.id));
+  select.value = currentProject ? String(currentProject.id) : '';
+  let shown = select.value;
+  select.addEventListener('change', async () => {
+    const value = select.value;
+    if (value) {
+      select.disabled = true;
+      try {
+        await switchProject(value);
+      } catch (err) {
+        select.value = shown; // the switch didn't take
+        showAlertDialog("Couldn't switch project", err.message);
+        return;
+      } finally {
+        select.disabled = false;
+      }
+    }
+    shown = value;
+    onChange(value);
+  });
+}
+window.fillProjectFilter = fillProjectFilter;
 
 /** The sidebar's project switcher. Built with textContent — names are user data. */
 function _projectSwitcher(projects, currentProjectId) {
@@ -151,10 +193,7 @@ function _projectSwitcher(projects, currentProjectId) {
   const select = document.createElement('select');
   select.id = 'sidebar-project-select';
   if (!currentProjectId) select.add(new Option('Select a project', ''));
-  for (const p of projects) {
-    const paired = p.revizto_project_uuid && p.acc_project_id;
-    select.add(new Option(paired ? p.name : `${p.name} (not paired yet)`, p.id));
-  }
+  for (const p of projects) select.add(new Option(_projectLabel(p), p.id));
   select.value = currentProjectId ? String(currentProjectId) : '';
   select.title = select.selectedOptions[0]?.text || ''; // full name — the sidebar is narrow
   select.addEventListener('change', async () => {

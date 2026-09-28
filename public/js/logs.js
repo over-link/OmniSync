@@ -22,19 +22,15 @@ window.addEventListener('app:ready', async (e) => {
     return;
   }
   document.getElementById('logs-app').classList.remove('hidden');
-  _initProjectFilter(e.detail);
+  // Starts on the open project; "All projects" is at the top (nav.js).
+  const { projects, currentProject } = e.detail;
+  currentProjectId = currentProject ? String(currentProject.id) : '';
+  window.fillProjectFilter(document.getElementById('log-project-select'), projects, currentProject, (projectId) => {
+    currentProjectId = projectId;
+    _reload();
+  });
   await loadEntries({ reset: true });
 });
-
-// Scoped to the open project (sidebar switcher, nav.js); "All projects"
-// widens this page only, for people with more than one.
-let openProjectId = '';
-function _initProjectFilter({ projects, currentProject }) {
-  openProjectId = currentProject ? String(currentProject.id) : '';
-  currentProjectId = openProjectId;
-  document.getElementById('log-project-name').textContent = currentProject?.name || 'All projects';
-  document.getElementById('log-all-projects-wrap').classList.toggle('hidden', !(currentProject && projects.length > 1));
-}
 
 // <input type="date"> gives "YYYY-MM-DD" with no timezone. Build the
 // boundary in the viewer's OWN timezone (new Date(y, m, d) is local
@@ -222,11 +218,6 @@ function _reload() {
   loadEntries({ reset: true });
 }
 
-document.getElementById('log-all-projects').addEventListener('change', (e) => {
-  currentProjectId = e.target.checked ? '' : openProjectId;
-  document.getElementById('log-project-name').classList.toggle('widened', e.target.checked);
-  _reload();
-});
 document.getElementById('log-action-select').addEventListener('change', _reload);
 document.getElementById('log-from-date').addEventListener('change', _reload);
 document.getElementById('log-to-date').addEventListener('change', _reload);
