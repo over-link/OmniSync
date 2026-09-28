@@ -13,14 +13,16 @@ const cron = require('node-cron');
 const pool = require('../db/pool');
 const syncService = require('./syncService');
 const appSettings = require('./appSettings');
+const webhookHealth = require('./webhookHealth');
 const { ReconnectRequiredError, getValidAccToken, getValidReviztoToken } = require('./authManager');
 
 // Polling hours and the daily full check, in the team's local time (all
 // of today's users are on Pacific time). Outside ACTIVE hours the
 // 2-minute cycle does nothing unless 24/7 polling is on (appSettings.
 // isPoll247 — meant for a paid tier later). ACC's webhook for field
-// changes made in ACC keeps working around the clock regardless: a
-// dropped ACC edit would otherwise be overwritten by the next full check.
+// changes made in ACC keeps working around the clock regardless (kept
+// alive by the hourly webhook check below): a dropped ACC edit would
+// otherwise be overwritten by the next full check.
 const SYNC_TIMEZONE = process.env.SYNC_TIMEZONE || 'America/Los_Angeles';
 const ACTIVE_START_HOUR = 6; // 6 AM
 const ACTIVE_END_HOUR = 18; // 6 PM (exclusive)
@@ -202,6 +204,15 @@ function startPolling() {
   const reviztoKeepAliveSchedule = process.env.REVIZTO_KEEPALIVE_CRON || '0 4 * * *';
   console.log(`[poll] Revizto connection keep-alive enabled: ${reviztoKeepAliveSchedule}`);
   cron.schedule(reviztoKeepAliveSchedule, keepReviztoConnectionsAlive);
+
+  // Around the clock, like ACC's webhooks themselves: re-registers or
+  // re-activates any project's ACC hook ACC has dropped (webhookHealth).
+  // Also once a minute after start, so a deploy repairs one right away.
+  const webhookCheckSchedule = process.env.WEBHOOK_CHECK_CRON || '17 * * * *'; // hourly by default
+  console.log(`[poll] ACC webhook health check enabled: ${webhookCheckSchedule}`);
+  const checkWebhooks = () => webhookHealth.checkAllProjects().catch((err) => console.error('[webhook-health] Check failed:', err.message));
+  cron.schedule(webhookCheckSchedule, checkWebhooks);
+  setTimeout(checkWebhooks, 60 * 1000);
 }
 
 module.exports = { startPolling, pollTick, pollAllProjects, keepAccConnectionsAlive, keepReviztoConnectionsAlive };

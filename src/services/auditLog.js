@@ -87,7 +87,7 @@ async function count({ projectIds = null, from = null, to = null, action = null 
 }
 
 // Every audit_log.action value (the Activity Log's Action filter accepts only these).
-const ACTIONS = ['field_change', 'comment', 'attachment', 'link', 'unlink', 'deleted', 'error'];
+const ACTIONS = ['field_change', 'comment', 'attachment', 'link', 'unlink', 'deleted', 'error', 'webhook'];
 
 /**
  * Shared WHERE clause for list/count. `from` is inclusive and `to` is

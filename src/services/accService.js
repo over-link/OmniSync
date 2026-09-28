@@ -346,6 +346,19 @@ async function getWebhookStatus(userId, hookId) {
 }
 
 /**
+ * Turns a hook back on (status 'active') — ACC can switch one to
+ * 'inactive' on its own; webhookHealth uses this to repair that.
+ */
+async function setWebhookStatus(userId, hookId, status) {
+  const token = await getValidAccToken(userId);
+  await axios.patch(
+    `${APS_BASE}/webhooks/v1/systems/autodesk.construction.issues/events/issue.updated-1.0/hooks/${hookId}`,
+    { status },
+    { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'x-ads-region': 'US' } }
+  );
+}
+
+/**
  * Lists all currently registered hooks for this event (across all
  * projects the token can see), for finding an existing hook whose ID
  * never got saved locally — e.g. if the create-response's ID field name
@@ -623,6 +636,7 @@ module.exports = {
   getIssueAttributeMappings,
   registerWebhook,
   getWebhookStatus,
+  setWebhookStatus,
   listWebhooks,
   registerTestWebhook,
   deleteWebhook,

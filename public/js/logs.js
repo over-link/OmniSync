@@ -101,6 +101,7 @@ const ACTION_LABELS = {
   unlink: 'Unlinked',
   deleted: 'Deleted',
   error: 'Error',
+  webhook: 'ACC webhook',
 };
 
 function _rowHtml(entry) {

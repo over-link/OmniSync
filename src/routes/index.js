@@ -14,6 +14,7 @@ const dashboards = require('../services/dashboards');
 const access = require('../services/access');
 const membership = require('../services/membership');
 const licenseTerms = require('../services/licenseTerms');
+const webhookHealth = require('../services/webhookHealth');
 const { ReconnectRequiredError } = require('../services/authManager');
 
 // ─── Revizto license browser (for the license dropdown) ─────────────
@@ -157,11 +158,18 @@ router.get('/api/projects', requireLogin, async (req, res) => {
  * the pairing and an already-existing hook is adopted (registerWebhook).
  * `previous` is the project row before a re-pair: if it pointed at a
  * different ACC project, that project's old hook is unregistered first so
- * it doesn't linger.
+ * it doesn't linger. The hook is registered with the project OWNER's
+ * token, not the requester's (webhookHealth — the hourly check would
+ * otherwise not see it and register a duplicate); a failure here is also
+ * repaired by that hourly check.
  */
 async function _autoRegisterWebhook(userId, project, previous = null) {
-  if (!process.env.PUBLIC_BASE_URL || process.env.PUBLIC_BASE_URL.includes('localhost')) {
+  if (!webhookHealth.callbackUrl()) {
     console.warn(`[webhook] Skipping auto-registration for project "${project.name}" — PUBLIC_BASE_URL not set to a real deployed URL.`);
+    return;
+  }
+  if (!project.owner_user_id) {
+    console.warn(`[webhook] Skipping auto-registration for project "${project.name}" — it has no owner yet.`);
     return;
   }
   if (previous?.webhook_id && previous.acc_project_id && previous.acc_project_id !== project.acc_project_id) {
@@ -172,11 +180,7 @@ async function _autoRegisterWebhook(userId, project, previous = null) {
     }
   }
   try {
-    // /webhook/acc-v2, not /webhook/acc — see the manual route below for
-    // why (kept identical so registrations behave the same either way).
-    const callbackUrl = `${process.env.PUBLIC_BASE_URL}/webhook/acc-v2`;
-    const { hookId, adopted } = await accService.registerWebhook(userId, project, callbackUrl);
-    await pool.query('UPDATE projects SET webhook_id = $2 WHERE id = $1', [project.id, hookId]);
+    const { hookId, adopted } = await webhookHealth.registerForProject(project);
     console.log(`[webhook] "${project.name}": ${adopted ? 'adopted the existing' : 'registered a new'} ACC webhook ${hookId}.`);
   } catch (err) {
     await pool.query('UPDATE projects SET webhook_id = NULL WHERE id = $1', [project.id]).catch(() => {});
@@ -422,7 +426,8 @@ router.get('/api/projects/:id/webhook-status', requireProjectRole('project_admin
   if (!project) return res.status(404).json({ error: 'Project not found' });
   if (!project.webhook_id) return res.status(404).json({ error: 'No webhook registered for this project yet' });
   try {
-    const hook = await accService.getWebhookStatus(req.session.userId, project.webhook_id);
+    // The owner's token — hooks are registered under it (webhookHealth).
+    const hook = await accService.getWebhookStatus(project.owner_user_id || req.session.userId, project.webhook_id);
     res.json({ hook });
   } catch (err) {
     if (err instanceof ReconnectRequiredError) {
@@ -474,28 +479,15 @@ router.delete('/api/projects/:id/webhook/:hookId', requireProjectRole('project_a
 router.post('/api/projects/:id/register-webhook', requireProjectRole('project_admin'), requirePaired, async (req, res) => {
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
-  if (!process.env.PUBLIC_BASE_URL || process.env.PUBLIC_BASE_URL.includes('localhost')) {
+  if (!webhookHealth.callbackUrl()) {
     return res.status(400).json({ error: 'PUBLIC_BASE_URL must be set to your real deployed URL — webhooks cannot reach localhost.' });
   }
-  try {
-    // Using /webhook/acc-v2, not /webhook/acc — real testing showed ACC's
-    // delivery system silently suppresses delivery to /webhook/acc (an
-    // identical hook pointing at a brand-new path worked immediately),
-    // most likely due to accumulated delivery-failure history against
-    // that specific URL from earlier in this project's testing. The old
-    // path is kept alive (still handled by the same code) in case it
-    // recovers on its own over time, but new registrations use v2.
-    const callbackUrl = `${process.env.PUBLIC_BASE_URL}/webhook/acc-v2`;
-    const { hookId, adopted } = await accService.registerWebhook(req.session.userId, project, callbackUrl);
-    await pool.query('UPDATE projects SET webhook_id = $2 WHERE id = $1', [project.id, hookId]);
-    res.json({ ok: true, hookId, adopted });
-  } catch (err) {
-    if (err instanceof ReconnectRequiredError) {
-      return res.status(409).json({ error: `Reconnect required: ${err.provider}`, reason: err.reason });
-    }
-    console.error('[webhook] registration failed:', err.response?.data || err.message);
-    res.status(500).json({ error: err.response?.data?.detail || err.message });
-  }
+  // Runs the hourly check (webhookHealth) for this project right now:
+  // repairs a missing/inactive hook, leaves a healthy one alone.
+  const result = await webhookHealth.checkProject(project);
+  if (result.problem) return res.status(502).json({ error: result.problem });
+  const { rows } = await pool.query('SELECT webhook_id FROM projects WHERE id = $1', [project.id]);
+  res.json({ ok: true, hookId: rows[0]?.webhook_id, repaired: result.repaired || null });
 });
 
 // Open to any signed-in user — shows on the Issues page for everyone, and
@@ -796,6 +788,18 @@ async function _handleAccWebhookRequest(req, res) {
     await syncService.handleAccWebhook(project.owner_user_id, project, req.body.payload, reporterEmail);
   } catch (err) {
     console.error('[webhook] Processing failed:', err.message);
+    // Also on the Activity Log — a failed ACC -> Revizto update was
+    // otherwise visible only in Render's console.
+    await auditLog
+      .record({
+        projectId: project.id,
+        accIssueId: req.body?.payload?.id || null,
+        direction: 'acc_to_revizto',
+        action: 'error',
+        outcome: 'error',
+        detail: `Couldn't apply a change made in ACC: ${err.message}`,
+      })
+      .catch(() => {});
   }
 }
 
