@@ -138,13 +138,6 @@ async function switchProject(projectId) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || res.statusText);
-  // Keep the sidebar's switcher showing it when a page switched without reloading.
-  const sidebarSelect = document.getElementById('sidebar-project-select');
-  if (sidebarSelect) {
-    sidebarSelect.querySelector('option[value=""]')?.remove();
-    sidebarSelect.value = String(projectId);
-    sidebarSelect.title = sidebarSelect.selectedOptions[0]?.text || '';
-  }
 }
 window.switchProject = switchProject;
 
@@ -154,32 +147,15 @@ function _projectLabel(p) {
 
 /**
  * The Project filter on Dashboards and Activity Log: "All projects" first,
- * then every project they can open, starting on the open one. Picking a
- * project opens it everywhere, like the sidebar; "All projects" only
- * widens that page. onChange(projectId, or '' for all) runs after either.
+ * then every project they can open, starting on the open one. It filters
+ * that page only — the open project (sidebar) stays as it is (user's call,
+ * 2026-09-27). onChange(projectId, or '' for all).
  */
 function fillProjectFilter(select, projects, currentProject, onChange) {
   select.replaceChildren(new Option('All projects', ''));
   for (const p of projects) select.add(new Option(_projectLabel(p), p.id));
   select.value = currentProject ? String(currentProject.id) : '';
-  let shown = select.value;
-  select.addEventListener('change', async () => {
-    const value = select.value;
-    if (value) {
-      select.disabled = true;
-      try {
-        await switchProject(value);
-      } catch (err) {
-        select.value = shown; // the switch didn't take
-        showAlertDialog("Couldn't switch project", err.message);
-        return;
-      } finally {
-        select.disabled = false;
-      }
-    }
-    shown = value;
-    onChange(value);
-  });
+  select.addEventListener('change', () => onChange(select.value));
 }
 window.fillProjectFilter = fillProjectFilter;
 
