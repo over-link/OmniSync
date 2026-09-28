@@ -1298,7 +1298,7 @@ route enforces it server-side via `routes/auth.js` `requireLicenseAdmin` /
   `/api/projects`, Activity Log and Dashboards are all scoped
   (`_projectScope`); a project they can't see returns 404, same as one
   that doesn't exist.
-- **Whoever pairs must be a project admin (or higher) of both projects**
+- **Whoever pairs must be a project admin (or higher) of the ACC project**
   (`membership.projectAdminProblems`, checked with the pairer's own
   connections on `PATCH /api/projects/:id` and create-and-pair): Revizto
   role Owner, License administrator or "Administrate" (Revizto's API gives
@@ -1308,7 +1308,12 @@ route enforces it server-side via `routes/auth.js` `requireLicenseAdmin` /
   admins and project admins alike. A name-only "+ New Project" isn't
   checked — there's nothing to check until it's paired. On a first pairing
   the pairer becomes the project's owner (sync runs on their connections).
-- **…and a Revizto License administrator of the project's license.**
+- **…and a Revizto License administrator of the project's license** — which
+  already makes them admin of every project in it (Revizto's docs), so the
+  Revizto project itself isn't checked separately (dropped 2026-09-27 to cut
+  Revizto calls; the Owner/License administrator/Administrate role list is gone).
+  The saved pairing shows the Revizto project's own name
+  (`projects.revizto_project_name`), not the app project's.
   Project Setup's license dropdown lists only licenses where your Revizto
   license role is 4 (License administrator) or 5 (Super administrator) —
   `reviztoService.getAdminLicenses`: your own entry (matched by `GET /user`
@@ -1325,6 +1330,14 @@ route enforces it server-side via `routes/auth.js` `requireLicenseAdmin` /
   revizto_license_uuid`/`revizto_license_name`/`acc_hub_name`; existing
   pairings were backfilled from the owner's saved license), and license-
   member lookups (real names, companies) use the project's license.
+- **"Modify pairing" opens instantly.** Finding the licenses you administer
+  costs 2 + (one member list per license) Revizto calls, and the old flow
+  did it twice, one step after another (~4 s). Now: the server keeps that
+  answer 5 min and project/hub lists 2 min (`services/ttlCache.js`; the
+  pairing save still re-checks fresh), Setup preloads everything Modify
+  pairing needs as soon as a license admin opens a paired project, and the
+  click fetches whatever's missing all at once (measured: ready in ~25 ms
+  after a normal pause; ~1.6 s if clicked the instant the page opens).
 - **You can give, change or remove roles up to your own** — a project
   admin can add, change or remove project admins and standard users on
   their projects (e.g. when someone leaves the company); a license admin

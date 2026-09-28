@@ -540,6 +540,8 @@ ALTER TABLE users ALTER COLUMN role SET DEFAULT 'member';
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS revizto_license_uuid TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS revizto_license_name TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS acc_hub_name TEXT;
+-- The paired Revizto project's own name (the app project's name is separate).
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS revizto_project_name TEXT;
 -- Existing pairings: the owner's license selection is the one they paired under.
 UPDATE projects p SET revizto_license_uuid = t.license_id
   FROM revizto_tokens t

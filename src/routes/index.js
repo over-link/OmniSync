@@ -47,11 +47,12 @@ router.get('/api/revizto/projects', requireAnyProjectAdmin, async (req, res) => 
   const licenseId = String(req.query.licenseId || '');
   if (!licenseId) return res.status(400).json({ error: 'Pick a Revizto license first.' });
   try {
+    // Both cached briefly (see reviztoService) — the pairing save re-checks fresh.
     const adminLicenses = await reviztoService.getAdminLicenses(req.session.userId, tokens.region);
     if (!adminLicenses.some((l) => l.uuid === licenseId)) {
       return res.status(403).json({ error: membership.REVIZTO_LICENSE_ROLE_MESSAGE });
     }
-    const items = await reviztoService.getProjects(req.session.userId, tokens.region, licenseId);
+    const items = await reviztoService.getLicenseProjects(req.session.userId, tokens.region, licenseId);
     // id/uuid/title confirmed from real ProjectListItem docs.
     const projects = items.map((p) => ({ id: p.id, uuid: p.uuid, title: p.title || p.name }));
     res.json({ projects });
@@ -65,7 +66,7 @@ router.get('/api/revizto/projects', requireAnyProjectAdmin, async (req, res) => 
 
 router.get('/api/acc/hubs', requireAnyProjectAdmin, async (req, res) => {
   try {
-    const hubs = await accService.getHubs(req.session.userId);
+    const hubs = await accService.getHubsCached(req.session.userId);
     res.json({ hubs });
   } catch (err) {
     if (err instanceof ReconnectRequiredError) {
@@ -78,7 +79,7 @@ router.get('/api/acc/hubs', requireAnyProjectAdmin, async (req, res) => {
 
 router.get('/api/acc/hubs/:hubId/projects', requireAnyProjectAdmin, async (req, res) => {
   try {
-    const projects = await accService.getHubProjects(req.session.userId, req.params.hubId);
+    const projects = await accService.getHubProjectsCached(req.session.userId, req.params.hubId);
     res.json({ projects });
   } catch (err) {
     if (err instanceof ReconnectRequiredError) {
@@ -210,7 +211,7 @@ async function _refuseUnlessProjectAdminOnBoth(req, res, pairing) {
     return true;
   }
   res.status(403).json({
-    error: `To pair these projects you need to be a Revizto license administrator of the license, and a project admin of both projects in Revizto and ACC. ${problems.join(' ')}`,
+    error: `To pair these projects you need to be a Revizto license administrator of the license, and a project admin of the ACC project. ${problems.join(' ')}`,
   });
   return true;
 }
@@ -223,6 +224,7 @@ router.post('/api/projects', requireLicenseAdmin, async (req, res) => {
     revizto_region,
     revizto_license_uuid,
     revizto_license_name,
+    revizto_project_name,
     acc_hub_id,
     acc_hub_name,
     acc_project_id,
@@ -251,8 +253,8 @@ router.post('/api/projects', requireLicenseAdmin, async (req, res) => {
     ({ rows } = await licenseTerms.withProjectSlot((db) =>
       db.query(
         `INSERT INTO projects (name, revizto_project_uuid, revizto_project_id, revizto_region, acc_hub_id, acc_project_id, acc_project_name, acc_default_subtype_id, owner_user_id,
-                               revizto_license_uuid, revizto_license_name, acc_hub_name)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+                               revizto_license_uuid, revizto_license_name, acc_hub_name, revizto_project_name)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
         [
           trimmedName,
           revizto_project_uuid || null,
@@ -268,6 +270,7 @@ router.post('/api/projects', requireLicenseAdmin, async (req, res) => {
           revizto_license_uuid || null,
           revizto_license_name || null,
           acc_hub_name || null,
+          revizto_project_name || null,
         ]
       )
     ));
@@ -296,6 +299,7 @@ router.patch('/api/projects/:id', requireProjectRole('project_admin'), async (re
     revizto_license_name,
     revizto_project_uuid,
     revizto_project_id,
+    revizto_project_name,
     revizto_region,
     acc_hub_id,
     acc_hub_name,
@@ -313,7 +317,7 @@ router.patch('/api/projects/:id', requireProjectRole('project_admin'), async (re
   if (await _refuseUnlessProjectAdminOnBoth(req, res, { revizto_region: revizto_region || 'virginia', revizto_license_uuid, revizto_project_uuid, acc_project_id })) return;
   const { rows } = await pool.query(
     `UPDATE projects SET name = $2, revizto_project_uuid = $3, revizto_project_id = $4, revizto_region = $5, acc_hub_id = $6, acc_project_id = $7, acc_project_name = $8,
-       revizto_license_uuid = $10, revizto_license_name = $11, acc_hub_name = $12,
+       revizto_license_uuid = $10, revizto_license_name = $11, acc_hub_name = $12, revizto_project_name = $13,
        -- First pairing: whoever pairs it owns it (sync runs on their connections,
        -- and they've just been checked as project admin of both projects).
        -- Re-pairing keeps the owner. (SET expressions see the old row.)
@@ -332,6 +336,7 @@ router.patch('/api/projects/:id', requireProjectRole('project_admin'), async (re
       revizto_license_uuid,
       revizto_license_name || null,
       acc_hub_name || null,
+      revizto_project_name || null,
     ]
   );
   if (!rows[0]) return res.status(404).json({ error: 'Project not found' });

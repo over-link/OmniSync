@@ -114,53 +114,38 @@ async function checkProjects(email, projects) {
   return { memberIds, unknownIds };
 }
 
-// Revizto project roles that count as "project admin" for the pairing
-// check below. Revizto's API only gives a role's name and whether it's a
-// system role, not its permissions, so this is a fixed list (user's
-// choice, 2026-09-25): the two system roles plus this license's own
-// "Administrate" role.
-const REVIZTO_ADMIN_SYSTEM_ROLES = [1, 2]; // 1 Owner, 2 License administrator
-const REVIZTO_ADMIN_ROLE_NAMES = ['administrate'];
-
-function _isReviztoAdminRole(accessRole) {
-  if (!accessRole) return false;
-  return REVIZTO_ADMIN_SYSTEM_ROLES.includes(accessRole.system) || REVIZTO_ADMIN_ROLE_NAMES.includes(String(accessRole.name || '').toLowerCase().trim());
-}
-
 /**
  * Pairing check: is `email` a Revizto license administrator of the chosen
- * license, and a project admin of this Revizto project AND this ACC
- * project? Read with `userId`'s own connections (the license
- * admin doing the pairing — they had to browse both projects to pick
- * them). Returns a list of problems, empty if they qualify. An ACC 403 on
- * the member list means their ACC account can't administer the project.
- * Other lookup failures throw.
+ * license (and is the Revizto project in it), and a project admin of the
+ * ACC project? Read with `userId`'s own connections (the person pairing —
+ * they had to browse both projects to pick them). Returns a list of
+ * problems, empty if they qualify. Other lookup failures throw.
+ *
+ * No separate Revizto project-role check: a Revizto License administrator
+ * has that role in every project under the license (Revizto's docs), so
+ * it would only repeat what the license check already proves (user's call,
+ * 2026-09-25 — fewer Revizto calls). The license answers are the ones
+ * Project Setup just loaded (cached up to a few minutes, see
+ * reviztoService.getAdminLicenses / getLicenseProjects). ACC is a separate
+ * system, so being a Revizto license admin proves nothing there — its
+ * check stays (one call); an ACC 403 on the member list means their ACC
+ * account can't administer the project.
  */
 async function projectAdminProblems(userId, email, { revizto_region, revizto_license_uuid, revizto_project_uuid, acc_project_id }) {
   const target = _email(email);
   const problems = [];
-  const [adminLicenses, reviztoTeam, accMembers] = await Promise.all([
+  const [adminLicenses, accMembers] = await Promise.all([
     reviztoService.getAdminLicenses(userId, revizto_region),
-    reviztoService.getProjectTeam(userId, revizto_region, revizto_project_uuid),
     accService.getProjectMembers(userId, { acc_project_id }).catch((err) => {
       if (err.response?.status === 403) return null;
       throw err;
     }),
   ]);
-  // Pairing also needs Revizto License administrator rights on the chosen
-  // license (user's decision 2026-09-25), and the Revizto project has to
-  // be in that license.
   if (!adminLicenses.some((l) => l.uuid === revizto_license_uuid)) {
     problems.push(REVIZTO_LICENSE_ROLE_MESSAGE);
   } else {
-    const licenseProjects = await reviztoService.getProjects(userId, revizto_region, revizto_license_uuid);
+    const licenseProjects = await reviztoService.getLicenseProjects(userId, revizto_region, revizto_license_uuid);
     if (!licenseProjects.some((p) => p.uuid === revizto_project_uuid)) problems.push("That Revizto project isn't in the chosen license.");
-  }
-  const reviztoMe = reviztoTeam.find((m) => _email(m.email) === target);
-  if (!reviztoMe || reviztoMe.invited !== false || reviztoMe.status !== REVIZTO_ACTIVE_STATUS) {
-    problems.push(`You're not a member of this Revizto project (as ${target}).`);
-  } else if (!_isReviztoAdminRole(reviztoMe.accessRole)) {
-    problems.push(`Your Revizto role on this project is "${reviztoMe.accessRole?.name || 'unknown'}" — it needs to be Owner, License administrator or Administrate.`);
   }
   const accMe = (accMembers || []).find((m) => _email(m.email) === target);
   if (!accMe || String(accMe.status).toLowerCase() !== 'active') {

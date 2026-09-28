@@ -441,9 +441,17 @@ let editingPairing = false;
 // when one side's project list arrives, doesn't lose the other side's pick).
 let picked = { license: '', hub: '', reviztoProject: '', accProject: '' };
 
-async function loadLicenseAndHubOptions() {
-  if (licenseHubOptionsLoaded) return;
-  licenseHubOptionsLoaded = true;
+// The license and hub lists, loaded once per page. Everyone asking —
+// a background preload, a click on "Modify pairing" — shares the same
+// request, so nobody sees half-loaded (empty) lists.
+let licenseHubOptionsPromise = null;
+
+function loadLicenseAndHubOptions() {
+  if (!licenseHubOptionsPromise) licenseHubOptionsPromise = _fetchLicenseAndHubOptions();
+  return licenseHubOptionsPromise;
+}
+
+async function _fetchLicenseAndHubOptions() {
   const [licenses, hubs] = await Promise.all([
     currentRevizto.connected
       ? api('/api/revizto/licenses')
@@ -464,32 +472,69 @@ async function loadLicenseAndHubOptions() {
   ]);
   reviztoLicenseOptions = licenses;
   accHubOptions = hubs;
+  licenseHubOptionsLoaded = true;
+}
+
+// Project lists per license / per hub, kept for the page's life so
+// switching between them (or reopening Modify pairing) is instant.
+const _reviztoProjectsByLicense = new Map(); // license uuid -> Promise<projects>
+const _accProjectsByHub = new Map(); // hub id -> Promise<projects>
+
+function _fetchReviztoProjects(license) {
+  if (!_reviztoProjectsByLicense.has(license)) {
+    _reviztoProjectsByLicense.set(
+      license,
+      api(`/api/revizto/projects?licenseId=${encodeURIComponent(license)}`)
+        .then((r) => {
+          for (const rp of r.projects) _reviztoProjectTitles.set(rp.uuid, rp.title);
+          // An older pairing showing a placeholder can show the real name now.
+          if (step1Project && !editingPairing && !step1Project.revizto_project_name && _reviztoProjectTitles.has(step1Project.revizto_project_uuid)) _renderStep1();
+          return r.projects;
+        })
+        .catch(() => {
+          _reviztoProjectsByLicense.delete(license); // try again next time
+          return [];
+        })
+    );
+  }
+  return _reviztoProjectsByLicense.get(license);
+}
+
+function _fetchAccProjects(hub) {
+  if (!_accProjectsByHub.has(hub)) {
+    _accProjectsByHub.set(
+      hub,
+      api(`/api/acc/hubs/${encodeURIComponent(hub)}/projects`)
+        .then((r) => r.projects)
+        .catch(() => {
+          _accProjectsByHub.delete(hub);
+          return [];
+        })
+    );
+  }
+  return _accProjectsByHub.get(hub);
 }
 
 async function loadReviztoProjectOptions() {
   reviztoProjectOptions = [];
   if (!picked.license) return;
+  const license = picked.license;
   reviztoProjectsLoading = true;
-  try {
-    reviztoProjectOptions = (await api(`/api/revizto/projects?licenseId=${encodeURIComponent(picked.license)}`)).projects;
-  } catch {
-    reviztoProjectOptions = [];
-  } finally {
-    reviztoProjectsLoading = false;
-  }
+  const projects = await _fetchReviztoProjects(license);
+  if (picked.license !== license) return; // picked another license meanwhile
+  reviztoProjectOptions = projects;
+  reviztoProjectsLoading = false;
 }
 
 async function loadAccProjectOptions() {
   accProjectOptions = [];
   if (!picked.hub) return;
+  const hub = picked.hub;
   accProjectsLoading = true;
-  try {
-    accProjectOptions = (await api(`/api/acc/hubs/${encodeURIComponent(picked.hub)}/projects`)).projects;
-  } catch {
-    accProjectOptions = [];
-  } finally {
-    accProjectsLoading = false;
-  }
+  const projects = await _fetchAccProjects(hub);
+  if (picked.hub !== hub) return; // picked another hub meanwhile
+  accProjectOptions = projects;
+  accProjectsLoading = false;
 }
 
 // Pairing needs a Revizto license you're a License administrator of. When
@@ -530,6 +575,14 @@ async function renderStep1(project) {
   // Editing needs the license/hub lists; a pairing saved before names were
   // stored (2026-09-25) needs them to show names instead of ids.
   const needsNames = !!project && _isPaired(project) && (!project.revizto_license_name || !project.acc_hub_name);
+  // A license admin looking at a paired project may click "Modify
+  // pairing" next — start loading what that needs now, in the background,
+  // so it opens ready instead of waiting on Revizto and ACC.
+  if (project && _isPaired(project) && isLicenseAdmin) {
+    loadLicenseAndHubOptions();
+    if (project.revizto_license_uuid) _fetchReviztoProjects(project.revizto_license_uuid);
+    if (project.acc_hub_id) _fetchAccProjects(project.acc_hub_id);
+  }
   if (editingPairing || needsNames) {
     await loadLicenseAndHubOptions();
     if (step1Project !== project) return; // switched projects meanwhile
@@ -538,19 +591,31 @@ async function renderStep1(project) {
   }
 }
 
+// Opens the pickers straight away (showing "Loading…" where a list isn't
+// in yet) and loads the license/hub lists and both project lists all at
+// once — usually already preloaded (see renderStep1), so it's instant.
 async function _startModifyPairing() {
-  await loadLicenseAndHubOptions();
-  // No license to pair under — say so (every click) and keep it locked.
+  const project = step1Project;
+  editingPairing = true;
+  picked = _picksFromProject(project);
+  const loads = Promise.all([loadLicenseAndHubOptions(), loadReviztoProjectOptions(), loadAccProjectOptions()]);
+  _renderStep1();
+  await loads;
+  if (step1Project !== project || !editingPairing) return; // moved on meanwhile
+  // No license to pair under — say so (every click) and put it back.
   if (_hasNoLicenseRole()) {
+    editingPairing = false;
+    picked = _picksFromProject(project);
+    _renderStep1();
     _showNoLicenseRole({ always: true });
     return;
   }
-  editingPairing = true;
-  picked = _picksFromProject(step1Project);
   // Keep the saved license only if you still administer it in Revizto.
-  if (!reviztoLicenseOptions.some((l) => l.uuid === picked.license)) picked.license = '';
-  _renderStep1();
-  await Promise.all([loadReviztoProjectOptions(), loadAccProjectOptions()]);
+  if (!reviztoLicenseOptions.some((l) => l.uuid === picked.license)) {
+    picked.license = '';
+    picked.reviztoProject = '';
+    reviztoProjectOptions = [];
+  }
   _renderStep1();
 }
 
@@ -563,7 +628,22 @@ function _licenseLabel(p) {
 function _hubLabel(p) {
   if (p.acc_hub_name) return p.acc_hub_name;
   const known = accHubOptions.find((h) => String(h.id) === String(p.acc_hub_id));
-  return known ? known.name : p.acc_hub_id || 'Not recorded';
+  return known ? known.name : p.acc_hub_id ? 'ACC hub' : 'Not recorded'; // never a raw id
+}
+
+// A picker that's still waiting on Revizto/ACC: greyed out, with a small
+// spinning wheel inside it and a line underneath saying what it's doing,
+// so a brief wait is expected rather than looking stuck.
+const SPINNER = '<span class="spinner" aria-hidden="true"></span>';
+
+function _selectHtml(attrs, optionsHtml, loading) {
+  return `<span class="select-wrap">
+      <select ${attrs}${loading ? ' disabled aria-busy="true"' : ''}>${optionsHtml}</select>${loading ? SPINNER : ''}
+    </span>`;
+}
+
+function _loadingLineHtml(text) {
+  return `<p class="pairing-loading" role="status">${SPINNER}${_escapeHtml(text)}</p>`;
 }
 
 const PAIRING_HEADERS = `<div class="pairing-column-headers">
@@ -631,12 +711,16 @@ function _renderStep1() {
     return;
   }
 
+  // Still waiting on the license (role check) and hub lists?
+  const licenseLoading = currentRevizto.connected && !licenseHubOptionsLoaded;
+  const hubLoading = currentAcc.connected && !licenseHubOptionsLoaded;
   hubRow.innerHTML = `${PAIRING_HEADERS}
     <div class="pairing-row pairing-row-editing">
-      <select id="license-select">${_licenseOptionsHtml()}</select>
+      ${_selectHtml('id="license-select"', _licenseOptionsHtml(), licenseLoading)}
       <span class="pairing-dot" aria-hidden="true"></span>
-      <select id="acc-hub-select">${_hubOptionsHtml()}</select>
+      ${_selectHtml('id="acc-hub-select"', _hubOptionsHtml(), hubLoading)}
     </div>
+    ${licenseLoading || hubLoading ? _loadingLineHtml('Looking up the Revizto licenses you administer and your ACC hubs…') : ''}
     <p class="hint">Only Revizto licenses you're a license administrator of are listed — pairing needs that role in Revizto.</p>`;
   pairingRows.innerHTML = pairingEditRowHtml(p);
 
@@ -662,6 +746,15 @@ function _renderStep1() {
 // A paired project's pairing, locked. License admins get "Modify pairing";
 // the dot reflects whether the sync webhook is actually registered (set
 // automatically on save — see routes/index.js's _autoRegisterWebhook).
+// The Revizto project's own name (not the app project's). Pairings saved
+// before it was stored are looked up in the license's project list once
+// that's loaded (a license admin preloads it — see renderStep1).
+const _reviztoProjectTitles = new Map(); // revizto project uuid -> title
+
+function _reviztoProjectLabel(p) {
+  return p.revizto_project_name || _reviztoProjectTitles.get(p.revizto_project_uuid) || 'Revizto project';
+}
+
 function pairingRowHtml(p) {
   const missingIdHtml = p.revizto_project_id
     ? ''
@@ -671,9 +764,9 @@ function pairingRowHtml(p) {
       </div>`;
   return `${PAIRING_HEADERS}
     <div class="pairing-row" data-id="${p.id}">
-      <span class="pairing-row-name">${_escapeHtml(p.name)}</span>
+      <span class="pairing-row-name">${_escapeHtml(_reviztoProjectLabel(p))}</span>
       <span class="pairing-dot${p.webhook_id ? ' connected' : ''}" title="${p.webhook_id ? 'Webhook registered — syncing active' : 'Webhook not registered yet — Modify and re-save to retry'}"></span>
-      <span class="pairing-row-name">${_escapeHtml(p.acc_project_name || p.acc_project_id)}</span>
+      <span class="pairing-row-name">${_escapeHtml(p.acc_project_name || 'ACC project')}</span>
       ${isLicenseAdmin ? `<button type="button" class="btn secondary modify-pairing-btn" data-id="${p.id}">Modify pairing</button>` : ''}
     </div>${isLicenseAdmin ? missingIdHtml : ''}`;
 }
@@ -705,13 +798,16 @@ function pairingEditRowHtml(p) {
         .map((ap) => `<option value="${_escapeHtml(ap.id)}" ${ap.id === picked.accProject ? 'selected' : ''}>${_escapeHtml(ap.name)}</option>`)
         .join('');
   }
+  const reviztoLoading = !!picked.license && reviztoProjectsLoading;
+  const accLoading = !!picked.hub && accProjectsLoading;
   return `<div class="pairing-edit-name">Pairing <strong>${_escapeHtml(p.name)}</strong></div>
   ${PAIRING_HEADERS}
   <div class="pairing-row pairing-row-editing" data-id="${id}">
-    <select class="pairing-revizto-select" data-id="${id}">${reviztoOptionsHtml}</select>
+    ${_selectHtml(`class="pairing-revizto-select" data-id="${id}"`, reviztoOptionsHtml, reviztoLoading)}
     <span class="pairing-dot" aria-hidden="true"></span>
-    <select class="pairing-acc-select" data-id="${id}">${accOptionsHtml}</select>
+    ${_selectHtml(`class="pairing-acc-select" data-id="${id}"`, accOptionsHtml, accLoading)}
   </div>
+  ${reviztoLoading || accLoading ? _loadingLineHtml('Loading the projects in the selected license and hub…') : ''}
   <div class="pairing-extra-fields">
     <label>Default ACC issue type (safeguard for unmapped stamps):</label>
     <select class="pairing-default-subtype-select" data-id="${id}" data-current="${_escapeHtml(p.acc_default_subtype_id || '')}"><option value="">Loading...</option></select>
@@ -792,6 +888,7 @@ function wirePairingRowHandlers() {
         revizto_license_uuid: picked.license,
         revizto_license_name: reviztoLicenseOptions.find((l) => l.uuid === picked.license)?.name || null,
         revizto_project_uuid: reviztoProject.uuid,
+        revizto_project_name: reviztoProject.title,
         revizto_project_id: reviztoProject.id != null ? String(reviztoProject.id) : '',
         revizto_region: document.getElementById('revizto-region-hidden').value,
         acc_hub_id: picked.hub,
@@ -806,11 +903,14 @@ function wirePairingRowHandlers() {
           body: JSON.stringify({ acc_default_subtype_id: subtypeSelect.value }),
         }).catch(() => {}); // best-effort — the pairing save below is the important one
       }
-      resultEl.textContent = 'Checking your Revizto and ACC admin rights and saving…';
+      // The save re-checks admin rights in Revizto and ACC — show that it's working.
+      btn.disabled = true;
+      resultEl.innerHTML = `<span class="pairing-loading">${SPINNER}Checking your admin rights and saving…</span>`;
       try {
         await api(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
         await loadActiveProjectOptions(Number(id)); // re-reads the project and re-renders step 1
       } catch (err) {
+        btn.disabled = false;
         if (err.data?.code === 'revizto_license_role') {
           resultEl.textContent = '';
           _showNoLicenseRole({ always: true });

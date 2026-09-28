@@ -8,6 +8,7 @@
 const axios = require('axios');
 const { getValidAccToken } = require('./authManager');
 const { APS_BASE } = require('./accAuth');
+const { createTtlCache } = require('./ttlCache');
 
 function _containerId(project) {
   return project.acc_project_id.startsWith('b.') ? project.acc_project_id.slice(2) : project.acc_project_id;
@@ -361,6 +362,19 @@ async function listWebhooks(userId) {
 
 // ─── Hubs / Projects (Data Management API — for the "browse ACC" dropdowns) ─
 
+// Hubs and a hub's projects change rarely — kept briefly per person so
+// Project Setup's pickers don't refetch them on every open.
+const _hubsCache = createTtlCache(5 * 60 * 1000);
+const _hubProjectsCache = createTtlCache(2 * 60 * 1000);
+
+function getHubsCached(userId) {
+  return _hubsCache.get(String(userId), () => getHubs(userId));
+}
+
+function getHubProjectsCached(userId, hubId) {
+  return _hubProjectsCache.get(`${userId}|${hubId}`, () => getHubProjects(userId, hubId));
+}
+
 async function getHubs(userId) {
   const token = await getValidAccToken(userId);
   const { data } = await axios.get(`${APS_BASE}/project/v1/hubs`, {
@@ -613,6 +627,8 @@ module.exports = {
   registerTestWebhook,
   deleteWebhook,
   getHubs,
+  getHubsCached,
   getHubProjects,
+  getHubProjectsCached,
   attachFileToIssue,
 };

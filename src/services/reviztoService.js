@@ -8,6 +8,7 @@
 const axios = require('axios');
 const FormData = require('form-data');
 const { getValidReviztoToken } = require('./authManager');
+const { createTtlCache } = require('./ttlCache');
 
 function baseUrl(region) {
   return `https://api.${region}.revizto.com/v5`;
@@ -595,6 +596,17 @@ function findLatestTextComment(comments) {
   return null;
 }
 
+/**
+ * A license's projects (getProjects), kept for 2 minutes per person and
+ * license so switching back and forth on Project Setup is instant.
+ * `fresh: true` re-reads — the pairing save does.
+ */
+const _licenseProjectsCache = createTtlCache(2 * 60 * 1000);
+
+function getLicenseProjects(userId, region, licenseUuid, { fresh = false } = {}) {
+  return _licenseProjectsCache.get(`${userId}|${region}|${licenseUuid}`, () => getProjects(userId, region, licenseUuid), { fresh });
+}
+
 async function getProjects(userId, region, licenseUuid, { page = 0, limit = 100, type = 'default' } = {}) {
   const allProjects = [];
   let currentPage = page;
@@ -644,8 +656,19 @@ const REVIZTO_LICENSE_ADMIN_MIN_ROLE = 4;
  * Found per license from the license's member list (their own entry,
  * matched by Revizto account uuid, active, role >= 4); a license whose
  * member list they can't read counts as "not an admin".
+ *
+ * That's 2 + (one member list per license) calls, so the answer is kept
+ * for 5 minutes per person (Project Setup asks for it several times while
+ * pairing). `fresh: true` re-checks — the pairing save does, so rights
+ * are never decided on a stale answer.
  */
-async function getAdminLicenses(userId, region) {
+const _adminLicensesCache = createTtlCache(5 * 60 * 1000);
+
+function getAdminLicenses(userId, region, { fresh = false } = {}) {
+  return _adminLicensesCache.get(`${userId}|${region}`, () => _loadAdminLicenses(userId, region), { fresh });
+}
+
+async function _loadAdminLicenses(userId, region) {
   const [licensesResponse, me] = await Promise.all([getLicenses(userId, region), getCurrentUser(userId, region)]);
   const licenses = licensesResponse.data?.entities || [];
   if (!me?.uuid) return [];
@@ -1152,6 +1175,7 @@ module.exports = {
   getLicenses,
   getCurrentUser,
   getAdminLicenses,
+  getLicenseProjects,
   getLicenseMembers,
   getProjectTeam,
   buildMemberNameLookup,

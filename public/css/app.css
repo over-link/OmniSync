@@ -1012,3 +1012,21 @@ button.row-menu-item.danger { color: var(--danger); }
 .license-table tfoot td:last-child { border-bottom: none; padding-top: 0.8rem; text-align: left; white-space: normal; }
 .add-admin-chipbox { max-width: 440px; min-width: 0; }
 .add-admin-btn { display: block; margin-top: 0.6rem; }
+
+/* ── Loading spinner (Project Setup pickers waiting on Revizto/ACC) ── */
+.spinner {
+  display: inline-block;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--line);
+  border-top-color: var(--blueprint);
+  border-radius: 50%;
+  animation: spinner-turn 0.8s linear infinite;
+  vertical-align: -2px;
+}
+@keyframes spinner-turn { to { transform: rotate(360deg); } }
+.select-wrap { position: relative; display: block; min-width: 0; }
+.select-wrap .spinner { position: absolute; right: 30px; top: 50%; margin-top: -7px; pointer-events: none; }
+.select-wrap select:disabled { background: var(--paper); color: var(--muted); cursor: progress; }
+.pairing-loading { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--muted); margin: 0.4rem 0 0; }
