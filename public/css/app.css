@@ -78,11 +78,27 @@ body {
 .sidebar-link:hover:not(.disabled) { background: var(--blueprint-dim); color: var(--blueprint); }
 .sidebar-link.active { background: var(--blueprint); color: #fff; }
 .sidebar-link.disabled { color: #c3c8d1; cursor: not-allowed; }
+/* "Admins" section (license admins, project admins) under the main links. */
+.sidebar-section { display: flex; flex-direction: column; gap: 0.15rem; margin-top: 0.9rem; padding-top: 0.9rem; border-top: 1px solid var(--line); }
+.sidebar-section-label {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 0 0.7rem 0.35rem;
+}
+.sidebar-sublink { padding-left: 1.3rem; }
+/* My Connections, bottom left above who's signed in + Sign out. */
+.sidebar-footer .sidebar-footer-link { align-self: stretch; margin-bottom: 0.35rem; }
 
 @media (max-width: 720px) {
   body { flex-direction: column; }
   .sidebar { width: 100%; min-height: auto; border-right: none; border-bottom: 1px solid var(--line); }
   .sidebar-nav { flex-direction: row; flex-wrap: wrap; }
+  .sidebar-section { flex-direction: row; flex-wrap: wrap; align-items: center; flex-basis: 100%; }
+  .sidebar-section-label { padding-bottom: 0; }
+  .sidebar-sublink { padding-left: 0.7rem; }
 }
 
 /* ── Header ─────────────────────────────────────────────────────── */
@@ -946,8 +962,16 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
 .new-project-form label { font-size: 0.8rem; font-weight: 600; color: var(--muted); }
 .license-table-wrap { overflow-x: auto; margin-top: 0.8rem; }
 .license-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
-.license-table th { text-align: left; font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; padding: 0.4rem 0.6rem 0.4rem 0; border-bottom: 1px solid var(--line); }
-.license-table td { padding: 0.55rem 0.6rem 0.55rem 0; border-bottom: 1px solid var(--line); vertical-align: middle; overflow-wrap: anywhere; }
+.license-table th { text-align: left; font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; padding: 0.5rem 1.25rem 0.5rem 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.license-table td { padding: 0.7rem 1.25rem 0.7rem 0; border-bottom: 1px solid var(--line); vertical-align: middle; overflow-wrap: break-word; }
+/* Column sizing: names never break mid-word or wrap; the table scrolls
+   sideways (.license-table-wrap) on narrow screens instead. */
+.container-license { max-width: 1120px; }
+.license-table .col-name { min-width: 13rem; }
+.license-table .col-person, .license-table td.person-cell { min-width: 11rem; white-space: nowrap; }
+.license-table .col-num { width: 1%; }
+.license-table .badge { white-space: nowrap; }
+.license-table td.person-cell[title] { cursor: help; }
 .license-table tr:last-child td { border-bottom: none; }
 .license-table td:last-child { text-align: right; white-space: nowrap; }
 .inline-check { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--muted); }

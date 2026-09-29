@@ -17,9 +17,13 @@
  * (routes/auth.js requireLicenseAdmin / requireProjectRole, backed by
  * services/access.js), which is what actually protects the data.
  */
+const _isAdmin = (user) => !!user && (user.isLicenseAdmin || user.isAnyProjectAdmin);
+
 const ADMIN_PAGES = {
   // Project Setup: license admins, and project admins (for their own projects).
-  '/setup': (user) => user.isLicenseAdmin || user.isAnyProjectAdmin,
+  '/setup': _isAdmin,
+  // Activity Log: the same — project admins see the projects they admin.
+  '/logs': _isAdmin,
   // License Administration: license admins only.
   '/license': (user) => user.isLicenseAdmin,
 };
@@ -29,17 +33,23 @@ const ADMIN_PAGES = {
 // sent to My Connections to pick one first.
 const PROJECT_PAGES = ['/issues', '/logs', '/setup', '/team', '/dashboards'];
 
-const NAV_LINKS = [
+// Sidebar layout (user's call, 2026-09-28): everyone's main list, then —
+// for license admins and project admins — an "Admins" section, where
+// Dashboards moves to for them. My Connections sits at the bottom, above
+// Sign out (the footer).
+const MAIN_LINKS = [
   { href: '/issues', label: 'Issues' },
-  { href: '/logs', label: 'Activity Log' },
-  { href: '/account', label: 'My Connections' },
-  { href: '/setup', label: 'Project Setup' },
   { href: '/team', label: 'Team' },
-  { href: '/license', label: 'License Administration' },
-  { href: '/dashboards', label: 'Dashboards' },
+  { href: '/dashboards', label: 'Dashboards', nonAdminOnly: true },
   // Mockup only — see README "Planned: Help Center (phase 3)". Topics:
   // best practices, FAQ, video tutorials, contact support.
   { href: '#', label: 'Help Center', disabled: true },
+];
+const ADMIN_LINKS = [
+  { href: '/license', label: 'License Administration' },
+  { href: '/setup', label: 'Project Setup' },
+  { href: '/logs', label: 'Activity Log' },
+  { href: '/dashboards', label: 'Dashboards' },
 ];
 
 /**
@@ -271,24 +281,37 @@ async function loadNav() {
 
   const mount = document.getElementById('sidebar-mount');
   if (mount) {
+    const isAdmin = _isAdmin(user);
+    const linkHtml = (l, extraClass = '') => {
+      const cls = `sidebar-link${extraClass}`;
+      if (l.disabled) return `<span class="${cls} disabled" title="Not built yet">${l.label}</span>`;
+      // Locked until signed in with both accounts connected — only My
+      // Connections, where that happens, stays open.
+      if (!fullyConnected && l.href !== '/account') {
+        return `<span class="${cls} disabled" title="${user ? 'Connect both Revizto and ACC first' : 'Sign in first'}">${l.label}</span>`;
+      }
+      const active = path === l.href ? ' active' : '';
+      return `<a href="${l.href}" class="${cls}${active}">${l.label}</a>`;
+    };
+    const mainLinks = MAIN_LINKS.filter((l) => !(l.nonAdminOnly && isAdmin));
+    const adminLinks = isAdmin ? ADMIN_LINKS.filter((l) => canSee(l.href)) : [];
     mount.innerHTML = `
       <div class="sidebar">
         <div class="sidebar-brand">Revizto <span class="bridge-glyph" aria-hidden="true">⇄</span> ACC</div>
         <nav class="sidebar-nav">
-          ${NAV_LINKS.filter((l) => canSee(l.href))
-            .map((l) => {
-              if (l.disabled) return `<span class="sidebar-link disabled" title="Not built yet">${l.label}</span>`;
-              // Locked until signed in with both accounts connected — only My
-              // Connections, where that happens, stays open.
-              if (!fullyConnected && l.href !== '/account') {
-                return `<span class="sidebar-link disabled" title="${user ? 'Connect both Revizto and ACC first' : 'Sign in first'}">${l.label}</span>`;
-              }
-              const active = path === l.href ? ' active' : '';
-              return `<a href="${l.href}" class="sidebar-link${active}">${l.label}</a>`;
-            })
-            .join('')}
+          ${mainLinks.map((l) => linkHtml(l)).join('')}
+          ${
+            adminLinks.length
+              ? `<div class="sidebar-section" role="group" aria-labelledby="sidebar-admins-label">
+                   <div class="sidebar-section-label" id="sidebar-admins-label">Admins</div>
+                   ${adminLinks.map((l) => linkHtml(l, ' sidebar-sublink')).join('')}
+                 </div>`
+              : ''
+          }
         </nav>
-        <div class="sidebar-footer" id="sidebar-footer"></div>
+        <div class="sidebar-footer" id="sidebar-footer">
+          ${linkHtml({ href: '/account', label: 'My Connections' }, ' sidebar-footer-link')}
+        </div>
       </div>
     `;
     // The open project, under the brand — one switcher for every page.
@@ -314,8 +337,6 @@ async function loadNav() {
         window.location.replace('/account');
       });
       footer.append(email, badge, signOut);
-    } else {
-      footer.remove();
     }
   }
 

@@ -127,10 +127,13 @@ router.get('/dashboards', (req, res) => {
  * `projectId` it asked for: null means "every project" (license admins
  * with no filter); [] means none (asked for one they can't see, or they
  * aren't on any project). Used by every cross-project read below.
+ * `minRole` narrows it to projects where they have at least that role
+ * (the Activity Log: projects they admin).
  */
-async function _projectScope(req) {
+async function _projectScope(req, minRole = 'standard') {
   const userAccess = req.access; // loaded by requireLogin
-  const allowed = access.accessibleProjectIds(userAccess); // null = all
+  let allowed = access.accessibleProjectIds(userAccess); // null = all
+  if (allowed && minRole !== 'standard') allowed = allowed.filter((id) => access.hasProjectRole(userAccess, id, minRole));
   const requested = req.query.projectId ? Number(req.query.projectId) : null;
   if (requested) return allowed === null || allowed.includes(requested) ? [requested] : [];
   return allowed;
@@ -642,11 +645,10 @@ router.post('/api/settings/poll-24-7', requireLicenseAdmin, async (req, res) => 
 });
 
 // ─── Audit log ("Activity Log" page) ────────────────────────────────────
-// Open to any signed-in user (requireLogin, not requireAdmin) — meant as
-// a shared, visible trail for the whole team, same access level as the
-// Issues page. `projectId` optionally filters to one project.
+// Admins only — see /api/audit-log below. `projectId` optionally filters
+// to one project.
 // ─── Dashboards ──────────────────────────────────────────────────────
-// Open to any signed-in user, same as the Activity Log it summarizes.
+// Open to any signed-in user (the Activity Log itself is admins only).
 // `from`/`to` are ISO timestamps (to exclusive), `tz` the viewer's IANA
 // timezone for grouping by day — see services/dashboards.js.
 async function _dashboardQuery(req) {
@@ -667,10 +669,13 @@ router.get('/api/dashboards/activity', requireLogin, async (req, res) => {
   res.json(await dashboards.activity(await _dashboardQuery(req)));
 });
 
-router.get('/api/audit-log', requireLogin, async (req, res) => {
+// Admins only (user's call, 2026-09-28 — it sits under the sidebar's
+// Admins section): license admins see every project's log, project admins
+// only the projects they admin.
+router.get('/api/audit-log', requireAnyProjectAdmin, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
   const offset = parseInt(req.query.offset, 10) || 0;
-  const projectIds = await _projectScope(req);
+  const projectIds = await _projectScope(req, 'project_admin');
   // Optional date range, as ISO timestamps (see auditLog._filters) —
   // anything unparseable is ignored rather than erroring the whole page.
   const parseDate = (v) => {

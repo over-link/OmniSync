@@ -4,7 +4,7 @@
  * audit_log table for the full rationale. `record` is called from
  * syncService at each point a field change, comment, attachment,
  * link/unlink, or error actually happens; `list` backs the "Activity Log"
- * page (open to any signed-in user, not admin-gated).
+ * page (admins only — license admins, and project admins for their projects).
  *
  * Deliberately fire-and-forget from the caller's perspective in spirit —
  * every call site wraps `record` so a logging failure (e.g. a transient

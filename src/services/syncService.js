@@ -10,6 +10,7 @@ const reviztoService = require('./reviztoService');
 const fieldMapping = require('./fieldMapping');
 const tokenStore = require('./tokenStore');
 const auditLog = require('./auditLog');
+const { createTtlCache } = require('./ttlCache');
 
 /**
  * Wraps an auditLog.record call so a logging failure (DB hiccup, etc.)
@@ -606,6 +607,38 @@ function _findReviztoFieldEditorEmail(comments, changedKeys) {
   return null;
 }
 
+// License member names don't change often — kept a few minutes per
+// license, so pages that show names (Activity Log, License
+// Administration) don't re-read the whole license team on every load.
+const licenseNamesCache = createTtlCache(5 * 60 * 1000);
+
+/**
+ * { [email]: Revizto name } for everyone on the Revizto licenses these
+ * projects belong to, deactivated members included (older rows can name
+ * them). Read through each project's OWNER's Revizto connection, so every
+ * viewer sees the same names. Best-effort: a license that can't be read
+ * is skipped, and callers fall back to the email.
+ */
+async function licenseMemberNames(projects) {
+  const nameByEmail = {};
+  const seen = new Set();
+  for (const project of projects.filter((p) => p.owner_user_id)) {
+    const ownerTokens = await tokenStore.getReviztoTokens(project.owner_user_id).catch(() => null);
+    const licenseId = _projectLicenseId(project, ownerTokens);
+    if (!licenseId || seen.has(licenseId)) continue;
+    seen.add(licenseId);
+    try {
+      const names = await licenseNamesCache.get(licenseId, async () =>
+        reviztoService.buildMemberNameLookup(await reviztoService.getLicenseMembers(project.owner_user_id, project.revizto_region, licenseId, true))
+      );
+      Object.assign(nameByEmail, names);
+    } catch (err) {
+      console.warn('[names] Could not load license member names:', err.message);
+    }
+  }
+  return nameByEmail;
+}
+
 /**
  * Adds human-readable labels to Activity Log rows for display, without
  * touching what's stored: `attributed_name` (the person's Revizto license
@@ -622,33 +655,18 @@ async function labelAuditEntries(entries) {
   const { rows: projects } = await pool.query('SELECT * FROM projects WHERE id = ANY($1)', [projectIds]);
 
   const statusNameByUuid = {};
-  const nameByEmail = {};
   const needsStatuses = new Set(entries.filter((e) => e.field_name === 'customStatus').map((e) => e.project_id));
-  const loadedLicenses = new Set();
-  for (const project of projects.filter((p) => p.owner_user_id)) {
-    const ownerId = project.owner_user_id;
-    if (needsStatuses.has(project.id)) {
-      try {
-        const settings = await reviztoService.getWorkflowSettings(ownerId, project.revizto_region, project.revizto_project_uuid);
-        // Deleted statuses included on purpose — older log rows can still
-        // reference a status that's since been removed from the workflow.
-        for (const s of settings.statuses || []) statusNameByUuid[s.uuid] = s.name;
-      } catch (err) {
-        console.warn(`[audit] Could not load Revizto status names for "${project.name}":`, err.message);
-      }
-    }
-    const ownerTokens = await tokenStore.getReviztoTokens(ownerId).catch(() => null);
-    const licenseId = _projectLicenseId(project, ownerTokens);
-    if (licenseId && !loadedLicenses.has(licenseId)) {
-      loadedLicenses.add(licenseId);
-      try {
-        const members = await reviztoService.getLicenseMembers(ownerId, project.revizto_region, licenseId, true);
-        Object.assign(nameByEmail, reviztoService.buildMemberNameLookup(members));
-      } catch (err) {
-        console.warn('[audit] Could not load license member names:', err.message);
-      }
+  for (const project of projects.filter((p) => p.owner_user_id && needsStatuses.has(p.id))) {
+    try {
+      const settings = await reviztoService.getWorkflowSettings(project.owner_user_id, project.revizto_region, project.revizto_project_uuid);
+      // Deleted statuses included on purpose — older log rows can still
+      // reference a status that's since been removed from the workflow.
+      for (const s of settings.statuses || []) statusNameByUuid[s.uuid] = s.name;
+    } catch (err) {
+      console.warn(`[audit] Could not load Revizto status names for "${project.name}":`, err.message);
     }
   }
+  const nameByEmail = await licenseMemberNames(projects);
 
   const statusLabel = (raw) => {
     try {
@@ -2540,4 +2558,5 @@ module.exports = {
   pollAccCommentsForProject,
   pollAccAttachmentsForProject,
   labelAuditEntries,
+  licenseMemberNames,
 };

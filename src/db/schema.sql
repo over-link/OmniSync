@@ -388,9 +388,8 @@ CREATE TABLE IF NOT EXISTS app_settings (
 -- (ephemeral, unstructured, and only as long as the platform retains
 -- them). One row per meaningful sync event: a field change (with old/new
 -- values), a comment, an attachment, a link/unlink, or an error. See
--- services/auditLog.js. Open to any signed-in user to read (not
--- admin-gated) via the "Log files" nav tab — this is meant as a shared,
--- visible trail for the whole team, not an admin-only tool.
+-- services/auditLog.js. Read on the Activity Log page — admins only since
+-- 2026-09-28 (license admins; project admins for their own projects).
 CREATE TABLE IF NOT EXISTS audit_log (
   id BIGSERIAL PRIMARY KEY,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

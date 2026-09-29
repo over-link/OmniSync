@@ -11,7 +11,7 @@
 </head>
 <body>
   <div id="sidebar-mount"></div>
-  <div id="app" class="container container-wide">
+  <div id="app" class="container container-wide container-license">
     <header class="app-header">
       <h1>License Administration <span id="license-role-badge" class="badge badge-warning"></span></h1>
       <p class="app-sub">Projects under this license, who the license admins are, and app-wide settings.</p>
@@ -54,7 +54,7 @@
         <span id="new-project-result" class="result-text" role="status"></span>
         <div class="license-table-wrap">
           <table class="license-table">
-            <thead><tr><th>Project</th><th>Pairing</th><th>Owner</th><th>Members</th><th>Synced issues</th><th></th></tr></thead>
+            <thead><tr><th class="col-name">Project</th><th class="col-pairing">Pairing</th><th class="col-person">Owner</th><th class="col-num">Members</th><th class="col-num">Synced issues</th><th></th></tr></thead>
             <tbody id="license-projects"></tbody>
           </table>
         </div>
@@ -66,10 +66,10 @@
         <p class="hint">License admins can create and pair projects, see every project under the license, and add or remove other license admins. The primary license admin can't be removed.</p>
         <div class="license-table-wrap">
           <table class="license-table">
-            <thead><tr><th>Email</th><th>Role</th><th>Last sign-in</th><th></th></tr></thead>
+            <thead><tr><th class="col-person">Name</th><th class="col-role">Role</th><th class="col-when">Last sign-in</th><th></th></tr></thead>
             <tbody id="license-admins"></tbody>
             <!-- Adding license admins (primary license admin only): a last row
-                 under the Email column — emails become bubbles like on the Team
+                 under the Name column — emails become bubbles like on the Team
                  page (js/chips.js), with the button underneath. -->
             <tfoot id="add-admin-row" class="hidden">
               <tr>

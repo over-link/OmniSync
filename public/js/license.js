@@ -18,6 +18,15 @@ function _cell(tr, text) {
   return td;
 }
 
+// A person by name (their Revizto license name), email on hover — or just
+// the email when no name is known (e.g. not on the Revizto license yet).
+function _personCell(tr, name, email) {
+  const td = _cell(tr, name || email || '—');
+  td.className = 'person-cell';
+  if (name && email) td.title = email;
+  return td;
+}
+
 function _when(value) {
   return value ? new Date(value).toLocaleString() : 'Never';
 }
@@ -56,7 +65,7 @@ async function loadProjects() {
       badge.textContent = p.paired ? `Paired${p.acc_project_name ? ` · ${p.acc_project_name}` : ''}` : 'Not paired yet';
     }
     pairing.appendChild(badge);
-    _cell(tr, p.owner_email || '—');
+    _personCell(tr, p.owner_name, p.owner_email);
     _cell(tr, String(p.member_count));
     _cell(tr, p.synced_count.toLocaleString());
     const actions = tr.insertCell();
@@ -248,7 +257,7 @@ async function loadAdmins() {
   tbody.innerHTML = '';
   for (const a of admins) {
     const tr = tbody.insertRow();
-    _cell(tr, a.email);
+    _personCell(tr, a.name, a.email);
     _cell(tr, a.roleLabel);
     _cell(tr, _when(a.last_login_at));
     const actions = tr.insertCell();
@@ -259,7 +268,7 @@ async function loadAdmins() {
       btn.textContent = 'Remove';
       btn.addEventListener('click', async () => {
         const ok = await window.showConfirmDialog(
-          `Remove ${a.email} as a license admin?`,
+          `Remove ${a.name || a.email} as a license admin?`,
           "They keep their account and any project roles they've been given, but lose access to every other project.",
           { confirmLabel: 'Remove', danger: true }
         );

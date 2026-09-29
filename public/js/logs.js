@@ -22,8 +22,11 @@ window.addEventListener('app:ready', async (e) => {
     return;
   }
   document.getElementById('logs-app').classList.remove('hidden');
-  // Starts on the open project; "All projects" is at the top (nav.js).
-  const { projects, currentProject } = e.detail;
+  // Admins only: the projects they admin (the server scopes the log the
+  // same way). Starts on the open project if it's one of them, else on
+  // "All projects" — which is at the top (nav.js).
+  const projects = e.detail.projects.filter((p) => p.my_role && p.my_role !== 'standard');
+  const currentProject = projects.find((p) => p.id === e.detail.currentProject?.id) || null;
   currentProjectId = currentProject ? String(currentProject.id) : '';
   window.fillProjectFilter(document.getElementById('log-project-select'), projects, currentProject, (projectId) => {
     currentProjectId = projectId;

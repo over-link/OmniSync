@@ -16,10 +16,21 @@ const access = require('../services/access');
 const accService = require('../services/accService');
 const membership = require('../services/membership');
 const licenseTerms = require('../services/licenseTerms');
+const syncService = require('../services/syncService');
 
 router.get('/license', (req, res) => {
   res.sendFile(path.join(__dirname, '../../public/license.html'));
 });
+
+/**
+ * { [email]: name } from the Revizto licenses this app's projects are on
+ * (syncService.licenseMemberNames — cached a few minutes). Someone not on
+ * any of those licenses has no name here; the page shows their email.
+ */
+async function _peopleNames() {
+  const { rows: projects } = await pool.query('SELECT * FROM projects WHERE owner_user_id IS NOT NULL');
+  return syncService.licenseMemberNames(projects);
+}
 
 router.get('/api/license/admins', requireLicenseAdmin, async (req, res) => {
   const { rows } = await pool.query(
@@ -27,11 +38,13 @@ router.get('/api/license/admins', requireLicenseAdmin, async (req, res) => {
      WHERE role IN ('primary_license_admin', 'license_admin')
      ORDER BY (role = 'primary_license_admin') DESC, email ASC`
   );
+  const names = await _peopleNames();
   res.json({
     // Any license admin can remove another license admin — never the
     // primary license admin, and never themselves.
     admins: rows.map((a) => ({
       ...a,
+      name: names[a.email.toLowerCase()] || null, // shown instead of the email when known
       roleLabel: access.ROLE_LABELS[a.role],
       canRemove: a.role === 'license_admin' && a.id !== req.access.userId,
     })),
@@ -91,15 +104,19 @@ router.delete('/api/license/admins/:userId', requireLicenseAdmin, async (req, re
 // paired or not, the owner whose connections background sync uses, and
 // how many people have been invited to it.
 router.get('/api/license/projects', requireLicenseAdmin, async (req, res) => {
-  const { rows } = await pool.query(
-    `SELECT p.id, p.name, p.created_at, p.acc_project_name, p.archived_at,
+  const [{ rows }, names] = await Promise.all([
+    pool.query(
+      `SELECT p.id, p.name, p.created_at, p.acc_project_name, p.archived_at,
             (p.revizto_project_uuid IS NOT NULL AND p.acc_project_id IS NOT NULL) AS paired,
             owner.email AS owner_email,
             (SELECT count(*)::int FROM project_members pm WHERE pm.project_id = p.id) AS member_count,
             (SELECT count(*)::int FROM sync_map sm WHERE sm.project_id = p.id) AS synced_count
      FROM projects p LEFT JOIN users owner ON owner.id = p.owner_user_id
      ORDER BY (p.archived_at IS NOT NULL), p.created_at DESC`
-  );
+    ),
+    _peopleNames(),
+  ]);
+  for (const p of rows) p.owner_name = p.owner_email ? names[p.owner_email.toLowerCase()] || null : null;
   // The metric boxes at the top of License Administration. A project uses
   // a slot from the moment it's created (paired or not) until it's
   // archived or deleted (services/licenseTerms.js — placeholder terms for
