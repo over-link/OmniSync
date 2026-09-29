@@ -62,6 +62,19 @@
           <button type="button" id="edit-users-btn" class="btn" disabled>Edit users</button>
         </div>
       </div>
+      <!-- Who owns the project: background syncing runs on their Revizto and
+           ACC connections, so they can't be removed until someone else is
+           made owner (admins only). -->
+      <div id="owner-row" class="owner-row hidden">
+        <span class="owner-label">Project owner</span>
+        <strong id="owner-name"></strong>
+        <span id="owner-change" class="owner-change hidden">
+          <select id="owner-select" aria-label="New project owner"></select>
+          <button type="button" id="owner-save" class="btn secondary">Make owner</button>
+        </span>
+        <p class="hint owner-hint">Background syncing runs on the owner's Revizto and ACC connections, so the owner can't be removed from the project — make someone else the owner first.</p>
+        <div id="owner-result" class="result-text" role="status"></div>
+      </div>
       <div class="license-table-wrap">
         <table class="license-table team-table">
           <thead>

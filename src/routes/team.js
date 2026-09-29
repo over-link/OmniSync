@@ -15,6 +15,10 @@ const { requireProjectRole } = require('./auth');
 const emailService = require('../services/emailService');
 const access = require('../services/access');
 const syncService = require('../services/syncService');
+const membership = require('../services/membership');
+const tokenStore = require('../services/tokenStore');
+const accService = require('../services/accService');
+const webhookHealth = require('../services/webhookHealth');
 
 // Anyone on the project can see its team; only project admins and above
 // see the controls (canInvite / canManage), and the routes below enforce it.
@@ -46,9 +50,11 @@ router.get('/api/projects/:id/team', requireProjectRole('standard'), async (req,
   // Their account name (asked for at sign-up); for accounts without one
   // yet, their Revizto license name; the page falls back to the email.
   const revizto = await syncService.licenseMemberNames(projectRows);
+  const ownerId = projectRows[0]?.owner_user_id ?? null;
   const members = rows.map(({ account_name: accountName, ...m }) => ({
     ...m,
     name: accountName || revizto[m.email.toLowerCase()] || null,
+    is_owner: m.id === ownerId, // background syncing runs on their connections
     roleLabel: access.ROLE_LABELS[m.role],
     // License admins are managed on License Administration, never here.
     canManage: !m.is_license_level && m.id !== req.session.userId && access.canManageMember(req.access, projectId, m.role),
@@ -172,10 +178,78 @@ router.patch('/api/projects/:id/team/:userId', requireProjectRole('project_admin
 });
 
 // Removes them from this project only (their account and other projects stay).
+// Never the project's owner — background syncing runs on their Revizto and
+// ACC connections — until ownership is handed to someone else (below).
 router.delete('/api/projects/:id/team/:userId', requireProjectRole('project_admin'), async (req, res) => {
   if ((await _manageableTarget(req, res)) === null) return;
+  const { rows: ownerRows } = await pool.query(
+    'SELECT u.name, u.email FROM projects p JOIN users u ON u.id = p.owner_user_id WHERE p.id = $1 AND p.owner_user_id = $2',
+    [req.params.id, req.params.userId]
+  );
+  if (ownerRows[0]) {
+    return res.status(409).json({
+      error: `${ownerRows[0].name || ownerRows[0].email} owns this project — background syncing runs on their Revizto and ACC connections. Make someone else the owner first.`,
+      code: 'is_owner',
+    });
+  }
   await pool.query('DELETE FROM project_members WHERE project_id = $1 AND user_id = $2', [req.params.id, req.params.userId]);
   res.json({ ok: true });
+});
+
+/**
+ * Hands the project to a new owner — whose Revizto and ACC connections
+ * background syncing then runs on (webhook included). The new owner must
+ * be a project admin or license admin of it, a real member of both the
+ * Revizto and ACC projects, with both connections working. Any project
+ * admin or above may do it (Team page → Project owner).
+ */
+router.post('/api/projects/:id/owner', requireProjectRole('project_admin'), async (req, res) => {
+  const projectId = Number(req.params.id);
+  const targetId = Number(req.body.userId);
+  const { rows: projectRows } = await pool.query('SELECT * FROM projects WHERE id = $1', [projectId]);
+  const project = projectRows[0];
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  if (project.owner_user_id === targetId) return res.json({ ok: true, unchanged: true });
+  const { rows: userRows } = await pool.query('SELECT id, email, name FROM users WHERE id = $1', [targetId]);
+  const target = userRows[0];
+  if (!target) return res.status(404).json({ error: "That person isn't on this project." });
+  const label = target.name || target.email;
+
+  // A project admin or license admin of this project (for non-license
+  // users, getAccess only keeps projects they really belong to in both).
+  const targetAccess = await access.getAccess(targetId);
+  if (!access.hasProjectRole(targetAccess, projectId, 'project_admin')) {
+    return res.status(400).json({ error: `${label} isn't a project admin of this project — make them one first.` });
+  }
+  if (membership.isPaired(project) && targetAccess.isLicenseAdmin) {
+    const { memberIds } = await membership.checkProjects(target.email, [project]);
+    if (!memberIds.has(projectId)) {
+      return res.status(400).json({ error: `${label} isn't a member of both the Revizto and ACC project, so syncing couldn't run on their connections.` });
+    }
+  }
+  const [accTokens, reviztoTokens] = await Promise.all([tokenStore.getAccTokens(targetId), tokenStore.getReviztoTokens(targetId)]);
+  const live = (t) => !!t && new Date(t.refresh_expires_at) > new Date();
+  if (!live(accTokens) || !live(reviztoTokens)) {
+    return res.status(400).json({ error: `${label} needs both Revizto and ACC connected (My Connections) before they can own the project.` });
+  }
+
+  const previousOwnerId = project.owner_user_id;
+  const { rows: updated } = await pool.query('UPDATE projects SET owner_user_id = $2 WHERE id = $1 RETURNING *', [projectId, targetId]);
+  console.log(`[team] ${req.session.userEmail} made ${target.email} the owner of "${project.name}".`);
+
+  // The ACC webhook belongs to whoever registered it — move it to the new
+  // owner (the hourly check in webhookHealth would repair it otherwise).
+  if (membership.isPaired(project)) {
+    if (project.webhook_id && previousOwnerId) {
+      await accService.deleteWebhook(previousOwnerId, project.webhook_id).catch((err) =>
+        console.warn(`[team] Couldn't remove the previous owner's webhook for "${project.name}":`, err.response?.data || err.message)
+      );
+    }
+    await webhookHealth.registerForProject(updated[0]).catch((err) =>
+      console.warn(`[team] Couldn't register the new owner's webhook for "${project.name}" (the hourly check will retry):`, err.response?.data || err.message)
+    );
+  }
+  res.json({ ok: true, owner: { id: target.id, name: target.name, email: target.email } });
 });
 
 // Emails them the invitation again (Team page → Edit users) — e.g. they

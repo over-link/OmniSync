@@ -106,8 +106,57 @@ async function loadTeam() {
   for (const id of [...selectedIds]) if (!manageable.some((m) => m.id === id)) selectedIds.delete(id);
   document.getElementById('members-toolbar').classList.toggle('hidden', !canInvite);
   document.getElementById('col-check-head').classList.toggle('hidden', !canInvite);
+  _renderOwner(canInvite);
   _renderMembers();
 }
+
+// ─── Project owner ──────────────────────────────────────────────────
+// Everyone sees who it is; admins can hand it to another admin (project
+// admins and license admins who've signed in — the server also checks
+// they belong to both projects and have Revizto and ACC connected).
+
+const OWNER_ROLES = ['primary_license_admin', 'license_admin', 'project_admin'];
+
+function _renderOwner(canChange) {
+  const owner = members.find((m) => m.is_owner);
+  document.getElementById('owner-row').classList.toggle('hidden', !owner && !canChange);
+  const nameEl = document.getElementById('owner-name');
+  nameEl.textContent = owner ? _label(owner) : 'No owner yet';
+  nameEl.title = owner?.name ? owner.email : '';
+  const candidates = members.filter((m) => !m.is_owner && !m.pending && OWNER_ROLES.includes(m.role));
+  const change = document.getElementById('owner-change');
+  change.classList.toggle('hidden', !canChange || !candidates.length);
+  const select = document.getElementById('owner-select');
+  select.replaceChildren(new Option('Choose a new owner…', ''), ...candidates.map((m) => new Option(`${_label(m)} (${m.roleLabel})`, m.id)));
+}
+
+document.getElementById('owner-save').addEventListener('click', async (e) => {
+  const button = e.currentTarget;
+  const select = document.getElementById('owner-select');
+  const resultEl = document.getElementById('owner-result');
+  const target = members.find((m) => String(m.id) === select.value);
+  if (!target) {
+    resultEl.textContent = 'Choose who should own the project.';
+    return;
+  }
+  const ok = await window.showConfirmDialog(
+    `Make ${_label(target)} the project owner?`,
+    `Background syncing will run on ${_label(target)}'s Revizto and ACC connections instead, including the ACC webhook.`,
+    { confirmLabel: 'Make owner' }
+  );
+  if (!ok) return;
+  button.disabled = true;
+  resultEl.textContent = 'Checking their access and connections…';
+  try {
+    await api(`/api/projects/${projectId}/owner`, { method: 'POST', body: JSON.stringify({ userId: target.id }) });
+    resultEl.textContent = `${_label(target)} now owns this project.`;
+    await loadTeam();
+  } catch (err) {
+    resultEl.textContent = err.message;
+  } finally {
+    button.disabled = false;
+  }
+});
 
 // ─── Sorting (column headers) ───────────────────────────────────────
 // null = the server's order (license admins first, then by name). The
@@ -208,6 +257,13 @@ function _renderMembers() {
     const nameCell = _cell(tr, _label(m));
     nameCell.className = 'person-cell';
     if (m.name) nameCell.title = m.email;
+    if (m.is_owner) {
+      const tag = document.createElement('span');
+      tag.className = 'badge badge-success owner-tag';
+      tag.textContent = 'Owner';
+      tag.title = 'Background syncing runs on their Revizto and ACC connections';
+      nameCell.appendChild(tag);
+    }
     if (m.pending) {
       const note = document.createElement('span');
       note.className = 'pending-note';

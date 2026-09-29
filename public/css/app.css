@@ -990,6 +990,14 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
 /* Its last column is a date, not buttons — left-aligned under its header. */
 .license-table.team-table td:last-child { text-align: left; white-space: normal; }
 .pending-note { display: block; font-size: 0.75rem; color: var(--muted); margin-top: 0.15rem; }
+.owner-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.9rem; padding: 0.8rem 0; margin-top: 0.4rem; border-bottom: 1px solid var(--line); }
+.owner-label { font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.owner-change { display: inline-flex; align-items: center; gap: 0.5rem; }
+.owner-change select { min-width: 12rem; }
+.owner-row .owner-hint { flex-basis: 100%; margin: 0; }
+.owner-row .result-text { flex-basis: 100%; margin: 0; }
+.owner-row .result-text:empty { display: none; }
+.owner-tag { margin-left: 0.5rem; vertical-align: middle; }
 
 .side-panel {
   position: fixed;
