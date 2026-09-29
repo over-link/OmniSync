@@ -14,6 +14,7 @@ const pool = require('../db/pool');
 const { requireProjectRole } = require('./auth');
 const emailService = require('../services/emailService');
 const access = require('../services/access');
+const syncService = require('../services/syncService');
 
 // Anyone on the project can see its team; only project admins and above
 // see the controls (canInvite / canManage), and the routes below enforce it.
@@ -24,8 +25,10 @@ const access = require('../services/access');
 // sign-in and what's resolved from Revizto/ACC member data.
 router.get('/api/projects/:id/team', requireProjectRole('standard'), async (req, res) => {
   const projectId = Number(req.params.id);
-  const { rows } = await pool.query(
-    `SELECT u.id, u.email, u.last_login_at, la.latest_activity_at,
+  const [{ rows }, { rows: projectRows }] = await Promise.all([
+    pool.query(
+      `SELECT u.id, u.email, u.name AS account_name, u.last_login_at, la.latest_activity_at,
+            (u.password_hash IS NULL) AS pending,
             CASE WHEN u.role IN ('primary_license_admin', 'license_admin') THEN u.role ELSE pm.role END AS role,
             (u.role IN ('primary_license_admin', 'license_admin')) AS is_license_level
      FROM users u
@@ -35,16 +38,24 @@ router.get('/api/projects/:id/team', requireProjectRole('standard'), async (req,
        FROM audit_log WHERE attributed_email IS NOT NULL AND project_id = $1
        GROUP BY LOWER(attributed_email)
      ) la ON la.email = LOWER(u.email)
-     WHERE pm.user_id IS NOT NULL OR u.role IN ('primary_license_admin', 'license_admin')
-     ORDER BY is_license_level DESC, u.email ASC`,
-    [projectId]
-  );
-  const members = rows.map((m) => ({
+     WHERE pm.user_id IS NOT NULL OR u.role IN ('primary_license_admin', 'license_admin')`,
+      [projectId]
+    ),
+    pool.query('SELECT * FROM projects WHERE id = $1', [projectId]),
+  ]);
+  // Their account name (asked for at sign-up); for accounts without one
+  // yet, their Revizto license name; the page falls back to the email.
+  const revizto = await syncService.licenseMemberNames(projectRows);
+  const members = rows.map(({ account_name: accountName, ...m }) => ({
     ...m,
+    name: accountName || revizto[m.email.toLowerCase()] || null,
     roleLabel: access.ROLE_LABELS[m.role],
     // License admins are managed on License Administration, never here.
     canManage: !m.is_license_level && m.id !== req.session.userId && access.canManageMember(req.access, projectId, m.role),
   }));
+  // License admins first, then by name (email when there's no name).
+  const sortKey = (m) => (m.name || m.email).toLowerCase();
+  members.sort((a, b) => b.is_license_level - a.is_license_level || sortKey(a).localeCompare(sortKey(b)));
   const assignableRoles = access.assignableProjectRoles(req.access, projectId);
   res.json({
     members,
@@ -164,6 +175,31 @@ router.patch('/api/projects/:id/team/:userId', requireProjectRole('project_admin
 router.delete('/api/projects/:id/team/:userId', requireProjectRole('project_admin'), async (req, res) => {
   if ((await _manageableTarget(req, res)) === null) return;
   await pool.query('DELETE FROM project_members WHERE project_id = $1 AND user_id = $2', [req.params.id, req.params.userId]);
+  res.json({ ok: true });
+});
+
+// Emails them the invitation again (Team page → Edit users) — e.g. they
+// never signed in, or lost the first email. Same email as the invite.
+router.post('/api/projects/:id/team/:userId/resend-invite', requireProjectRole('project_admin'), async (req, res) => {
+  const role = await _manageableTarget(req, res);
+  if (role === null) return;
+  if (!emailService.isConfigured()) {
+    return res.status(400).json({ error: "Email isn't set up for this app, so invitations can't be sent — let them know to sign in." });
+  }
+  const { rows } = await pool.query('SELECT email FROM users WHERE id = $1', [req.params.userId]);
+  const email = rows[0].email;
+  let emailError = null;
+  try {
+    const appUrl = process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
+    await emailService.sendInviteEmail({ toEmail: email, invitedByEmail: req.session.userEmail, appUrl, role: access.ROLE_LABELS[role].toLowerCase() });
+  } catch (err) {
+    emailError = err.message;
+  }
+  await pool.query(
+    'INSERT INTO invites (email, role, invited_by, email_sent, email_error, project_id) VALUES ($1, $2, $3, $4, $5, $6)',
+    [email, role, req.session.userId, !emailError, emailError, req.params.id]
+  );
+  if (emailError) return res.status(502).json({ error: `Couldn't send the email: ${emailError}` });
   res.json({ ok: true });
 });
 

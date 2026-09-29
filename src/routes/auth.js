@@ -44,7 +44,7 @@ const SESSION_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 async function _sessionUser(req) {
   if (!req.session.userId) return null;
   const signedInAt = req.session.signedInAt || 0;
-  const { rows } = await pool.query('SELECT id, email, role, password_version FROM users WHERE id = $1', [req.session.userId]);
+  const { rows } = await pool.query('SELECT id, email, name, role, password_version FROM users WHERE id = $1', [req.session.userId]);
   const user = rows[0];
   const expired =
     !user ||
@@ -328,9 +328,16 @@ router.post('/auth/verify-code', async (req, res) => {
   const inviteCode = req.body.invite?.trim() || null;
   const problem = passwords.validatePassword(password);
   if (problem) return res.status(400).json({ error: problem });
-  const { rows } = await pool.query('SELECT id, email, role FROM users WHERE email = $1', [email || '']);
+  const { rows } = await pool.query('SELECT id, email, role, name FROM users WHERE email = $1', [email || '']);
   const user = rows[0];
+  // Creating an account: their name is required (shown to their team) —
+  // checked before the code is used up. A reset doesn't ask for it.
+  const name = _cleanName(req.body.name);
+  if (user && !user.name && !name && req.body.purpose !== 'reset') {
+    return res.status(400).json({ error: 'Enter your full name.' });
+  }
   const result = user ? await passwords.setPasswordWithCode(user.id, code, password) : { ok: false, reason: 'invalid' };
+  if (result.ok && name && !user.name) await pool.query('UPDATE users SET name = $2 WHERE id = $1', [user.id, name]);
   if (!result.ok) {
     return res.status(result.reason === 'locked' ? 429 : 400).json({
       error: result.reason === 'locked'
@@ -344,6 +351,21 @@ router.post('/auth/verify-code', async (req, res) => {
   if (await _denyUnlessMember(res, user)) return;
   await _startSession(req, user);
   res.json({ user: { id: user.id, email: user.email, role: user.role } });
+});
+
+/** A trimmed name (single spaces, at most 100 characters), or null if blank. */
+function _cleanName(value) {
+  const name = String(value || '').replace(/\s+/g, ' ').trim().slice(0, 100);
+  return name || null;
+}
+
+// Their own name — for accounts created before names were asked for
+// (nav.js asks once), and for correcting it later.
+router.put('/api/me/name', requireLogin, async (req, res) => {
+  const name = _cleanName(req.body.name);
+  if (!name) return res.status(400).json({ error: 'Enter your full name.' });
+  await pool.query('UPDATE users SET name = $2 WHERE id = $1', [req.session.userId, name]);
+  res.json({ name });
 });
 
 router.post('/auth/logout', (req, res) => {
@@ -390,7 +412,7 @@ router.get('/auth/me', async (req, res) => {
   const reviztoStillValid = !!reviztoTokens && new Date(reviztoTokens.refresh_expires_at) > new Date();
 
   res.json({
-    user: { id: req.session.userId, email: req.session.userEmail, role, ...permissions },
+    user: { id: req.session.userId, email: req.session.userEmail, name: sessionUser.name || null, role, ...permissions },
     acc: accStillValid
       ? {
           connected: true,

@@ -46,6 +46,9 @@
         <p class="hint" id="code-intro"></p>
         <label for="code-input">6-digit code</label>
         <input id="code-input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="123456" required />
+        <!-- Creating an account only (not a reset): shown to their team. -->
+        <label for="full-name-input" id="full-name-label">Full name</label>
+        <input id="full-name-input" type="text" autocomplete="name" maxlength="100" placeholder="e.g. Juan Diego Fernández" />
         <label for="new-password-input">New password</label>
         <input id="new-password-input" type="password" autocomplete="new-password" minlength="10" required />
         <label for="confirm-password-input">Confirm new password</label>

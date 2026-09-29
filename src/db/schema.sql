@@ -558,4 +558,9 @@ ALTER TABLE projects ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
 -- so a project they lost access to, or that was archived, just drops out.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS current_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL;
 
+-- The person's name, shown to their team (Team page, License
+-- Administration). Required when they create their account (first
+-- sign-in); accounts from before this are asked once, on their next visit.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;
+
 -- connect-pg-simple creates its own "session" table automatically on first run.

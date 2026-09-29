@@ -558,6 +558,13 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
   70% { box-shadow: 0 0 0 7px rgba(31, 122, 77, 0); }
   100% { box-shadow: 0 0 0 0 rgba(31, 122, 77, 0); }
 }
+/* The sidebar's role badge: its dot shows the connection (nav.js) —
+   pulsing green = Revizto and ACC connected, gray = one isn't, yellow =
+   no internet. */
+.status-badge::before { width: 7px; height: 7px; }
+.status-badge[data-status="connected"]::before { background: var(--success); animation: pairing-pulse 1.8s infinite; }
+.status-badge[data-status="disconnected"]::before { background: #9aa1ad; }
+.status-badge[data-status="offline"]::before { background: #f2b705; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15); }
 
 .hint { color: var(--muted); font-size: 0.78rem; }
 
@@ -966,11 +973,49 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
 .license-table td { padding: 0.7rem 1.25rem 0.7rem 0; border-bottom: 1px solid var(--line); vertical-align: middle; overflow-wrap: break-word; }
 /* Column sizing: names never break mid-word or wrap; the table scrolls
    sideways (.license-table-wrap) on narrow screens instead. */
-.container-license { max-width: 1120px; }
+.container-roomy { max-width: 1120px; } /* License Administration, Team */
 .license-table .col-name { min-width: 13rem; }
 .license-table .col-person, .license-table td.person-cell { min-width: 11rem; white-space: nowrap; }
 .license-table .col-num { width: 1%; }
 .license-table .badge { white-space: nowrap; }
+
+/* ── Team: members table, Edit users panel ─────────────────────────── */
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.members-toolbar { display: flex; align-items: center; gap: 1rem; }
+.select-all-label { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.88rem; cursor: pointer; }
+.members-toolbar input[type="checkbox"], .team-table input[type="checkbox"] { width: 1rem; height: 1rem; margin: 0; padding: 0; cursor: pointer; }
+.team-table input[type="checkbox"]:disabled { cursor: not-allowed; opacity: 0.4; }
+.license-table .col-check, .license-table td.check-cell { width: 1.5rem; padding-right: 0.75rem; }
+.team-table tr.selected td { background: var(--blueprint-dim); }
+.pending-note { display: block; font-size: 0.75rem; color: var(--muted); margin-top: 0.15rem; }
+
+.side-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 90;
+  width: 360px;
+  max-width: 100vw;
+  box-sizing: border-box;
+  overflow-y: auto;
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.12);
+  padding: 1.5rem;
+}
+.side-panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; }
+.side-panel-header h2 { margin: 0; }
+.side-panel-close { background: none; border: none; font-size: 1.5rem; line-height: 1; color: var(--muted); cursor: pointer; padding: 0.2rem 0.4rem; }
+.side-panel-close:hover { color: var(--ink); }
+.side-panel-section { border-top: 1px solid var(--line); padding-top: 1rem; margin-top: 1rem; }
+.side-panel-section h3 { margin: 0 0 0.5rem; font-size: 0.95rem; }
+.side-panel-section .hint { margin: 0 0 0.6rem; }
+.side-panel .field-row select { min-width: 0; flex: 1; }
+.edit-users-list { list-style: none; margin: 0; padding: 0; max-height: 11rem; overflow-y: auto; font-size: 0.88rem; }
+.edit-users-list li { padding: 0.3rem 0; border-bottom: 1px solid var(--line); }
+.edit-users-list li:last-child { border-bottom: none; }
+.side-panel .result-text div { margin-top: 0.25rem; }
 .license-table td.person-cell[title] { cursor: help; }
 .license-table tr:last-child td { border-bottom: none; }
 .license-table td:last-child { text-align: right; white-space: nowrap; }
@@ -999,6 +1044,9 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
 .modal h2 { margin: 0 0 0.5rem; font-size: 1.1rem; color: var(--danger); }
 .modal p { margin: 0 0 1.1rem; line-height: 1.5; }
 .modal-neutral h2 { color: var(--ink); }
+.modal label { display: block; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.35rem; }
+.modal input[type="text"] { width: 100%; box-sizing: border-box; }
+.modal .result-text { margin: 0.4rem 0 0.8rem; min-height: 1.2em; color: var(--danger); }
 .modal-actions { display: flex; gap: 0.5rem; }
 .btn.btn-danger { background: var(--danger); }
 .btn.btn-danger:hover { background: #8f1c13; }

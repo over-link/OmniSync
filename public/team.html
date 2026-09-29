@@ -11,7 +11,7 @@
 </head>
 <body>
   <div id="sidebar-mount"></div>
-  <div id="app" class="container container-wide">
+  <div id="app" class="container container-wide container-roomy">
     <header class="app-header">
       <h1>Team</h1>
       <p id="header-sub" class="app-sub">Who's on each project, and their role. Project admins manage a project's field mapping, auto-sync and issue linking; standard users view and sync its issues.</p>
@@ -53,11 +53,25 @@
     </section>
 
     <section id="members-card" class="card hidden">
-      <h2>Members</h2>
+      <div class="card-header-row">
+        <h2>Members</h2>
+        <!-- Admins: tick people (or Select all), then Edit users opens the
+             panel on the right. -->
+        <div id="members-toolbar" class="members-toolbar hidden">
+          <label class="select-all-label"><input type="checkbox" id="select-all-members" /> Select all</label>
+          <button type="button" id="edit-users-btn" class="btn" disabled>Edit users</button>
+        </div>
+      </div>
       <div class="license-table-wrap">
-        <table class="license-table">
+        <table class="license-table team-table">
           <thead>
-            <tr><th>Email</th><th>Role</th><th>Last sign-in</th><th>Latest activity here</th><th></th></tr>
+            <tr>
+              <th class="col-check hidden" id="col-check-head"><span class="visually-hidden">Select</span></th>
+              <th class="col-person"><button type="button" class="sort-btn" data-sort="name">Name <span class="sort-arrow" aria-hidden="true"></span></button></th>
+              <th><button type="button" class="sort-btn" data-sort="role">Role <span class="sort-arrow" aria-hidden="true"></span></button></th>
+              <th><button type="button" class="sort-btn" data-sort="signin">Last sign-in <span class="sort-arrow" aria-hidden="true"></span></button></th>
+              <th><button type="button" class="sort-btn" data-sort="activity">Latest activity <span class="sort-arrow" aria-hidden="true"></span></button></th>
+            </tr>
           </thead>
           <tbody id="team-rows"></tbody>
         </table>
@@ -65,6 +79,35 @@
       <p class="hint">License admins have access to every project and are managed on License Administration.</p>
     </section>
   </div>
+
+  <!-- Edit users: acts on the ticked members. Stays open while ticking more. -->
+  <aside id="edit-users-panel" class="side-panel hidden" role="dialog" aria-labelledby="edit-users-title">
+    <div class="side-panel-header">
+      <h2 id="edit-users-title">Edit users</h2>
+      <button type="button" id="edit-users-close" class="side-panel-close" aria-label="Close">×</button>
+    </div>
+    <p id="edit-users-count" class="hint"></p>
+    <ul id="edit-users-list" class="edit-users-list"></ul>
+
+    <div class="side-panel-section">
+      <h3>Change role</h3>
+      <div class="field-row">
+        <select id="edit-users-role" aria-label="New role"></select>
+        <button type="button" id="edit-users-apply-role" class="btn">Change role</button>
+      </div>
+    </div>
+    <div class="side-panel-section">
+      <h3>Resend invitation</h3>
+      <p class="hint" id="edit-users-resend-hint">Emails them the invitation to this project again.</p>
+      <button type="button" id="edit-users-resend" class="btn secondary">Resend invitation</button>
+    </div>
+    <div class="side-panel-section">
+      <h3>Remove from project</h3>
+      <p class="hint">Their account and other projects aren't affected.</p>
+      <button type="button" id="edit-users-remove" class="btn btn-danger">Remove from project</button>
+    </div>
+    <div id="edit-users-result" class="result-text" role="status"></div>
+  </aside>
   <script src="/js/nav.js"></script>
   <script src="/js/chips.js"></script>
   <script src="/js/team.js"></script>

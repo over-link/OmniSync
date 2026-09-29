@@ -124,7 +124,9 @@ function _showCodeForm(email, purpose, message) {
   codeEmail = email;
   codePurpose = purpose;
   document.getElementById('code-intro').textContent = message;
-  for (const id of ['code-input', 'new-password-input', 'confirm-password-input']) document.getElementById(id).value = '';
+  for (const id of ['code-input', 'full-name-input', 'new-password-input', 'confirm-password-input']) document.getElementById(id).value = '';
+  // Their name is asked for when creating the account, not on a reset.
+  for (const id of ['full-name-label', 'full-name-input']) document.getElementById(id).classList.toggle('hidden', purpose !== 'set');
   whoamiEl.textContent = '';
   _showPanel('code-form');
   document.getElementById('code-input').focus();
@@ -219,8 +221,13 @@ document.getElementById('code-form').addEventListener('submit', async (e) => {
   const code = document.getElementById('code-input').value.trim();
   const password = document.getElementById('new-password-input').value;
   const confirm = document.getElementById('confirm-password-input').value;
+  const name = document.getElementById('full-name-input').value.trim();
   if (!/^\d{6}$/.test(code)) {
     whoamiEl.textContent = 'Enter the 6-digit code from the email.';
+    return;
+  }
+  if (codePurpose === 'set' && !name) {
+    whoamiEl.textContent = 'Enter your full name.';
     return;
   }
   if (password.length < 10) {
@@ -234,7 +241,10 @@ document.getElementById('code-form').addEventListener('submit', async (e) => {
   const btn = document.getElementById('code-submit');
   btn.disabled = true;
   try {
-    await api('/auth/verify-code', { method: 'POST', body: JSON.stringify({ email: codeEmail, code, password, invite: inviteCode }) });
+    await api('/auth/verify-code', {
+      method: 'POST',
+      body: JSON.stringify({ email: codeEmail, code, password, invite: inviteCode, purpose: codePurpose, name }),
+    });
     location.reload(); // signed in
   } catch (err) {
     // Password was saved, but they can't get in yet — back to sign-in.

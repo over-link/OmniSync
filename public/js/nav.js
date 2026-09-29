@@ -198,6 +198,58 @@ function _projectSwitcher(projects, currentProjectId) {
   return wrap;
 }
 
+/**
+ * Accounts created before names were asked for: ask once for their full
+ * name (shown to their team). Required — the pop-up stays until saved.
+ * Resolves with the saved name.
+ */
+function _askForName() {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    const dialog = document.createElement('form');
+    dialog.className = 'modal modal-neutral';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-labelledby', 'name-dialog-title');
+    dialog.noValidate = true;
+    dialog.innerHTML = `
+      <h2 id="name-dialog-title">What's your name?</h2>
+      <p>It's shown to your team instead of your email.</p>
+      <label for="name-dialog-input">Full name</label>
+      <input id="name-dialog-input" type="text" autocomplete="name" maxlength="100" />
+      <p class="result-text" id="name-dialog-error" role="status"></p>
+      <div class="modal-actions"><button type="submit" class="btn">Save</button></div>`;
+    backdrop.appendChild(dialog);
+    document.body.appendChild(backdrop);
+    const input = dialog.querySelector('input');
+    const errorEl = dialog.querySelector('#name-dialog-error');
+    input.focus();
+    dialog.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = input.value.trim();
+      if (!name) {
+        errorEl.textContent = 'Enter your full name.';
+        return;
+      }
+      try {
+        const res = await fetch('/api/me/name', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ name }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        backdrop.remove();
+        resolve(data.name);
+      } catch (err) {
+        errorEl.textContent = err.message;
+      }
+    });
+  });
+}
+
 async function loadNav() {
   let user = null;
   let acc = { connected: false };
@@ -322,12 +374,29 @@ async function loadNav() {
     // textContent — the email is user data.
     const footer = document.getElementById('sidebar-footer');
     if (user) {
+      // Their name when known (email on hover), else the email.
       const email = document.createElement('div');
       email.className = 'sidebar-user-email';
-      email.textContent = user.email;
+      email.textContent = user.name || user.email;
+      if (user.name) email.title = user.email;
       const badge = document.createElement('span');
-      badge.className = `badge badge-${user.isLicenseAdmin || user.isAnyProjectAdmin ? 'warning' : 'neutral'}`;
+      badge.className = `badge status-badge badge-${user.isLicenseAdmin || user.isAnyProjectAdmin ? 'warning' : 'neutral'}`;
       badge.textContent = user.roleLabel || user.role;
+      // Its dot shows the connection: pulsing green when Revizto and ACC are
+      // both connected, gray when one isn't, yellow while the browser is
+      // offline — kept up to date as the connection drops or comes back.
+      const showStatus = () => {
+        const status = !navigator.onLine ? 'offline' : fullyConnected ? 'connected' : 'disconnected';
+        badge.dataset.status = status;
+        badge.title = {
+          connected: 'Connected to Revizto and ACC',
+          disconnected: 'Revizto or ACC isn\'t connected — see My Connections',
+          offline: 'No internet connection',
+        }[status];
+      };
+      showStatus();
+      window.addEventListener('online', showStatus);
+      window.addEventListener('offline', showStatus);
       const signOut = document.createElement('button');
       signOut.type = 'button';
       signOut.className = 'btn secondary sidebar-signout';
@@ -353,6 +422,15 @@ async function loadNav() {
   // currentProject: the open one (null if none yet or they have none).
   window.dispatchEvent(new CustomEvent('app:ready', { detail: { user, acc, revizto, projects, currentProject } }));
   if (accessDenied) showAccessDenied(accessDenied);
+  // An account from before names were asked for: ask once.
+  if (user && !user.name) {
+    user.name = await _askForName();
+    const footerName = document.querySelector('.sidebar-user-email');
+    if (footerName) {
+      footerName.textContent = user.name;
+      footerName.title = user.email;
+    }
+  }
 }
 
 loadNav();

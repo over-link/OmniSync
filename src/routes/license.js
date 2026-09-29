@@ -24,8 +24,9 @@ router.get('/license', (req, res) => {
 
 /**
  * { [email]: name } from the Revizto licenses this app's projects are on
- * (syncService.licenseMemberNames — cached a few minutes). Someone not on
- * any of those licenses has no name here; the page shows their email.
+ * (syncService.licenseMemberNames — cached a few minutes) — the fallback
+ * for accounts without a name of their own (users.name, asked at
+ * sign-up). With neither, the page shows their email.
  */
 async function _peopleNames() {
   const { rows: projects } = await pool.query('SELECT * FROM projects WHERE owner_user_id IS NOT NULL');
@@ -34,7 +35,7 @@ async function _peopleNames() {
 
 router.get('/api/license/admins', requireLicenseAdmin, async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT id, email, role, last_login_at FROM users
+    `SELECT id, email, name AS account_name, role, last_login_at FROM users
      WHERE role IN ('primary_license_admin', 'license_admin')
      ORDER BY (role = 'primary_license_admin') DESC, email ASC`
   );
@@ -42,9 +43,10 @@ router.get('/api/license/admins', requireLicenseAdmin, async (req, res) => {
   res.json({
     // Any license admin can remove another license admin — never the
     // primary license admin, and never themselves.
-    admins: rows.map((a) => ({
+    admins: rows.map(({ account_name: accountName, ...a }) => ({
       ...a,
-      name: names[a.email.toLowerCase()] || null, // shown instead of the email when known
+      // Shown instead of the email: their account name, else their Revizto name.
+      name: accountName || names[a.email.toLowerCase()] || null,
       roleLabel: access.ROLE_LABELS[a.role],
       canRemove: a.role === 'license_admin' && a.id !== req.access.userId,
     })),
@@ -108,7 +110,7 @@ router.get('/api/license/projects', requireLicenseAdmin, async (req, res) => {
     pool.query(
       `SELECT p.id, p.name, p.created_at, p.acc_project_name, p.archived_at,
             (p.revizto_project_uuid IS NOT NULL AND p.acc_project_id IS NOT NULL) AS paired,
-            owner.email AS owner_email,
+            owner.email AS owner_email, owner.name AS owner_account_name,
             (SELECT count(*)::int FROM project_members pm WHERE pm.project_id = p.id) AS member_count,
             (SELECT count(*)::int FROM sync_map sm WHERE sm.project_id = p.id) AS synced_count
      FROM projects p LEFT JOIN users owner ON owner.id = p.owner_user_id
@@ -116,7 +118,10 @@ router.get('/api/license/projects', requireLicenseAdmin, async (req, res) => {
     ),
     _peopleNames(),
   ]);
-  for (const p of rows) p.owner_name = p.owner_email ? names[p.owner_email.toLowerCase()] || null : null;
+  for (const p of rows) {
+    p.owner_name = p.owner_account_name || (p.owner_email ? names[p.owner_email.toLowerCase()] || null : null);
+    delete p.owner_account_name;
+  }
   // The metric boxes at the top of License Administration. A project uses
   // a slot from the moment it's created (paired or not) until it's
   // archived or deleted (services/licenseTerms.js — placeholder terms for
