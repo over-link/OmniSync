@@ -591,8 +591,8 @@ router.post('/api/projects/:id/auto-sync-filters', requireProjectRole('project_a
   res.json({ ok: true });
 });
 
-// Whether any signed-in user (not just admins) can manually unlink an
-// issue from the Issues page — admin-only to toggle, off by default.
+// Whether admins (project admins and above) get a manual Unlink button on
+// the Issues page — admin-only to toggle, off by default.
 router.post('/api/projects/:id/allow-manual-unlink', requireProjectRole('project_admin'), async (req, res) => {
   const { enabled } = req.body;
   const { rows } = await pool.query('UPDATE projects SET allow_manual_unlink = $2 WHERE id = $1 RETURNING *', [
@@ -608,14 +608,16 @@ router.post('/api/projects/:id/allow-manual-unlink', requireProjectRole('project
 // project's own allow_manual_unlink flag server-side too, not just by
 // hiding the button client-side — so toggling it off actually revokes
 // the capability rather than just hiding it from someone who already has
-// the page open. requireLogin (not requireAdmin): once an admin has
-// turned this on, any signed-in user can use it, per the feature's intent.
-router.post('/api/projects/:id/issues/:reviztoIssueId/unlink', requireProjectRole('standard'), async (req, res) => {
+// the page open. Project admins and above only (user's call, 2026-09-29 —
+// it was any signed-in user); standard users never get it.
+router.post('/api/projects/:id/issues/:reviztoIssueId/unlink', requireProjectRole('project_admin'), async (req, res) => {
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
   if (!project.allow_manual_unlink) return res.status(403).json({ error: 'Manual unlinking is not enabled for this project' });
-  await syncService.unlinkIssue(req.session.userId, project, req.params.reviztoIssueId, req.session.userEmail);
-  res.json({ ok: true });
+  // Also closes the ACC issue when it can (syncService.unlinkIssue) —
+  // the page reports that and links to it in ACC for deleting by hand.
+  const result = await syncService.unlinkIssue(req.session.userId, project, req.params.reviztoIssueId, req.session.userEmail);
+  res.json({ ok: true, ...result });
 });
 
 // Global (not per-project) kill switch for automatic background syncing —

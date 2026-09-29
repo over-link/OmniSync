@@ -70,6 +70,16 @@ async function getDeletedIssueIds(userId, project, issueIds) {
   return deleted;
 }
 
+/**
+ * The issue's page in ACC's web app, for a person to open (e.g. to delete
+ * it — the API can't). UNCONFIRMED: Autodesk doesn't document this URL;
+ * built from ACC Build's issues address, and at worst it opens the
+ * project's issue list.
+ */
+function issueWebUrl(project, issueId) {
+  return `https://acc.autodesk.com/build/issues/projects/${_containerId(project)}/issues?issueId=${encodeURIComponent(issueId)}`;
+}
+
 async function getIssue(userId, project, issueId) {
   const { token, baseURL } = await _client(userId, project);
   const { data } = await axios.get(`${baseURL}/issues/${issueId}`, {
@@ -621,6 +631,7 @@ async function downloadAttachmentFile(userId, storageUrn) {
 module.exports = {
   getIssues,
   getIssue,
+  issueWebUrl,
   getIssuesByIds,
   getDeletedIssueIds,
   createIssue,

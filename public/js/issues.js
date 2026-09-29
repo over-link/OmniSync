@@ -247,7 +247,10 @@ function renderBoard() {
   selectAllBar.classList.toggle('hidden', !hasUnlinked);
 
   const projectId = currentProjectId;
-  const allowManualUnlink = !!currentProjects.find((p) => String(p.id) === String(projectId))?.allow_manual_unlink;
+  // Unlink button: only when the project allows it, and only for admins
+  // of it (project admin or above — the server refuses anyone else).
+  const openProject = currentProjects.find((p) => String(p.id) === String(projectId));
+  const allowManualUnlink = !!openProject?.allow_manual_unlink && !!openProject.my_role && openProject.my_role !== 'standard';
 
   rowsEl.innerHTML = pageIssues
     .map((i) => {
@@ -258,10 +261,10 @@ function renderBoard() {
           ? `<span class="hint">${i.acc.error}</span>`
           : `#${i.acc.displayId ?? i.acc.id} — ${i.acc.title} <em>(${prettyStatus(i.acc.status)})</em>`
         : `<label class="link-checkbox"><input type="checkbox" value="${i.id}"${selectedIds.has(String(i.id)) ? ' checked' : ''} /> Select to link</label>`;
-      // Unlink only clears this app's own tracked link (never deletes
-      // the issue in either system) — see the Setup page's Issue linking
+      // Unlink clears this app's tracked link and closes the ACC issue
+      // (the API can't delete it) — see the Setup page's Issue linking
       // toggle, which an admin has to turn on before this button appears.
-      const unlinkBtn = i.linked && allowManualUnlink ? `<button type="button" class="btn secondary unlink-btn" data-id="${i.id}" title="Unlink — removes the tracked link only, doesn't delete either issue">Unlink</button>` : '';
+      const unlinkBtn = i.linked && allowManualUnlink ? `<button type="button" class="btn secondary unlink-btn" data-id="${i.id}" data-acc="${i.acc?.displayId ?? ''}" title="Unlink — stops syncing and closes the ACC issue">Unlink</button>` : '';
       // Always render the date and actions cells (empty when not
       // applicable) so every row keeps the header's column positions.
       const linkedDate = i.linkedAt
@@ -331,19 +334,73 @@ document.getElementById('board-rows').addEventListener('click', async (e) => {
   const btn = e.target.closest('.unlink-btn');
   if (!btn) return;
   const reviztoId = btn.dataset.id;
-  if (!confirm(`Unlink Revizto issue #${reviztoId} from its ACC issue? This only removes the tracked link — neither issue is deleted.`)) return;
+  const accLabel = btn.dataset.acc ? `ACC issue #${btn.dataset.acc}` : 'its ACC issue';
+  const ok = await window.showConfirmDialog(
+    `Unlink Revizto issue #${reviztoId} from ${accLabel}?`,
+    "They stop syncing, and the ACC issue is closed. Autodesk doesn't let apps delete issues — you can delete it in ACC afterwards. The Revizto issue isn't changed.",
+    { confirmLabel: 'Unlink' }
+  );
+  if (!ok) return;
   const projectId = currentProjectId;
   btn.disabled = true;
   btn.textContent = 'Unlinking...';
   try {
-    await api(`/api/projects/${projectId}/issues/${reviztoId}/unlink`, { method: 'POST' });
+    const result = await api(`/api/projects/${projectId}/issues/${reviztoId}/unlink`, { method: 'POST' });
     await loadBoard();
+    if (result.accIssueId) _showUnlinkedDialog(result);
   } catch (err) {
-    alert(err.data?.error || err.message);
+    window.showAlertDialog("Couldn't unlink", err.data?.error || err.message);
     btn.disabled = false;
     btn.textContent = 'Unlink';
   }
 });
+
+/**
+ * After an unlink: whether the ACC issue got closed, and a link to it in
+ * ACC — the only place it can be deleted. Built with textContent.
+ */
+function _showUnlinkedDialog({ accDisplayId, accUrl, closed, closeProblem }) {
+  const label = accDisplayId ? `ACC issue #${accDisplayId}` : 'The ACC issue';
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  const dialog = document.createElement('div');
+  dialog.className = 'modal modal-neutral';
+  dialog.setAttribute('role', 'alertdialog');
+  dialog.setAttribute('aria-modal', 'true');
+  const title = document.createElement('h2');
+  title.textContent = 'Unlinked';
+  const body = document.createElement('p');
+  body.textContent = closed
+    ? `${label} was closed. To delete it entirely, open it in ACC — Autodesk doesn't let apps delete issues.`
+    : `${label} couldn't be closed (${closeProblem}), so it's still open in ACC. Open it there to close or delete it.`;
+  const actions = document.createElement('div');
+  actions.className = 'modal-actions';
+  const open = document.createElement('a');
+  open.className = 'btn';
+  open.href = accUrl;
+  open.target = '_blank';
+  open.rel = 'noopener';
+  open.textContent = 'Open in ACC';
+  const done = document.createElement('button');
+  done.type = 'button';
+  done.className = 'btn secondary';
+  done.textContent = 'Done';
+  const close = () => {
+    document.removeEventListener('keydown', onKey);
+    backdrop.remove();
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') close();
+  };
+  done.addEventListener('click', close);
+  open.addEventListener('click', close);
+  document.addEventListener('keydown', onKey);
+  actions.append(open, done);
+  dialog.append(title, body, actions);
+  backdrop.appendChild(dialog);
+  document.body.appendChild(backdrop);
+  done.focus();
+}
 
 document.getElementById('link-selected-btn').addEventListener('click', async () => {
   const projectId = currentProjectId;

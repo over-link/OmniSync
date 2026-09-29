@@ -232,37 +232,88 @@ async function _clearAccIssueMissingFlag(project, reviztoIssueId) {
  * silently wondering why sync stopped, same idea as the existing
  * deadline-change/markup-upload comments. Comment failures never block
  * the unlink itself — the link is already gone at that point regardless.
+ *
+ * The ACC issue is then CLOSED (user's call, 2026-09-29): Autodesk's API
+ * has no way to delete an issue — only a person can, in ACC itself — so
+ * closing keeps it out of open-issue lists, and the Issues page offers an
+ * "Open in ACC" link to delete it by hand. Closing happens after the link
+ * is cleared, so the webhook it fires finds no link and does nothing.
+ * Skipped (and reported) when the person's ACC role can't close it.
+ *
+ * Returns { accIssueId, accDisplayId, accUrl, closed, closeProblem } —
+ * accIssueId null if it wasn't linked.
  */
 async function unlinkIssue(userId, project, reviztoIssueId, reporterEmail) {
   const accIssueId = await getAccIdForRevizto(project.id, reviztoIssueId);
   await clearLink(project.id, reviztoIssueId);
+  if (!accIssueId) {
+    await _audit({ projectId: project.id, reviztoIssueId, action: 'unlink', attributedEmail: reporterEmail || null, detail: 'Manually unlinked' });
+    return { accIssueId: null };
+  }
+
+  // Read it first: whether it can be closed decides the comment's wording.
+  let closed = false;
+  let closeProblem = null;
+  let accDisplayId = null;
+  let accIssue = null;
+  const problemOf = (err) => {
+    const detail = err.response?.data?.detail || err.response?.data?.title || err.message;
+    return Array.isArray(detail) ? detail.join('; ') : String(detail);
+  };
+  try {
+    accIssue = await accService.getIssue(userId, project, accIssueId);
+    accDisplayId = accIssue.displayId ?? null;
+    if (accIssue.status === 'closed') closed = true;
+    else if (Array.isArray(accIssue.permittedStatuses) && !accIssue.permittedStatuses.includes('closed')) {
+      closeProblem = "your ACC role on this project can't close issues";
+    }
+  } catch (err) {
+    closeProblem = problemOf(err);
+    console.warn(`[sync] Could not read ACC issue ${accIssueId} after unlinking:`, err.response?.data || err.message);
+  }
+  const willClose = !!accIssue && !closed && !closeProblem;
+
+  try {
+    await accService.addComment(
+      userId,
+      project,
+      accIssueId,
+      `Unlinked from Revizto issue #${reviztoIssueId} in Revizto ⇄ ACC Sync${reporterEmail ? ` by ${reporterEmail}` : ''} — it no longer syncs${willClose ? ', and has been closed' : ''}. Delete it here if it's no longer needed.`
+    );
+  } catch (err) {
+    console.warn(`[sync] Could not post unlink notice to ACC issue ${accIssueId} (skipping):`, err.response?.data || err.message);
+  }
+
+  if (willClose) {
+    try {
+      await accService.updateIssue(userId, project, accIssueId, { status: 'closed' });
+      closed = true;
+    } catch (err) {
+      closeProblem = problemOf(err);
+      console.warn(`[sync] Could not close ACC issue ${accIssueId} after unlinking:`, err.response?.data || err.message);
+    }
+  }
   await _audit({
     projectId: project.id,
     reviztoIssueId,
     accIssueId,
     action: 'unlink',
     attributedEmail: reporterEmail || null,
-    detail: 'Manually unlinked',
+    detail: closed ? 'Manually unlinked; ACC issue closed' : `Manually unlinked; ACC issue left open (couldn't close it: ${closeProblem})`,
   });
-  if (!accIssueId) return; // wasn't actually linked — nothing to notify
-
-  try {
-    await accService.addComment(userId, project, accIssueId, `Unlinked from Revizto issue #${reviztoIssueId} in Revizto ⇄ ACC Sync${reporterEmail ? ` by ${reporterEmail}` : ''}.`);
-  } catch (err) {
-    console.warn(`[sync] Could not post unlink notice to ACC issue ${accIssueId} (skipping):`, err.response?.data || err.message);
-  }
   try {
     await reviztoService.addComment(
       userId,
       project.revizto_region,
       project.revizto_project_uuid,
       reviztoIssueId,
-      `Unlinked from ACC issue #${accIssueId} in Revizto ⇄ ACC Sync${reporterEmail ? ` by ${reporterEmail}` : ''}.`,
+      `Unlinked from ACC issue #${accDisplayId ?? accIssueId} in Revizto ⇄ ACC Sync${reporterEmail ? ` by ${reporterEmail}` : ''}${closed ? ', which was closed in ACC' : ''}.`,
       reporterEmail
     );
   } catch (err) {
     console.warn(`[sync] Could not post unlink notice to Revizto issue ${reviztoIssueId} (skipping):`, err.response?.data || err.message);
   }
+  return { accIssueId, accDisplayId, accUrl: accService.issueWebUrl(project, accIssueId), closed, closeProblem };
 }
 
 async function clearSyncError(projectId, reviztoIssueId) {
