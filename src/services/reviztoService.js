@@ -902,7 +902,7 @@ function _addCustomAttribute(list, definition, rawValue) {
  * accepting the safeguard.
  * assigneeResolver: async (email) => autodeskId | null
  */
-async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, assigneeResolver, locationResolver, customAttributeResolver, reviztoStatusFieldResolver, customStatusMap = null, customTypeMap = null, reviztoStatusName = null, autoMappedStatuses = null, workflowUuid = null, workflowLabel = null } = {}) {
+async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, assigneeResolver, locationResolver, customAttributeResolver, reviztoStatusFieldResolver, reporterNameResolver = null, customStatusMap = null, customTypeMap = null, reviztoStatusName = null, autoMappedStatuses = null, workflowUuid = null, workflowLabel = null } = {}) {
   const title = unwrap(reviztoIssue.title) || '(no title)';
   // Revizto issues have no description field of their own — this is a
   // fixed marker instead, so users can filter/identify synced issues in
@@ -918,18 +918,23 @@ async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, 
   // since Revizto's own `created` is authoritative and never changes.
   const createdDate = formatDateForAcc(reviztoIssue.created);
 
-  // Same reasoning, same fix, for who created it: ACC's native "Created
+  // Same reasoning, same fix, for who reported it: ACC's native "Created
   // By" is also server-assigned — confirmed by testing, it comes back set
   // to whichever ACC account this app's own connection used to make the
-  // POST (the project's owner user), never something the request body can
-  // set — so it can't reflect the real Revizto author either. `author` is
-  // the richer, unwrapped top-level object (firstname/lastname/email,
-  // confirmed present on real issue data — same shape as a comment's
-  // `author`); `reporter` (bare, {value}-wrapped email) is only a
-  // fallback for the rare case `author` isn't populated.
-  const reporterName = reviztoIssue.author?.firstname || reviztoIssue.author?.lastname
-    ? [reviztoIssue.author.firstname, reviztoIssue.author.lastname].filter(Boolean).join(' ')
-    : unwrap(reviztoIssue.reporter);
+  // POST, never something the request body can set, and it can't change
+  // afterwards. So the "Reporter" custom field carries it instead, and it
+  // FOLLOWS Revizto's current `reporter` (a {value}-wrapped email) when
+  // someone reassigns it there (user's call, 2026-09-29) — named via the
+  // license member list (reporterNameResolver), else the bare email.
+  // While the reporter is still the original `author` (unwrapped object
+  // with firstname/lastname), the author's own name is kept, so existing
+  // issues' Reporter values don't change wording.
+  const authorName = [reviztoIssue.author?.firstname, reviztoIssue.author?.lastname].filter(Boolean).join(' ') || null;
+  const reporterEmail = unwrap(reviztoIssue.reporter) || null;
+  const reassigned = !!reporterEmail && reporterEmail.toLowerCase() !== (reviztoIssue.author?.email || '').toLowerCase();
+  const reporterName = reassigned
+    ? (reporterNameResolver ? reporterNameResolver(reporterEmail) : null) || reporterEmail
+    : authorName || reporterEmail;
 
   // A direct link back to this issue in Revizto, that opens the desktop
   // Revizto application (explicit request) — `openLinks.redirect`, not
@@ -1076,8 +1081,8 @@ async function toAccIssue(reviztoIssue, { subtypeLookup = {}, defaultSubtypeId, 
     // reason: always available, and re-sending it is a harmless no-op
     // since Revizto's `created` never changes after the issue exists.
     if (createdDate) _addCustomAttribute(customAttributes, await customAttributeResolver('Date Created', subtypeId), createdDate);
-    // Same reasoning/treatment as Date Created just above — an issue's
-    // author doesn't change after creation either.
+    // Revizto's current reporter (see reporterName above) — follows a
+    // reassignment; the update only sends it when it differs from ACC's.
     if (reporterName) _addCustomAttribute(customAttributes, await customAttributeResolver('Reporter', subtypeId), reporterName);
     // Same reasoning/treatment as Date Created/Reporter above — the link
     // back to a given Revizto issue doesn't change either. ACC has no

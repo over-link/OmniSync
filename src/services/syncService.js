@@ -820,6 +820,11 @@ function _diffAgainstAccIssue(payload, accIssue) {
  * `issueContext` is mutated per issue by pushIssueToAcc — it only labels
  * the "custom field isn't mapped" warning, and pushes run one at a time.
  */
+async function makeReporterNameResolver(project) {
+  const names = await licenseMemberNames([project]).catch(() => ({}));
+  return (email) => (email ? names[email.toLowerCase()] || null : null);
+}
+
 async function _buildPushContext(userId, project) {
   const subtypes = await accService.getIssueSubtypes(userId, project);
   const [customStatusMap, customTypeMap, workflowSettings] = await Promise.all([
@@ -855,6 +860,10 @@ async function _buildPushContext(userId, project) {
     // these, one per workflow, unlike customAttributeResolver's other
     // fields which are always exactly one fixed title.
     reviztoStatusFieldResolver: await makeReviztoStatusFieldResolver(userId, project),
+    // Reporter email -> their Revizto license name, for ACC's "Reporter"
+    // field (reviztoService.toAccIssue). Cached a few minutes per license;
+    // an unknown email just stays the email.
+    reporterNameResolver: await makeReporterNameResolver(project),
     // Filled in by pushLinkedIssues from its bulk ACC fetch, so the
     // per-issue diff below doesn't need its own GET. Absent for one-off
     // pushes (manual Link & push), which just GET as before.
@@ -874,6 +883,7 @@ async function pushIssueToAcc(userId, project, reviztoIssue, ctx = null) {
     locationResolver,
     customAttributeResolver,
     reviztoStatusFieldResolver,
+    reporterNameResolver,
   } = ctx;
   ctx.issueContext.reviztoIssueId = reviztoIssue.id;
   ctx.issueContext.accIssueId = existingAccId;
@@ -902,6 +912,7 @@ async function pushIssueToAcc(userId, project, reviztoIssue, ctx = null) {
     locationResolver,
     customAttributeResolver,
     reviztoStatusFieldResolver,
+    reporterNameResolver,
   });
 
   // Fetch comments ONCE and share between attribution, comment-push, and
