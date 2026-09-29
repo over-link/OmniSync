@@ -219,7 +219,7 @@ function _renderMembers() {
     badge.className = `badge badge-${m.role === 'standard' ? 'neutral' : 'warning'}`;
     badge.textContent = m.roleLabel;
     roleCell.appendChild(badge);
-    _cell(tr, m.pending ? 'Not yet' : _when(m.last_login_at));
+    _cell(tr, _when(m.pending ? null : m.last_login_at));
     _cell(tr, _when(m.latest_activity_at));
   }
   _syncSelection();

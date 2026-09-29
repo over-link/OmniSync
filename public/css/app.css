@@ -987,6 +987,8 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
 .team-table input[type="checkbox"]:disabled { cursor: not-allowed; opacity: 0.4; }
 .license-table .col-check, .license-table td.check-cell { width: 1.5rem; padding-right: 0.75rem; }
 .team-table tr.selected td { background: var(--blueprint-dim); }
+/* Its last column is a date, not buttons — left-aligned under its header. */
+.license-table.team-table td:last-child { text-align: left; white-space: normal; }
 .pending-note { display: block; font-size: 0.75rem; color: var(--muted); margin-top: 0.15rem; }
 
 .side-panel {
