@@ -83,8 +83,18 @@
         </div>
 
         <div class="card dash-chart-card">
-          <h2 class="dash-chart-title" id="timeline-title">Issues synced per week</h2>
-          <p class="dash-chart-sub" id="timeline-sub">How many issues were first synced each week.</p>
+          <div class="dash-chart-head">
+            <div>
+              <h2 class="dash-chart-title" id="timeline-title">Issues synced per week</h2>
+              <p class="dash-chart-sub" id="timeline-sub">How many issues were first synced each week.</p>
+            </div>
+            <!-- One line for the total, or one line per person who synced. -->
+            <div class="dash-presets" role="group" aria-label="Show issues synced as">
+              <button type="button" class="dash-view-btn active" data-view="total" aria-pressed="true">Total</button>
+              <button type="button" class="dash-view-btn" data-view="person" aria-pressed="false">By person</button>
+            </div>
+          </div>
+          <div class="dash-legend hidden" id="timeline-legend"></div>
           <div class="dash-chart" id="timeline-chart"></div>
           <details class="dash-table">
             <summary>Show as table</summary>

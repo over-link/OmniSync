@@ -884,7 +884,9 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
 
 /* ── Dashboards ──────────────────────────────────────────────────── */
 .dash-presets { display: flex; gap: 0.3rem; }
-.dash-preset {
+/* .dash-view-btn: the per-chart Total / By person toggle — same look as
+   the range presets, its own class so the preset handler skips it. */
+.dash-preset, .dash-view-btn {
   font: inherit;
   font-size: 0.85rem;
   font-weight: 600;
@@ -895,8 +897,10 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
   color: var(--muted);
   cursor: pointer;
 }
-.dash-preset:hover { background: var(--blueprint-dim); color: var(--blueprint); }
-.dash-preset.active { background: var(--blueprint); border-color: var(--blueprint); color: #fff; }
+.dash-preset:hover, .dash-view-btn:hover { background: var(--blueprint-dim); color: var(--blueprint); }
+.dash-preset.active, .dash-view-btn.active { background: var(--blueprint); border-color: var(--blueprint); color: #fff; }
+.dash-chart-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
+.dash-view-btn { padding: 0.3rem 0.65rem; font-size: 0.8rem; }
 #dash-date-hint { flex-basis: 100%; margin: 0; }
 #dash-date-hint:empty { display: none; }
 /* Refetch keeps the frame: previous render stays, dimmed, until new data lands. */

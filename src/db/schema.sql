@@ -563,4 +563,13 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS current_project_id INTEGER REFERENCES
 -- sign-in); accounts from before this are asked once, on their next visit.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;
 
+-- Who linked each issue, for the Dashboards page's "by person" view.
+-- linked_via: 'manual' (Link & push — linked_by is who clicked), 'auto'
+-- (auto-sync by filter — no person), or 'acc_creator' (filled in later for
+-- links from before this was recorded: the app user whose ACC account
+-- created the ACC issue, which for a manual link is whoever linked it).
+-- NULL/NULL = not recorded.
+ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS linked_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS linked_via TEXT;
+
 -- connect-pg-simple creates its own "session" table automatically on first run.

@@ -30,6 +30,26 @@ const FIELD_SERIES = [
   { key: 'comment', label: 'Comments', color: '#4a3aa7' },
   { key: 'attachment', label: 'Attachments', color: '#e34948' },
 ];
+// "Issues synced" by person: people take the first five categorical slots
+// in account order (never by count, so a person keeps their color whatever
+// the range); a sixth person on folds into "Other people"; then Auto-sync
+// and Not recorded — slots 6–8, drawn as overlapping lines. All eight are
+// the reference palette in its validated order (every adjacent pair passes
+// for lines); three sit under 3:1 on white, so this view carries legend
+// totals, a per-period tooltip and a table as relief.
+const PERSON_SLOTS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4'];
+const OTHER_PEOPLE = { key: 'others', label: 'Other people', color: '#008300' };
+const AUTO_SYNC = { key: 'auto', label: 'Auto-sync', color: '#4a3aa7' };
+const NOT_RECORDED = { key: 'unknown', label: 'Not recorded', color: '#e34948' };
+// Total / By person toggle, remembered per browser (a viewer convenience).
+let timelineView = (() => {
+  try {
+    return localStorage.getItem('dash:timelineView') === 'person' ? 'person' : 'total';
+  } catch {
+    return 'total';
+  }
+})();
+let timelineState = null; // what the per-period card needs to redraw on a toggle
 // Chart id prefix -> which edits it shows (audit_log.direction).
 const FIELD_CHARTS = { 'fields-revizto': 'revizto_to_acc', 'fields-acc': 'acc_to_revizto' };
 const INK = { primary: '#12161c', secondary: '#52514e', muted: '#6b7280', grid: '#e8ebf0', surface: '#ffffff' };
@@ -167,6 +187,7 @@ async function load() {
 
 function render() {
   if (!lastData) return;
+  _hideTooltip(); // one left open would describe the chart being replaced
   const { timeline, activity, fromValue, toValue } = lastData;
   const days = _daysBetween(fromValue, toValue);
   const granularity = _granularity(days.length);
@@ -212,16 +233,38 @@ function render() {
 
   const per = { day: 'per day', week: 'per week', month: 'per month' }[granularity];
   document.getElementById('timeline-title').textContent = `Issues synced ${per}`;
-  document.getElementById('timeline-sub').textContent = `How many issues were first synced each ${granularity}.`;
   document.getElementById('activity-sub').textContent = `Field changes, comments and attachments synced ${per}, by direction.`;
   document.getElementById('timeline-note').textContent = timeline.undated
     ? `${timeline.undated} linked issue${timeline.undated === 1 ? '' : 's'} don't have a first-synced date yet — they'll appear after the next sync cycle.`
     : 'Counts issues that are linked now. An issue that was unlinked no longer appears in its history.';
 
+  // The same new links, split by who synced them (see PERSON_SLOTS).
+  const named = (timeline.people || []).slice(0, PERSON_SLOTS.length);
+  const personSeries = [
+    // `short`: the first name, for a line-end label (see _renderMultiLineChart).
+    ...named.map((p, i) => ({ key: p.key, label: p.name, short: String(p.name).split(/[\s@]/)[0], color: PERSON_SLOTS[i] })),
+    OTHER_PEOPLE,
+    AUTO_SYNC,
+    NOT_RECORDED,
+  ];
+  const seriesOf = (who) => (who === 'auto' || who === 'unknown' || named.some((p) => p.key === who) ? who : OTHER_PEOPLE.key);
+  const personByBucket = new Map(buckets.map((b) => [b, {}]));
+  for (const { day, who, linked } of timeline.personDays || []) {
+    const bucket = personByBucket.get(_bucketKey(day, granularity));
+    if (!bucket) continue;
+    const key = seriesOf(who);
+    bucket[key] = (bucket[key] || 0) + linked;
+    // Who's inside "Other people", for its tooltip.
+    if (key === OTHER_PEOPLE.key) (bucket.otherPeople ||= {})[who] = (bucket.otherPeople[who] || 0) + linked;
+  }
+  const personPoints = buckets.map((key) => ({ key, ...personByBucket.get(key) }));
+  const nameOf = Object.fromEntries((timeline.people || []).map((p) => [p.key, p.name]));
+  timelineState = { timelinePoints, personPoints, personSeries, granularity, nameOf };
+
   _renderTotalChart(timelinePoints, granularity);
-  _renderTimelineChart(timelinePoints, granularity);
   _renderActivityChart(activityPoints, granularity);
   _renderTimelineTable(timelinePoints, granularity);
+  _renderTimelineView();
   _renderActivityTable(activityPoints, granularity);
 
   // Field changes, one chart per side the edit was made on.
@@ -282,12 +325,15 @@ function _niceTicks(max) {
   return { top, ticks };
 }
 
-/** Frame: svg, recessive gridlines + y labels, and x labels for at most ~8 buckets. */
-function _frame(container, points, granularity, yMax) {
+/**
+ * Frame: svg, recessive gridlines + y labels, and x labels for at most ~8
+ * buckets. `padRight` widens the right margin (room for line-end labels).
+ */
+function _frame(container, points, granularity, yMax, { padRight = PAD.right } = {}) {
   container.innerHTML = '';
   const width = Math.max(container.clientWidth, 320);
   const svg = _svg('svg', { width, height: HEIGHT, viewBox: `0 0 ${width} ${HEIGHT}`, role: 'img' });
-  const plotW = width - PAD.left - PAD.right;
+  const plotW = width - PAD.left - padRight;
   const plotH = HEIGHT - PAD.top - PAD.bottom;
   const { top, ticks } = _niceTicks(yMax);
   const y = (v) => PAD.top + plotH - (v / top) * plotH;
@@ -441,6 +487,118 @@ function _renderLineChart({ containerId, points, granularity, valueOf, label, ma
 }
 
 /**
+ * Several lines on one frame — one per series, overlapping, each in its
+ * fixed color (no area wash: overlapping washes would muddy). Same marks
+ * as the single-line chart: 2px lines, dots with a 2px surface ring. The
+ * crosshair tooltip lists every series' value for that bucket plus the
+ * total. Up to four lines also get a first-name label at their end (nudged
+ * apart so labels never overlap); past four, the legend, tooltip and table
+ * carry identity.
+ * series: [{ key, label, color }] (only those to draw); valueOf(point, key).
+ */
+function _renderMultiLineChart({ containerId, points, granularity, series, valueOf, labelOf = (p, s) => s.label, ariaLabel, emptyText }) {
+  const container = document.getElementById(containerId);
+  const endLabels = series.length > 0 && series.length <= 4;
+  const endText = (s) => s.short || s.label; // e.g. a person's first name
+  const labelRoom = endLabels ? Math.min(140, 16 + 7 * Math.max(...series.map((s) => endText(s).length))) : PAD.right;
+  const max = Math.max(1, ...series.flatMap((s) => points.map((p) => valueOf(p, s.key))));
+  const { svg, plotH, y, xCenter, band } = _frame(container, points, granularity, max, { padRight: Math.max(PAD.right, labelRoom) });
+  const grand = series.reduce((sum, s) => sum + points.reduce((t, p) => t + valueOf(p, s.key), 0), 0);
+  svg.setAttribute('aria-label', ariaLabel(grand));
+  const baseY = PAD.top + plotH;
+
+  if (!series.length) {
+    const empty = _svg('text', { x: PAD.left + (band * points.length) / 2, y: HEIGHT / 2, 'text-anchor': 'middle', class: 'dash-empty' });
+    empty.textContent = emptyText;
+    svg.appendChild(empty);
+    return;
+  }
+
+  // Drawn last-to-first, so the first series (e.g. the first person) sits
+  // on top where lines overlap — they all share the zero line in quiet
+  // periods. Dots only on non-zero points, so the zero line isn't a pile
+  // of stacked dots; the crosshair still rings every line.
+  const coordsOf = (s) => points.map((p, i) => [xCenter(i), y(valueOf(p, s.key))]);
+  for (const s of [...series].reverse()) {
+    const coords = coordsOf(s);
+    const d = coords.map(([x, yy], i) => `${i ? 'L' : 'M'}${x},${yy}`).join(' ');
+    svg.appendChild(_svg('path', { d, fill: 'none', stroke: s.color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+    if (band >= 12) {
+      coords.forEach(([cx, cy], i) => {
+        if (valueOf(points[i], s.key) > 0) svg.appendChild(_svg('circle', { cx, cy, r: 4, fill: s.color, stroke: INK.surface, 'stroke-width': 2 }));
+      });
+    }
+  }
+
+  if (endLabels) {
+    // First names beside each line's last point, pushed apart vertically
+    // (≥ 13px) where lines end at the same value. Text ink, not the color.
+    const lastX = xCenter(points.length - 1);
+    const labels = series
+      .map((s) => ({ s, y: y(valueOf(points[points.length - 1], s.key)) }))
+      .sort((a, b) => a.y - b.y);
+    for (let i = 1; i < labels.length; i++) labels[i].y = Math.max(labels[i].y, labels[i - 1].y + 13);
+    const overflow = labels.length ? labels[labels.length - 1].y - baseY : 0;
+    if (overflow > 0) for (const l of labels) l.y -= overflow;
+    for (const l of labels) {
+      const text = _svg('text', { x: lastX + 9, y: l.y + 4, class: 'dash-end-label' });
+      text.textContent = endText(l.s);
+      svg.appendChild(text);
+    }
+  }
+
+  // Crosshair: snaps to the nearest bucket; a ringed dot on every line and
+  // one tooltip with each series' value there.
+  const cross = _svg('line', { y1: PAD.top, y2: baseY, stroke: INK.muted, 'stroke-width': 1, visibility: 'hidden' });
+  svg.appendChild(cross);
+  const hoverDots = series.map((s) => {
+    const dot = _svg('circle', { r: 5, fill: s.color, stroke: INK.surface, 'stroke-width': 2, visibility: 'hidden' });
+    svg.appendChild(dot);
+    return dot;
+  });
+  const hit = _svg('rect', { x: PAD.left, y: PAD.top, width: band * points.length, height: plotH, fill: 'transparent', tabindex: 0 });
+  svg.appendChild(hit);
+
+  const show = (evt, i) => {
+    cross.setAttribute('x1', xCenter(i));
+    cross.setAttribute('x2', xCenter(i));
+    cross.setAttribute('visibility', 'visible');
+    series.forEach((s, k) => {
+      hoverDots[k].setAttribute('cx', xCenter(i));
+      hoverDots[k].setAttribute('cy', y(valueOf(points[i], s.key)));
+      hoverDots[k].setAttribute('visibility', 'visible');
+    });
+    const rows = series.map((s) => ({ value: _fmt(valueOf(points[i], s.key)), label: labelOf(points[i], s), color: s.color }));
+    const total = series.reduce((sum, s) => sum + valueOf(points[i], s.key), 0);
+    _showTooltip(evt, _bucketLabel(points[i].key, granularity, { long: true }), [...rows, { value: _fmt(total), label: 'in total' }]);
+  };
+  const hide = () => {
+    cross.setAttribute('visibility', 'hidden');
+    for (const dot of hoverDots) dot.setAttribute('visibility', 'hidden');
+    _hideTooltip();
+  };
+  let focusIndex = points.length - 1;
+  hit.addEventListener('pointermove', (evt) => {
+    const box = svg.getBoundingClientRect();
+    focusIndex = Math.min(points.length - 1, Math.max(0, Math.floor((evt.clientX - box.left - PAD.left) / band)));
+    show(evt, focusIndex);
+  });
+  hit.addEventListener('pointerleave', hide);
+  const keyShow = () => {
+    const box = svg.getBoundingClientRect();
+    show({ clientX: box.left + xCenter(focusIndex), clientY: box.top + PAD.top + 20 }, focusIndex);
+  };
+  hit.addEventListener('focus', keyShow);
+  hit.addEventListener('blur', hide);
+  hit.addEventListener('keydown', (evt) => {
+    if (evt.key !== 'ArrowLeft' && evt.key !== 'ArrowRight') return;
+    evt.preventDefault();
+    focusIndex = Math.min(points.length - 1, Math.max(0, focusIndex + (evt.key === 'ArrowRight' ? 1 : -1)));
+    keyShow();
+  });
+}
+
+/**
  * Total linked issues over time — a running total that starts from what
  * was already linked before the range, so each point is the true total on
  * that date, not a count restarted at the range's start.
@@ -480,6 +638,69 @@ function _renderTimelineChart(points, granularity) {
       { value: _fmt(p.added), label: 'newly synced', color: TIMELINE_COLOR },
       { value: _fmt(p.total), label: 'linked in total by then' },
     ],
+  });
+}
+
+/**
+ * The per-period card: the Total line (above), or — "By person" — one
+ * overlapping line per person who synced issues (user's call: lines, not
+ * stacked columns), with a legend of each one's total for the range (only
+ * those who synced any) and the table to match.
+ */
+function _renderTimelineView() {
+  if (!timelineState) return;
+  const { timelinePoints, personPoints, personSeries, granularity, nameOf } = timelineState;
+  const byPerson = timelineView === 'person';
+  for (const btn of document.querySelectorAll('.dash-view-btn')) {
+    const on = btn.dataset.view === timelineView;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-pressed', String(on));
+  }
+  const legend = document.getElementById('timeline-legend');
+  legend.classList.toggle('hidden', !byPerson);
+  if (!byPerson) {
+    document.getElementById('timeline-sub').textContent = `How many issues were first synced each ${granularity}.`;
+    _renderTimelineChart(timelinePoints, granularity);
+    return; // _renderTimelineTable already filled its table
+  }
+
+  document.getElementById('timeline-sub').textContent = `How many issues each person synced each ${granularity} — one line per person (or auto-sync). Totals for this range are in the legend.`;
+  const totals = Object.fromEntries(personSeries.map((s) => [s.key, personPoints.reduce((sum, p) => sum + (p[s.key] || 0), 0)]));
+  const shown = personSeries.filter((s) => totals[s.key] > 0);
+  _renderLegendInto('timeline-legend', shown.map((s) => ({ ...s, total: totals[s.key] })));
+  _renderMultiLineChart({
+    containerId: 'timeline-chart',
+    points: personPoints,
+    granularity,
+    series: shown, // only those who synced any in this range; colors stay fixed per person
+    valueOf: (p, key) => p[key] || 0,
+    // "Other people": say who's in it for that period.
+    labelOf: (p, s) =>
+      s.key === OTHER_PEOPLE.key && p.otherPeople
+        ? `${s.label} (${Object.keys(p.otherPeople).map((who) => nameOf[who] || 'someone').join(', ')})`
+        : s.label,
+    ariaLabel: (total) => `Issues synced per ${granularity} by person, ${_fmt(total)} total`,
+    emptyText: 'No issues synced in this range',
+  });
+  _table(
+    'timeline-table',
+    [{ day: 'Day', week: 'Week of', month: 'Month' }[granularity], ...shown.map((s) => s.label)],
+    personPoints.map((p) => [_bucketLabel(p.key, granularity, { long: granularity === 'month' }), ...shown.map((s) => _fmt(p[s.key] || 0))])
+  );
+}
+
+for (const btn of document.querySelectorAll('.dash-view-btn')) {
+  btn.addEventListener('click', () => {
+    timelineView = btn.dataset.view;
+    try {
+      localStorage.setItem('dash:timelineView', timelineView);
+    } catch {
+      // storage blocked — the toggle still works for this visit
+    }
+    // Back to the totals table under the line, then the chosen view.
+    _hideTooltip();
+    if (timelineState) _renderTimelineTable(timelineState.timelinePoints, timelineState.granularity);
+    _renderTimelineView();
   });
 }
 

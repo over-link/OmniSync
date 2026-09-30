@@ -68,16 +68,31 @@ async function getReviztoIdForAcc(projectId, accIssueId) {
   return rows[0]?.revizto_issue_id || null;
 }
 
-async function recordLink(projectId, reviztoIssueId, accIssueId) {
+/**
+ * `linkedBy`: the user who linked it (Link & push), or null for auto-sync
+ * (`via` 'auto') — for the Dashboards page's "by person" view and the
+ * Activity Log's link entry. See schema.sql's sync_map.linked_by.
+ */
+async function recordLink(projectId, reviztoIssueId, accIssueId, { linkedBy = null, via = 'manual' } = {}) {
   await pool.query(
-    `INSERT INTO sync_map (project_id, revizto_issue_id, acc_issue_id, last_synced_at, last_error, last_error_at, linked_at)
-     VALUES ($1, $2, $3, now(), NULL, NULL, now())
+    `INSERT INTO sync_map (project_id, revizto_issue_id, acc_issue_id, last_synced_at, last_error, last_error_at, linked_at, linked_by, linked_via)
+     VALUES ($1, $2, $3, now(), NULL, NULL, now(), $4, $5)
      ON CONFLICT (project_id, revizto_issue_id) DO UPDATE SET
        acc_issue_id = EXCLUDED.acc_issue_id, last_synced_at = now(), last_error = NULL, last_error_at = NULL,
-       linked_at = COALESCE(sync_map.linked_at, now())`,
-    [projectId, String(reviztoIssueId), accIssueId]
+       linked_at = COALESCE(sync_map.linked_at, now()),
+       linked_by = COALESCE(sync_map.linked_by, EXCLUDED.linked_by),
+       linked_via = COALESCE(sync_map.linked_via, EXCLUDED.linked_via)`,
+    [projectId, String(reviztoIssueId), accIssueId, linkedBy, via]
   );
-  await _audit({ projectId, reviztoIssueId, accIssueId, action: 'link', detail: 'Issue linked' });
+  const { rows } = linkedBy ? await pool.query('SELECT email FROM users WHERE id = $1', [linkedBy]) : { rows: [] };
+  await _audit({
+    projectId,
+    reviztoIssueId,
+    accIssueId,
+    action: 'link',
+    attributedEmail: rows[0]?.email || null,
+    detail: via === 'auto' ? 'Issue linked by auto-sync' : 'Issue linked',
+  });
 }
 
 /**
@@ -757,6 +772,30 @@ async function _backfillLinkedAt(projectId, accIssues) {
 }
 
 /**
+ * Fills in who linked each issue for links from before that was recorded
+ * (sync_map.linked_via IS NULL): the app user whose ACC account created
+ * the ACC issue — for a manual link, whoever clicked Link & push, since
+ * the issue is created with their connection. Marked 'acc_creator'; an ACC
+ * creator who isn't a connected app user stays "not recorded".
+ */
+async function _backfillLinkedBy(projectId, accIssues) {
+  const rows = accIssues.filter((i) => i?.id && i.createdBy);
+  if (!rows.length) return;
+  try {
+    await pool.query(
+      `UPDATE sync_map SET linked_by = t.user_id, linked_via = 'acc_creator'
+       FROM unnest($2::text[], $3::text[]) AS v(acc_issue_id, created_by)
+       JOIN acc_tokens t ON t.autodesk_user_id = v.created_by
+       WHERE sync_map.project_id = $1 AND sync_map.acc_issue_id = v.acc_issue_id
+         AND sync_map.linked_via IS NULL AND sync_map.linked_by IS NULL`,
+      [projectId, rows.map((i) => i.id), rows.map((i) => i.createdBy)]
+    );
+  } catch (err) {
+    console.warn('[sync] Could not fill in who linked issues for the Dashboards page:', err.message);
+  }
+}
+
+/**
  * Caches each ACC issue's human-readable number (displayId) for the
  * Activity Log's "ACC #" column — see schema.sql's acc_issue_numbers.
  * Best-effort: a failure here (e.g. the table not migrated yet) must never
@@ -1006,7 +1045,9 @@ async function pushIssueToAcc(userId, project, reviztoIssue, ctx = null) {
   } else {
     const created = await accService.createIssue(userId, project, payload);
     await _rememberAccIssueNumbers(project.id, [created]);
-    await recordLink(project.id, reviztoIssue.id, created.id);
+    // Auto-sync by filter links with no person behind it (ctx.linkedVia).
+    const via = ctx.linkedVia || 'manual';
+    await recordLink(project.id, reviztoIssue.id, created.id, { linkedBy: via === 'auto' ? null : userId, via });
     accIssueId = created.id;
   }
 
@@ -1383,12 +1424,14 @@ async function pushSelectedIssues(userId, project, issueIds) {
   return _pushIssueList(userId, project, selected);
 }
 
-async function _pushIssueList(userId, project, issues) {
+// `via`: 'manual' (someone clicked Link & push — they're recorded as
+// linking it) or 'auto' (auto-sync by filter).
+async function _pushIssueList(userId, project, issues, { via = 'manual' } = {}) {
   const results = [];
   let ctx = null; // shared ACC lookups for the whole batch, see _buildPushContext
   for (const issue of issues) {
     try {
-      if (!ctx) ctx = await _buildPushContext(userId, project);
+      if (!ctx) ctx = { ...(await _buildPushContext(userId, project)), linkedVia: via };
       results.push({ reviztoId: issue.id, ...(await pushIssueToAcc(userId, project, issue, ctx)) });
     } catch (err) {
       const message = err.response?.data?.errors?.[0]?.detail || err.message;
@@ -1435,6 +1478,7 @@ async function prefetchLinkedIssues(userId, project) {
   if (accIssues) {
     await _rememberAccIssueNumbers(project.id, accIssues);
     await _backfillLinkedAt(project.id, accIssues);
+    await _backfillLinkedBy(project.id, accIssues);
   }
   return {
     links,
@@ -2137,6 +2181,7 @@ async function getIssuesBoard(userId, project) {
   if (accIssues) {
     await _rememberAccIssueNumbers(project.id, accIssues);
     await _backfillLinkedAt(project.id, accIssues);
+    await _backfillLinkedBy(project.id, accIssues);
   }
 
   const board = [];
@@ -2261,7 +2306,7 @@ async function autoLinkMatchingIssues(userId, project) {
   if (!unlinkedMatches.length) return [];
 
   console.log(`[auto-sync] "${project.name}": ${unlinkedMatches.length} unlinked issue(s) match the auto-sync filter — linking now.`);
-  return _pushIssueList(userId, project, unlinkedMatches);
+  return _pushIssueList(userId, project, unlinkedMatches, { via: 'auto' });
 }
 
 /**
