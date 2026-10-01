@@ -51,8 +51,14 @@ let currentAcc = { connected: false };
 // projects in Revizto and ACC.)
 let isLicenseAdmin = false;
 
-function _canPair(p) {
-  return isLicenseAdmin || (p?.my_role === 'project_admin' && !_isPaired(p));
+// Pairing a new project: license admins only. Modifying an existing
+// pairing: license admins and the project's own project admins.
+function _canPair() {
+  return isLicenseAdmin;
+}
+
+function _canModify(p) {
+  return isLicenseAdmin || p?.my_role === 'project_admin';
 }
 
 window.addEventListener('app:ready', async (e) => {
@@ -541,7 +547,7 @@ async function loadAccProjectOptions() {
 // Pairing needs a Revizto license you're a License administrator of. When
 // you have none (the lists loaded fine and it's empty), say so in a
 // pop-up — once per page load, not on every project switch.
-const NO_LICENSE_ROLE_MESSAGE = 'You do not have the necessary license role in Revizto to pair projects. Please contact your license admin.';
+const NO_LICENSE_ROLE_MESSAGE = 'You do not have the necessary role in Revizto to pair projects. You need to be a project admin of the Revizto project (or a license administrator). Please contact your license admin.';
 let noLicenseRoleShown = false;
 
 function _hasNoLicenseRole() {
@@ -579,7 +585,7 @@ async function renderStep1(project) {
   // A license admin looking at a paired project may click "Modify
   // pairing" next — start loading what that needs now, in the background,
   // so it opens ready instead of waiting on Revizto and ACC.
-  if (project && _isPaired(project) && isLicenseAdmin) {
+  if (project && _isPaired(project) && _canModify(project)) {
     loadLicenseAndHubOptions();
     if (project.revizto_license_uuid) _fetchReviztoProjects(project.revizto_license_uuid);
     if (project.acc_hub_id) _fetchAccProjects(project.acc_hub_id);
@@ -768,7 +774,7 @@ function pairingRowHtml(p) {
       <span class="pairing-row-name">${_escapeHtml(_reviztoProjectLabel(p))}</span>
       <span class="pairing-dot${p.webhook_id ? ' connected' : ''}" title="${p.webhook_id ? 'Webhook registered — syncing active' : 'Webhook not registered yet — Modify and re-save to retry'}"></span>
       <span class="pairing-row-name">${_escapeHtml(p.acc_project_name || 'ACC project')}</span>
-      ${isLicenseAdmin ? `<button type="button" class="btn secondary modify-pairing-btn" data-id="${p.id}">Modify pairing</button>` : ''}
+      ${_canModify(p) ? `<button type="button" class="btn secondary modify-pairing-btn" data-id="${p.id}">Modify pairing</button>` : ''}
     </div>${isLicenseAdmin ? missingIdHtml : ''}`;
 }
 

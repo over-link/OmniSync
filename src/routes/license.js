@@ -35,7 +35,8 @@ async function _peopleNames() {
 
 router.get('/api/license/admins', requireLicenseAdmin, async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT id, email, name AS account_name, role, last_login_at FROM users
+    `SELECT id, email, name AS account_name, role, last_login_at, (role = 'license_admin' AND license_role_verified_at IS NULL) AS pending,
+            (role = 'license_admin' AND license_role_verified_at IS NULL AND license_role_denied_at IS NOT NULL) AS role_denied FROM users
      WHERE role IN ('primary_license_admin', 'license_admin')
      ORDER BY (role = 'primary_license_admin') DESC, email ASC`
   );
@@ -56,8 +57,11 @@ router.get('/api/license/admins', requireLicenseAdmin, async (req, res) => {
 });
 
 // Makes someone a license admin (creating their account if new — they
-// create a password on first sign-in). Their project rows stay but no
-// longer matter: a license admin sees every project.
+// create a password on first sign-in). No check here: they show as pending
+// until they've signed in and connected Revizto, when the app confirms a
+// License administrator (or above) license role (routes/auth.js _verifyLicenseRole).
+// Their project rows stay but no longer matter: a license admin sees every
+// project.
 router.post('/api/license/admins', requireLicenseAdmin, async (req, res) => {
   const email = String(req.body.email || '').toLowerCase().trim();
   if (!email || !email.includes('@')) return res.status(400).json({ error: 'Enter a valid email.' });
@@ -65,7 +69,9 @@ router.post('/api/license/admins', requireLicenseAdmin, async (req, res) => {
   if (existing[0]?.role === 'primary_license_admin') return res.status(400).json({ error: "That's the primary license admin." });
   const { rows } = await pool.query(
     `INSERT INTO users (email, role) VALUES ($1, 'license_admin')
-     ON CONFLICT (email) DO UPDATE SET role = 'license_admin'
+     ON CONFLICT (email) DO UPDATE SET role = 'license_admin',
+       license_role_verified_at = CASE WHEN users.role = 'license_admin' THEN users.license_role_verified_at END,
+       license_role_denied_at = CASE WHEN users.role = 'license_admin' THEN users.license_role_denied_at END
      RETURNING id, email, role`,
     [email]
   );

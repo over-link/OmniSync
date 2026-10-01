@@ -20,6 +20,7 @@ const tokenStore = require('../services/tokenStore');
 const passwords = require('../services/passwords');
 const emailService = require('../services/emailService');
 const access = require('../services/access');
+const membership = require('../services/membership');
 const currentProject = require('../services/currentProject');
 
 // Everyone signs in again at least this often, however active they are —
@@ -52,6 +53,12 @@ async function _sessionUser(req) {
     req.session.passwordVersion !== user.password_version;
   if (expired) {
     await new Promise((resolve) => req.session.destroy(resolve));
+    return null;
+  }
+  // A license admin whose Revizto license role was found too low is out.
+  if (await _licenseRoleDenied(user.id)) {
+    await new Promise((resolve) => req.session.destroy(resolve));
+    req.accessDenied = LICENSE_ROLE_DENIED_MESSAGE;
     return null;
   }
   // Still a real member of at least one project in both Revizto and ACC?
@@ -191,11 +198,58 @@ async function _applyInviteLink(userId, code) {
  * proven, so it never reveals anything about an account to a stranger.
  */
 async function _denyUnlessMember(res, user) {
+  await _verifyLicenseRole(user);
+  if (await _licenseRoleDenied(user.id)) {
+    res.status(403).json({ error: LICENSE_ROLE_DENIED_MESSAGE, code: 'access_denied' });
+    return true;
+  }
   const denied = access.denialMessage(await access.getAccess(user.id));
   if (!denied) return false;
   console.warn(`[auth] Sign-in refused for ${user.email}: ${denied}`);
   res.status(403).json({ error: denied, code: 'access_denied' });
   return true;
+}
+
+const LICENSE_ROLE_DENIED_MESSAGE =
+  'Access denied. You do not have the correct license role in Revizto to be a licensed admin. Please contact your primary license admin.';
+
+/**
+ * A newly invited license admin stays "pending invitation" (License
+ * Administration) until they've signed in AND the app has confirmed, from
+ * their own Revizto connection, that their license role is License
+ * administrator (or above) on at least one Revizto license (any — no project needs to be paired).
+ * Runs when they connect Revizto (My Connections) and at every sign-in
+ * until it passes. A role below that (or no Revizto license) marks them
+ * denied — they're refused access with LICENSE_ROLE_DENIED_MESSAGE until a
+ * later check passes. If the check can't run (no Revizto connection yet,
+ * Revizto not answering) nothing changes and it's tried again next time.
+ */
+async function _verifyLicenseRole(user) {
+  try {
+    if (user.role !== 'license_admin') return;
+    const { rows } = await pool.query('SELECT license_role_verified_at FROM users WHERE id = $1', [user.id]);
+    if (!rows[0] || rows[0].license_role_verified_at) return;
+    const tokens = await tokenStore.getReviztoTokens(user.id);
+    if (!tokens) return;
+    const problem = await membership.ownLicenseRoleProblem(user.id, tokens.region, user.email);
+    if (problem) {
+      console.warn(`[auth] ${user.email} is refused as a license admin: ${problem}`);
+      await pool.query('UPDATE users SET license_role_denied_at = COALESCE(license_role_denied_at, now()) WHERE id = $1', [user.id]);
+      return;
+    }
+    await pool.query('UPDATE users SET license_role_verified_at = now(), license_role_denied_at = NULL WHERE id = $1', [user.id]);
+  } catch (err) {
+    console.warn(`[auth] Couldn't verify the Revizto license role of ${user.email}:`, err.response?.data || err.message);
+  }
+}
+
+/** True if this license admin was found to lack the Revizto license role (and hasn't passed since). */
+async function _licenseRoleDenied(userId) {
+  const { rows } = await pool.query(
+    "SELECT 1 FROM users WHERE id = $1 AND role = 'license_admin' AND license_role_denied_at IS NOT NULL AND license_role_verified_at IS NULL",
+    [userId]
+  );
+  return rows.length > 0;
 }
 
 /** Starts a fresh session for `user` (new session id — no session fixation). */
@@ -506,6 +560,11 @@ router.post('/auth/revizto/exchange', requireLogin, async (req, res) => {
     const resolvedRegion = region || 'virginia';
     const tokens = await reviztoAuth.exchangeAccessCode(accessCode, resolvedRegion);
     await tokenStore.saveReviztoTokens(req.session.userId, { ...tokens, region: resolvedRegion });
+    await _verifyLicenseRole({ id: req.session.userId, email: req.session.userEmail, role: req.session.role });
+    if (await _licenseRoleDenied(req.session.userId)) {
+      await new Promise((resolve) => req.session.destroy(resolve));
+      return res.status(403).json({ error: LICENSE_ROLE_DENIED_MESSAGE, code: 'access_denied' });
+    }
     res.json({ ok: true, refreshExpiresAt: tokens.refresh_expires_at });
   } catch (err) {
     console.error('[auth] Revizto exchange failed:', err.response?.data || err.message);

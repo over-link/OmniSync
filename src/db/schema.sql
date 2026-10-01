@@ -34,6 +34,24 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'standard'
 -- record of every real action traced back to a specific person.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
 
+-- A license admin is "pending invitation" until they've signed in and the
+-- app has confirmed they hold the License administrator license role in
+-- Revizto (routes/auth.js _verifyLicenseRole); this is when it did. License
+-- admins that already existed when the column was added are counted as
+-- verified (one-time, only on the migration that creates the column).
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'license_role_verified_at') THEN
+    ALTER TABLE users ADD COLUMN license_role_verified_at TIMESTAMPTZ;
+    UPDATE users SET license_role_verified_at = now() WHERE role IN ('primary_license_admin', 'license_admin');
+  END IF;
+END $$;
+
+-- When that check found their license role BELOW License administrator (or no
+-- Revizto license at all): they're refused access to the app (routes/auth.js
+-- _verifyLicenseRole) until a later check passes or they're re-invited.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS license_role_denied_at TIMESTAMPTZ;
+
 -- Shareable, reusable invite links ("Copy invite link" on the Team page) —
 -- one link per role, handed out to a whole group at once (e.g. pasted
 -- into an email/Slack message yourself) rather than the app sending

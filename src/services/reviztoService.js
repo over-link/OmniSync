@@ -664,6 +664,31 @@ const REVIZTO_LICENSE_ADMIN_MIN_ROLE = 4;
  */
 const _adminLicensesCache = createTtlCache(5 * 60 * 1000);
 
+/**
+ * Is this person a project admin of a Revizto project — the highest role
+ * in it? Revizto has no "list the roles" endpoint (custom role names tell
+ * us nothing), but every project the person can see comes with THEIR OWN
+ * permission map (GET /project/{uuid} and the project list items). The
+ * Owner and Administrate-level roles hold both project-rights permissions
+ * below at some level (7 = all); roles beneath them (Project Manager, ...)
+ * don't. `permissions` is that map.
+ */
+function isProjectAdminPermissions(permissions) {
+  return !!permissions && Number(permissions.manageProjectRights) > 0 && Number(permissions.changeAdministrate) > 0;
+}
+
+/**
+ * The licenses Project Setup offers for pairing, each with the person's own
+ * license `role` (GET /user/licenses — only licenses they belong to). A
+ * license admin of this app (who creates and pairs projects) sees those
+ * they administer (License administrator or above); a project admin (modifying an
+ * existing pairing) sees every license they're a member of.
+ */
+async function getPairingLicenses(userId, region, { asLicenseAdmin }) {
+  const licenses = (await getLicenses(userId, region)).data?.entities || [];
+  return asLicenseAdmin ? licenses.filter((l) => l.role >= REVIZTO_LICENSE_ADMIN_MIN_ROLE) : licenses;
+}
+
 function getAdminLicenses(userId, region, { fresh = false } = {}) {
   return _adminLicensesCache.get(`${userId}|${region}`, () => _loadAdminLicenses(userId, region), { fresh });
 }
@@ -1180,6 +1205,10 @@ module.exports = {
   getLicenses,
   getCurrentUser,
   getAdminLicenses,
+  getPairingLicenses,
+  getLicenses,
+  REVIZTO_LICENSE_ADMIN_MIN_ROLE,
+  isProjectAdminPermissions,
   getLicenseProjects,
   getLicenseMembers,
   getProjectTeam,

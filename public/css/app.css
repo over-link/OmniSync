@@ -993,6 +993,7 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
 .team-table tr.selected td { background: var(--blueprint-dim); }
 /* Its last column is a date, not buttons — left-aligned under its header. */
 .license-table.team-table td:last-child { text-align: left; white-space: normal; }
+tr.pending-row td:not(:last-child) { opacity: 0.55; }
 .pending-note { display: block; font-size: 0.75rem; color: var(--muted); margin-top: 0.15rem; }
 .owner-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.9rem; padding: 0.8rem 0; margin-top: 0.4rem; border-bottom: 1px solid var(--line); }
 .owner-label { font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }

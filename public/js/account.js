@@ -273,6 +273,13 @@ document.getElementById('revizto-submit-btn').addEventListener('click', async ()
     resultEl.textContent = 'Connected ✓';
     await refreshMe();
   } catch (err) {
+    if (err.data?.code === 'access_denied') {
+      // Their Revizto license role is too low to be a license admin — they're signed out.
+      resultEl.textContent = '';
+      await window.showAccessDenied(err.message);
+      await refreshMe();
+      return;
+    }
     resultEl.textContent = err.message;
   }
 });

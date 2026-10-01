@@ -398,6 +398,46 @@ function getHubProjectsCached(userId, hubId) {
   return _hubProjectsCache.get(`${userId}|${hubId}`, () => getHubProjects(userId, hubId));
 }
 
+/**
+ * Is this person an active project admin (or account admin) of the ACC
+ * project? Their own membership record, by Autodesk user id — a 400/403/404
+ * (not on it / not allowed to see it) means no. `rawProjectId` may carry
+ * the Data Management "b." prefix. Cached briefly (the hub dropdown asks
+ * for every project in the hub).
+ */
+const _projectAdminCache = createTtlCache(2 * 60 * 1000);
+
+function isProjectAdmin(userId, autodeskUserId, rawProjectId) {
+  return _projectAdminCache.get(`${userId}|${rawProjectId}`, async () => {
+    const token = await getValidAccToken(userId);
+    const projectId = String(rawProjectId).startsWith('b.') ? String(rawProjectId).slice(2) : rawProjectId;
+    try {
+      const { data } = await axios.get(`${APS_BASE}/construction/admin/v1/projects/${projectId}/users/${autodeskUserId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      return String(data.status).toLowerCase() === 'active' && !!(data.accessLevels?.projectAdmin || data.accessLevels?.accountAdmin);
+    } catch (err) {
+      if ([400, 403, 404].includes(err.response?.status)) return false;
+      throw err;
+    }
+  });
+}
+
+/** The hub's projects this person is a project admin (or higher) of, looked up a few at a time. */
+async function getAdminHubProjects(userId, hubId, autodeskUserId) {
+  const projects = await getHubProjectsCached(userId, hubId);
+  const admin = new Array(projects.length).fill(false);
+  let next = 0;
+  const worker = async () => {
+    while (next < projects.length) {
+      const i = next++;
+      admin[i] = await isProjectAdmin(userId, autodeskUserId, projects[i].id);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(6, projects.length) }, worker));
+  return projects.filter((_, i) => admin[i]);
+}
+
 async function getHubs(userId) {
   const token = await getValidAccToken(userId);
   const { data } = await axios.get(`${APS_BASE}/project/v1/hubs`, {
@@ -655,5 +695,7 @@ module.exports = {
   getHubsCached,
   getHubProjects,
   getHubProjectsCached,
+  getAdminHubProjects,
+  isProjectAdmin,
   attachFileToIssue,
 };

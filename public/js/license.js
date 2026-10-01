@@ -257,9 +257,17 @@ async function loadAdmins() {
   tbody.innerHTML = '';
   for (const a of admins) {
     const tr = tbody.insertRow();
-    _personCell(tr, a.name, a.email);
+    const nameCell = _personCell(tr, a.name, a.email);
     _cell(tr, a.roleLabel);
     _cell(tr, _when(a.last_login_at));
+    if (a.pending) {
+      // Invited but hasn't signed in yet — greyed out until they do.
+      tr.classList.add('pending-row');
+      const note = document.createElement('span');
+      note.className = 'pending-note';
+      note.textContent = a.role_denied ? 'Access denied — Revizto license role below License administrator' : 'Pending invitation';
+      nameCell.appendChild(note);
+    }
     const actions = tr.insertCell();
     if (a.canRemove) {
       const btn = document.createElement('button');

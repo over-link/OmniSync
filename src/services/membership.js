@@ -35,6 +35,10 @@ const REVIZTO_ACTIVE_STATUS = 1;
 // rights on the license (Project Setup shows the same text in a pop-up).
 const REVIZTO_LICENSE_ROLE_MESSAGE = 'You do not have the necessary license role in Revizto to pair projects. Please contact your license admin.';
 
+// Shown when someone tries to pair a Revizto project they aren't a project admin of.
+const REVIZTO_PROJECT_ADMIN_MESSAGE =
+  "You are not a project admin of this Revizto project, so you can't pair it. Pairing needs a project admin of both the Revizto and the ACC project — please contact your license admin.";
+
 class MembershipUnknownError extends Error {}
 
 const _cache = new Map(); // projectId -> { at, members: { revizto: Set, acc: Set } }
@@ -114,38 +118,74 @@ async function checkProjects(email, projects) {
   return { memberIds, unknownIds };
 }
 
+// Revizto license roles (see reviztoService): 1 Guest, 2 Collaborator, 3
+// Content creator, 4 License administrator, 5 Super administrator. A license
+// admin here must be a License administrator (or above) in Revizto.
+const LICENSE_ADMIN_MIN_ROLE = 4;
+const LICENSE_ROLE_NAMES = { 1: 'Guest', 2: 'Collaborator', 3: 'Content creator', 4: 'License administrator', 5: 'Super administrator' };
+
+function _roleProblem(target, best, whose) {
+  if (best !== null && best >= LICENSE_ADMIN_MIN_ROLE) return null;
+  if (best === null) {
+    return `${target} isn't an active member of ${whose} Revizto license, so they can't be a license admin. They need the License administrator role in Revizto first.`;
+  }
+  return `${target} only has the "${LICENSE_ROLE_NAMES[best] || `role ${best}`}" license role in Revizto. A license admin here must be a License administrator in Revizto.`;
+}
+
 /**
- * Pairing check: is `email` a Revizto license administrator of the chosen
- * license (and is the Revizto project in it), and a project admin of the
- * ACC project? Read with `userId`'s own connections (the person pairing —
- * they had to browse both projects to pick them). Returns a list of
- * problems, empty if they qualify. Other lookup failures throw.
- *
- * No separate Revizto project-role check: a Revizto License administrator
- * has that role in every project under the license (Revizto's docs), so
- * it would only repeat what the license check already proves (user's call,
- * 2026-09-25 — fewer Revizto calls). The license answers are the ones
- * Project Setup just loaded (cached up to a few minutes, see
- * reviztoService.getAdminLicenses / getLicenseProjects). ACC is a separate
- * system, so being a Revizto license admin proves nothing there — its
- * check stays (one call); an ACC 403 on the member list means their ACC
- * account can't administer the project.
+ * Does the person hold a license role that qualifies for license admin?
+ * Read from their OWN Revizto connection: each license in
+ * GET /user/licenses carries their own license `role`, and License
+ * administrator (or above) on at least one license is enough — which license, and whether
+ * any project is paired yet, doesn't matter. Returns a message or null.
+ * Lookup failures throw.
  */
-async function projectAdminProblems(userId, email, { revizto_region, revizto_license_uuid, revizto_project_uuid, acc_project_id }) {
+async function ownLicenseRoleProblem(userId, region, email) {
+  const response = await reviztoService.getLicenses(userId, region);
+  let best = null;
+  for (const license of response.data?.entities || []) {
+    if (typeof license.role === 'number' && (best === null || license.role > best)) best = license.role;
+  }
+  return _roleProblem(_email(email), best, 'any');
+}
+
+/**
+ * Pairing check: is `email` a project admin of BOTH the Revizto project and the
+ * ACC project being paired? On the Revizto side a License administrator of the
+ * chosen license counts (they hold that role in every project under it, per
+ * Revizto's docs, and the project must be in the license); anyone else must be
+ * a project admin of that Revizto project itself, judged from their own
+ * permissions on it (reviztoService.isProjectAdminPermissions). On the ACC side
+ * they must be an active project admin (or account admin) — ACC is a separate
+ * system, so Revizto rights prove nothing there; an ACC 403 on the member list
+ * means their ACC account can't administer the project. Read with `userId`'s
+ * own connections (the person pairing — they had to browse both projects to
+ * pick them). Returns a list of problems, empty if they qualify. Other lookup
+ * failures throw.
+ */
+async function projectAdminProblems(userId, email, { revizto_region, revizto_license_uuid, revizto_project_uuid, acc_project_id }, { asLicenseAdmin = true } = {}) {
   const target = _email(email);
   const problems = [];
-  const [adminLicenses, accMembers] = await Promise.all([
-    reviztoService.getAdminLicenses(userId, revizto_region),
+  const [licenses, accMembers] = await Promise.all([
+    reviztoService.getLicenses(userId, revizto_region).then((r) => r.data?.entities || []),
     accService.getProjectMembers(userId, { acc_project_id }).catch((err) => {
       if (err.response?.status === 403) return null;
       throw err;
     }),
   ]);
-  if (!adminLicenses.some((l) => l.uuid === revizto_license_uuid)) {
+  const license = licenses.find((l) => l.uuid === revizto_license_uuid);
+  if (!license || (asLicenseAdmin && license.role < reviztoService.REVIZTO_LICENSE_ADMIN_MIN_ROLE)) {
+    // Not on that license, or (creating/pairing) not a License administrator of it.
     problems.push(REVIZTO_LICENSE_ROLE_MESSAGE);
   } else {
-    const licenseProjects = await reviztoService.getLicenseProjects(userId, revizto_region, revizto_license_uuid);
-    if (!licenseProjects.some((p) => p.uuid === revizto_project_uuid)) problems.push("That Revizto project isn't in the chosen license.");
+    const licenseProjects = await reviztoService.getLicenseProjects(userId, revizto_region, revizto_license_uuid, { fresh: true });
+    const mine = licenseProjects.find((p) => p.uuid === revizto_project_uuid);
+    if (!mine) {
+      problems.push("That Revizto project isn't in the chosen license, or you don't have access to it.");
+    } else if (license.role < reviztoService.REVIZTO_LICENSE_ADMIN_MIN_ROLE && !reviztoService.isProjectAdminPermissions(mine.permissions)) {
+      // A license administrator holds admin rights in every project of the license; anyone else must be a project admin of it.
+      problems.push(REVIZTO_PROJECT_ADMIN_MESSAGE);
+    }
   }
   const accMe = (accMembers || []).find((m) => _email(m.email) === target);
   if (!accMe || String(accMe.status).toLowerCase() !== 'active') {
@@ -167,9 +207,11 @@ module.exports = {
   PROJECT_ARCHIVED_MESSAGE,
   COULD_NOT_VERIFY_MESSAGE,
   REVIZTO_LICENSE_ROLE_MESSAGE,
+  REVIZTO_PROJECT_ADMIN_MESSAGE,
   MEMBER_CACHE_MS,
   isPaired,
   checkProjects,
+  ownLicenseRoleProblem,
   projectAdminProblems,
   forget,
 };
