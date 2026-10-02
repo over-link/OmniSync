@@ -44,6 +44,8 @@ function _localNow() {
 
 let cycleRunning = false;
 const quietLogged = new Map(); // license id -> date its "outside working hours" line was logged
+const catchUpTries = new Map(); // license id -> how many incomplete catch-up attempts so far
+const CATCH_UP_ATTEMPTS = 3;
 
 const _ids = (licenses) => licenses.map((l) => l.id);
 
@@ -83,19 +85,41 @@ async function pollTick() {
     }
     for (const l of plan.resumed) console.log(`[poll] License "${l.name}": syncing again after a pause since ${l.paused_since.toISOString()}.`);
 
-    if (plan.full.length) {
-      console.log(`[poll] Daily full check for ${plan.full.map((l) => `"${l.name}"`).join(', ')} — re-checking every linked issue.`);
-      await pollAllProjects({ full: true, licenseIds: _ids(plan.full) });
-      for (const l of plan.full) await syncPolicy.markFullCheckDone(l.id, syncPolicy.localParts(l.timezone, now).date);
+    // A license that was paused catches up first (this tick is a normal cycle for it,
+    // with the catch-up before the push); a full check that was due for it waits for
+    // the next tick.
+    const resumedIds = new Set(_ids(plan.resumed));
+    const catchUpSince = new Map(plan.resumed.map((l) => [l.id, l.paused_since]));
+    const fullNow = plan.full.filter((l) => !resumedIds.has(l.id));
+    const normalNow = [...plan.normal, ...plan.full.filter((l) => resumedIds.has(l.id))];
+    if (fullNow.length) {
+      console.log(`[poll] Daily full check for ${fullNow.map((l) => `"${l.name}"`).join(', ')} — re-checking every linked issue.`);
+      await pollAllProjects({ full: true, licenseIds: _ids(fullNow) });
+      for (const l of fullNow) await syncPolicy.markFullCheckDone(l.id, syncPolicy.localParts(l.timezone, now).date);
     }
     // A project with no license yet (legacy data awaiting npm run tenancy:repair)
     // keeps the older app-wide rules: SYNC_TIMEZONE working hours, the old switch.
     const legacy = _localNow();
     const legacyRuns = !(await appSettings.isSyncPaused()) && legacy.hour >= ACTIVE_START_HOUR && legacy.hour < ACTIVE_END_HOUR;
-    if (plan.normal.length || legacyRuns) {
-      await pollAllProjects({ full: false, licenseIds: _ids(plan.normal), includeLegacy: legacyRuns });
+    let incomplete = new Set();
+    if (normalNow.length || legacyRuns) {
+      ({ incompleteLicenseIds: incomplete } = await pollAllProjects({ full: false, licenseIds: _ids(normalNow), includeLegacy: legacyRuns, catchUpSince }));
     }
-    await syncPolicy.clearPaused(_ids(plan.resumed));
+    // Done catching up -> clear. One that couldn't finish is tried again next tick (up to
+    // CATCH_UP_ATTEMPTS times, so a permanent problem can't repeat for ever).
+    const finished = [];
+    for (const l of plan.resumed) {
+      const tries = (catchUpTries.get(l.id) || 0) + 1;
+      if (incomplete.has(l.id) && tries < CATCH_UP_ATTEMPTS) {
+        catchUpTries.set(l.id, tries);
+        console.warn(`[poll] License "${l.name}": the catch-up was incomplete (try ${tries} of ${CATCH_UP_ATTEMPTS}) — trying again next cycle.`);
+      } else {
+        if (incomplete.has(l.id)) console.warn(`[poll] License "${l.name}": giving up on the catch-up after ${CATCH_UP_ATTEMPTS} tries — see the Activity Log.`);
+        catchUpTries.delete(l.id);
+        finished.push(l.id);
+      }
+    }
+    await syncPolicy.clearPaused(finished);
   } catch (err) {
     console.error('[poll] Cycle failed:', err.message);
   } finally {
@@ -108,7 +132,8 @@ async function pollTick() {
  * (and, with includeLegacy, of projects that have no license yet). Passing no
  * options covers every license that may sync — the old behaviour.
  */
-async function pollAllProjects({ full = false, licenseIds = null, includeLegacy = true } = {}) {
+async function pollAllProjects({ full = false, licenseIds = null, includeLegacy = true, catchUpSince = null } = {}) {
+  const incompleteLicenseIds = new Set(); // licenses whose catch-up should be tried again next tick
   // Unpaired projects (created on License Administration, not yet paired
   // on Project Setup) have nothing to sync; archived ones are parked.
   const { rows: allProjects } = await pool.query(
@@ -128,6 +153,18 @@ async function pollAllProjects({ full = false, licenseIds = null, includeLegacy 
       // push and both ACC polls below, which each skip issues that
       // haven't changed since their last check (unless full).
       const snapshot = await syncService.prefetchLinkedIssues(project.owner_user_id, project);
+      // The license was paused until just now: bring across what was changed in ACC
+      // meanwhile (the newer side wins) BEFORE the normal push, so an older Revizto
+      // state can't overwrite it.
+      const since = catchUpSince?.get(project.tenant_license_id);
+      if (since) {
+        const { rows: ownerForCatchUp } = await pool.query('SELECT email FROM users WHERE id = $1', [project.owner_user_id]);
+        const caught = await syncService.reconcileAfterPause(project.owner_user_id, project, { snapshot, since, reporterEmail: ownerForCatchUp[0]?.email });
+        console.log(
+          `[poll] "${project.name}": catch-up after the pause — ${caught.pulled} change(s) brought across from ACC, ${caught.reviztoWins} kept from Revizto, ${caught.errors} error(s).`
+        );
+        if (caught.incomplete) incompleteLicenseIds.add(project.tenant_license_id);
+      }
       const results = await syncService.pushLinkedIssues(project.owner_user_id, project, { snapshot, full });
       if (results.length) {
         const errors = results.filter((r) => r.action === 'error');
@@ -158,8 +195,11 @@ async function pollAllProjects({ full = false, licenseIds = null, includeLegacy 
       } else {
         console.error(`[poll] Project "${project.name}" failed:`, err.message);
       }
+      // A project that couldn't be read at all hasn't been caught up either.
+      if (catchUpSince?.has(project.tenant_license_id)) incompleteLicenseIds.add(project.tenant_license_id);
     }
   }
+  return { incompleteLicenseIds };
 }
 
 /**

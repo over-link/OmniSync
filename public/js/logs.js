@@ -96,6 +96,7 @@ const ACTION_LABELS = {
   deleted: 'Deleted',
   error: 'Error',
   webhook: 'ACC webhook',
+  catch_up: 'Caught up after a pause',
 };
 
 function _rowHtml(entry) {

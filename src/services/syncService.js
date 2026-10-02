@@ -1619,6 +1619,108 @@ async function pushLinkedIssues(userId, project, { snapshot = null, full = false
   return results;
 }
 
+// ─── Catch-up after a pause ──────────────────────────────────────────
+
+// Syncing stopped at `since` (stamped at the next 2-minute tick, so the real
+// stop can be a little earlier) — look back this much further.
+const CATCH_UP_MARGIN_MS = 3 * 60 * 1000;
+
+/**
+ * Revizto writes times as "YYYY-MM-DD HH:MM:SS" (UTC, as seen on its other
+ * timestamps). Returns epoch ms, or null if missing / not understood.
+ */
+function parseReviztoTime(value) {
+  if (!value) return null;
+  const s = String(value).trim();
+  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/.test(s) ? `${s.replace(' ', 'T')}Z` : s;
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? null : t;
+}
+
+/**
+ * The first sync after a pause (a license switched off, expired, suspended, or the
+ * platform paused): while it was paused, edits made in ACC were never copied to
+ * Revizto (their webhooks were ignored). For every linked issue, compare what
+ * changed on each side since the pause began and keep the NEWER side:
+ *   - ACC changed, Revizto didn't  -> ACC's change is brought across (the same
+ *     code a live ACC webhook uses: handleAccWebhook);
+ *   - Revizto changed, ACC didn't  -> nothing here: the normal cycle pushes it;
+ *   - both changed -> the later modification wins. If ACC's is later it is
+ *     brought across AND this tick's push of the older Revizto state is
+ *     suppressed (the issue's change markers are brought up to date), so it
+ *     can't overwrite it; if Revizto's is later (or its time can't be read) the
+ *     normal cycle pushes it over ACC. Either way the conflict is written to the
+ *     Activity Log.
+ * Comments and attachments need no help: their own polls pick up from where they
+ * left off. Idempotent. Returns { pulled, reviztoWins, unchanged, skipped,
+ * errors, incomplete } — incomplete means it should be tried again next tick.
+ */
+async function reconcileAfterPause(userId, project, { snapshot, since, reporterEmail, pull = handleAccWebhook } = {}) {
+  const summary = { pulled: 0, reviztoWins: 0, unchanged: 0, skipped: 0, errors: 0, incomplete: false };
+  if (!snapshot || !snapshot.accById) {
+    console.warn(`[catch-up] "${project.name}": couldn't read the ACC issues — will try again next cycle.`);
+    summary.incomplete = true;
+    return summary;
+  }
+  const sinceMs = since.getTime() - CATCH_UP_MARGIN_MS;
+  for (const row of snapshot.links) {
+    const rv = snapshot.reviztoById.get(String(row.revizto_issue_id));
+    const acc = snapshot.accById.get(row.acc_issue_id);
+    if (!rv || !acc) {
+      summary.skipped++; // gone on one side — the normal cycle's existence check deals with it
+      continue;
+    }
+    const accMs = acc.updatedAt ? Date.parse(acc.updatedAt) : NaN;
+    const accChanged = Number.isFinite(accMs) && accMs > sinceMs;
+    if (!accChanged) {
+      summary.unchanged++;
+      continue;
+    }
+    const rvUpdated = rv.updated ?? null;
+    const rvCommented = rv.commented ?? null;
+    const rvChanged = !(rvUpdated != null && row.last_seen_revizto_updated === rvUpdated && row.last_seen_revizto_commented === rvCommented);
+    const both = rvChanged;
+    if (both) {
+      const rvMs = parseReviztoTime(rvUpdated);
+      if (rvMs == null || rvMs >= accMs) {
+        summary.reviztoWins++;
+        await _audit({
+          projectId: project.id, reviztoIssueId: row.revizto_issue_id, accIssueId: row.acc_issue_id, action: 'catch_up', direction: 'revizto_to_acc',
+          detail: "Both sides were changed while syncing was paused — Revizto's version is newer and was kept.",
+        });
+        continue;
+      }
+    }
+    try {
+      await pull(userId, project, { id: acc.id, assignedTo: acc.assignedTo, watchers: acc.watchers }, reporterEmail);
+      summary.pulled++;
+      if (both) {
+        // Don't let this tick's push of the older Revizto state overwrite what was just brought across.
+        await pool.query(
+          'UPDATE sync_map SET last_seen_revizto_updated = $3, last_seen_revizto_commented = $4 WHERE project_id = $1 AND revizto_issue_id = $2',
+          [project.id, String(row.revizto_issue_id), rvUpdated, rvCommented]
+        );
+      }
+      await _audit({
+        projectId: project.id, reviztoIssueId: row.revizto_issue_id, accIssueId: row.acc_issue_id, action: 'catch_up', direction: 'acc_to_revizto',
+        detail: both
+          ? "Both sides were changed while syncing was paused — ACC's version is newer and was brought across to Revizto."
+          : 'Changed in ACC while syncing was paused — brought across to Revizto.',
+      });
+    } catch (err) {
+      summary.errors++;
+      summary.incomplete = true;
+      const message = err.response?.data?.message || err.message;
+      console.warn(`[catch-up] "${project.name}": couldn't bring ACC issue ${row.acc_issue_id} across: ${message}`);
+      await _audit({
+        projectId: project.id, reviztoIssueId: row.revizto_issue_id, accIssueId: row.acc_issue_id, action: 'error', outcome: 'error', direction: 'acc_to_revizto',
+        detail: `Couldn't bring an ACC change made while syncing was paused across to Revizto: ${message}`,
+      });
+    }
+  }
+  return summary;
+}
+
 /**
  * For the two-column UI: current state of every linked issue on both
  * sides, so the person can see Revizto's version next to ACC's version.
@@ -2652,6 +2754,8 @@ module.exports = {
   pushSelectedIssues,
   pushLinkedIssues,
   prefetchLinkedIssues,
+  reconcileAfterPause,
+  parseReviztoTime,
   autoLinkMatchingIssues,
   getLinkedIssuePairs,
   getIssuesBoard,
