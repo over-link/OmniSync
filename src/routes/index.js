@@ -13,6 +13,7 @@ const auditLog = require('../services/auditLog');
 const dashboards = require('../services/dashboards');
 const access = require('../services/access');
 const membership = require('../services/membership');
+const webhookSignature = require('../services/webhookSignature');
 const licenseTerms = require('../services/licenseTerms');
 const webhookHealth = require('../services/webhookHealth');
 const currentProject = require('../services/currentProject');
@@ -800,14 +801,18 @@ router.get('/api/projects/:id/subtypes', requireProjectRole('project_admin'), re
 });
 
 // ─── Webhook receiver (ACC -> app) ───────────────────────────────────
-// NOTE: verifying the webhook signature against WEBHOOK_SECRET is left
-// as a TODO — Autodesk's exact signature scheme should be confirmed
-// against current APS webhook docs before going live, rather than assumed.
+// Deliveries are verified against Autodesk's X-Adsk-Signature header
+// (services/webhookSignature.js; secret = WEBHOOK_SECRET, registered with
+// Autodesk once — see .env.example).
 
 async function _handleAccWebhookRequest(req, res) {
-  res.status(200).send('ok'); // ack immediately; ACC expects a fast response
+  res.status(200).send('ok'); // ack immediately; ACC expects a fast response (also for ones we then ignore, so Autodesk never sees the hook as failing)
 
   console.log(`[webhook] Received on ${req.path}`);
+
+  // Did it really come from Autodesk? (services/webhookSignature.js — mode
+  // off / log / enforce via WEBHOOK_SIGNATURE_MODE.)
+  if (!webhookSignature.decide(req).proceed) return;
 
   if (await appSettings.isSyncPaused()) {
     console.log('[webhook] Sync is paused (Setup page toggle) — ignoring this delivery.');
@@ -851,7 +856,14 @@ async function _handleAccWebhookRequest(req, res) {
   }
 }
 
-router.post('/webhook/acc', express.json(), _handleAccWebhookRequest);
+// The signature is computed on the RAW bytes, so keep them next to the parsed body.
+const _keepRawBody = express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  },
+});
+
+router.post('/webhook/acc', _keepRawBody, _handleAccWebhookRequest);
 
 // TEMP DIAGNOSTIC: a brand-new, never-before-used path, to test whether
 // Autodesk's delivery system is suppressing delivery specifically to
@@ -859,7 +871,7 @@ router.post('/webhook/acc', express.json(), _handleAccWebhookRequest);
 // webhook systems generally — the hook resource can show "active" while
 // delivery to a specific previously-failing URL is quietly suppressed).
 // If this path works where /webhook/acc doesn't, that confirms it.
-router.post('/webhook/acc-v2', express.json(), _handleAccWebhookRequest);
+router.post('/webhook/acc-v2', _keepRawBody, _handleAccWebhookRequest);
 
 async function _getProject(id) {
   const { rows } = await pool.query('SELECT * FROM projects WHERE id = $1', [id]);
