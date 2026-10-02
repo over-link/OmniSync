@@ -34,7 +34,7 @@ const isLicenseAdminRole = (role) => LICENSE_ROLES.includes(role);
 /**
  * Everything needed to decide access for one user, in one license:
  * { userId, email, licenseId, tenantId, licenses (every license they belong
- *   to, with their role in each), licenseRole (or null), isLicenseAdmin,
+ *   to, with their role, company, phase and whether it's usable / still listed), licenseRole (or null), isLicenseAdmin,
  *   isPrimary, licenseProjectIds (Set — every project of the active license),
  *   projectRoles: Map(projectId -> 'project_admin' | 'standard'),
  *   invitedProjectCount, archivedProjectCount, unverifiedProjectIds: Set }.
@@ -74,7 +74,7 @@ async function _getAccessIn(userId, forLicenseId) {
   const [{ rows: userRows }, { rows: licenseRows }] = await Promise.all([
     pool.query('SELECT id, email, role, current_license_id FROM users WHERE id = $1', [userId]),
     pool.query(
-      `SELECT m.tenant_license_id AS license_id, m.role, l.tenant_id, l.name, t.account_owner_user_id
+      `SELECT m.tenant_license_id AS license_id, m.role, l.tenant_id, l.name, t.name AS company_name, t.account_owner_user_id
        FROM license_members m
        JOIN tenant_licenses l ON l.id = m.tenant_license_id
        JOIN tenants t ON t.id = l.tenant_id
@@ -94,7 +94,10 @@ async function _getAccessIn(userId, forLicenseId) {
     email: user.email,
     licenseId: active ? active.license_id : null,
     tenantId: active ? active.tenant_id : null,
-    licenses: licenseRows.map((l) => ({ id: l.license_id, name: l.name, role: l.role, phase: licenseStates.get(l.license_id)?.phase })),
+    licenses: licenseRows.map((l) => {
+      const st = licenseStates.get(l.license_id);
+      return { id: l.license_id, name: l.name, companyName: l.company_name, role: l.role, phase: st?.phase, usable: st?.usable !== false, visible: st ? st.visible : true, message: st?.message || null };
+    }),
     licenseRole,
     isLicenseAdmin: !!licenseRole,
     isPrimary: licenseRole === 'primary_license_admin',

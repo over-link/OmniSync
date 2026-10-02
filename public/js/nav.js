@@ -26,6 +26,8 @@ const ADMIN_PAGES = {
   '/logs': _isAdmin,
   // License Administration: license admins only.
   '/license': (user) => user.isLicenseAdmin,
+  // The operator console: platform operator accounts only.
+  '/operator': (user) => user.isOperator,
 };
 
 // Pages that show one project's data — they need a project open (the
@@ -151,6 +153,97 @@ async function switchProject(projectId) {
 }
 window.switchProject = switchProject;
 
+const BLOCKED_KEY = 'blockedLicense';
+
+/**
+ * Opens a license workspace on every page (saved to the account — PUT
+ * /api/me/current-license). An expired / suspended license answers 409 with its
+ * message: that is remembered for this tab (the plain "License has expired"
+ * page, see _showBlockedLicense) instead of switching to it.
+ */
+async function switchLicense(licenseId) {
+  const res = await fetch('/api/me/current-license', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ licenseId: Number(licenseId) }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 409 && data.code === 'license_blocked') {
+    try {
+      sessionStorage.setItem(BLOCKED_KEY, JSON.stringify({ id: Number(licenseId), message: data.error }));
+    } catch {
+      // storage blocked — the page still reloads, it just opens the license they had
+    }
+    return { blocked: true };
+  }
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  try {
+    sessionStorage.removeItem(BLOCKED_KEY);
+  } catch {
+    // nothing to clear
+  }
+  return { blocked: false };
+}
+window.switchLicense = switchLicense;
+
+function _licenseLabel(l) {
+  const suffix = l.usable ? '' : l.phase === 'expired' ? ' (expired)' : l.phase === 'not_started' ? ' (not started)' : ' (suspended)';
+  return `${l.name} · ${l.companyName}${suffix}`;
+}
+
+/**
+ * The sidebar's license drop-down, above the project drop-down — for anyone in
+ * two or more licenses. An expired / suspended license is listed greyed; choosing
+ * it opens the plain "License has expired…" page. Built with textContent — names
+ * are user data.
+ */
+function _licenseSwitcher(licenses, selectedId) {
+  const wrap = document.createElement('div');
+  wrap.className = 'sidebar-project sidebar-license';
+  const label = document.createElement('label');
+  label.htmlFor = 'sidebar-license-select';
+  label.textContent = 'License';
+  const select = document.createElement('select');
+  select.id = 'sidebar-license-select';
+  for (const l of licenses) {
+    const opt = new Option(_licenseLabel(l), l.id);
+    if (!l.usable) opt.className = 'is-greyed';
+    select.add(opt);
+  }
+  select.value = String(selectedId);
+  select.title = select.selectedOptions[0]?.text || '';
+  select.addEventListener('change', async () => {
+    select.disabled = true;
+    try {
+      await switchLicense(select.value);
+      window.location.reload(); // every page re-reads the open license on load
+    } catch (err) {
+      select.disabled = false;
+      select.value = String(selectedId);
+      showAlertDialog("Couldn't switch license", err.message);
+    }
+  });
+  wrap.append(label, select);
+  return wrap;
+}
+
+/** The plain page for a license they can't open: its message, nothing else. */
+function _showBlockedLicense(license, message) {
+  const app = document.getElementById('app');
+  if (!app) return;
+  const header = document.createElement('header');
+  header.className = 'app-header';
+  const h1 = document.createElement('h1');
+  h1.textContent = license.name;
+  header.append(h1);
+  const banner = document.createElement('p');
+  banner.className = 'license-banner';
+  banner.setAttribute('role', 'alert');
+  banner.textContent = message || license.message || 'This license is not available. Contact your administrator.';
+  app.replaceChildren(header, banner);
+}
+
 function _projectLabel(p) {
   return p.revizto_project_uuid && p.acc_project_id ? p.name : `${p.name} (not paired yet)`;
 }
@@ -257,6 +350,7 @@ async function loadNav() {
   let accessDenied = null;
   let licenseNotice = null; // set when the open license is over its slot limit (its admins can only manage its projects)
   let projects = [];
+  let licenses = [];
   let currentProjectId = null;
   try {
     const res = await fetch('/auth/me', { credentials: 'same-origin' });
@@ -267,6 +361,7 @@ async function loadNav() {
     accessDenied = data.accessDenied || null;
     licenseNotice = data.license || null;
     projects = data.projects || [];
+    licenses = data.licenses || [];
     currentProjectId = data.currentProjectId || null;
   } catch {
     // network/auth failure — treat as signed out
@@ -303,7 +398,8 @@ async function loadNav() {
   // always reachable regardless, since that's where connecting happens;
   // this also naturally covers "not signed in at all" for every other
   // page, since fullyConnected requires a signed-in user first.
-  if (path !== '/account' && !fullyConnected) {
+  const operatorConsole = path === '/operator' && !!user?.isOperator; // the console needs no Revizto/ACC connection
+  if (path !== '/account' && !fullyConnected && !operatorConsole) {
     window.location.replace('/account');
     return;
   }
@@ -319,6 +415,20 @@ async function loadNav() {
     return;
   }
 
+  // A license they picked in the drop-down but can't open (expired / suspended):
+  // remembered for this tab, shown as a plain page below. Dropped once the
+  // license is usable again or no longer listed.
+  let blockedLicense = null;
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(BLOCKED_KEY) || 'null');
+    const entry = saved && licenses.find((l) => l.id === saved.id && !l.usable && !l.current);
+    if (entry) blockedLicense = { license: entry, message: saved.message };
+    else if (saved) sessionStorage.removeItem(BLOCKED_KEY);
+  } catch {
+    blockedLicense = null;
+  }
+  if (path === '/account') blockedLicense = null; // connecting accounts never depends on a license
+
   // A link naming a project (e.g. License Administration's "+ New Project"
   // → /setup?project=12) opens that project, if it's one they can open.
   const linkedProjectId = Number(new URLSearchParams(window.location.search).get('project')) || null;
@@ -333,7 +443,7 @@ async function loadNav() {
 
   // Several projects and none open yet: pick one on My Connections first,
   // then come back here.
-  if (fullyConnected && !currentProjectId && projects.length > 1 && PROJECT_PAGES.includes(path)) {
+  if (fullyConnected && !blockedLicense && !currentProjectId && projects.length > 1 && PROJECT_PAGES.includes(path)) {
     window.location.replace(`/account?next=${encodeURIComponent(path)}`);
     return;
   }
@@ -347,7 +457,7 @@ async function loadNav() {
       if (l.disabled) return `<span class="${cls} disabled" title="Not built yet">${l.label}</span>`;
       // Locked until signed in with both accounts connected — only My
       // Connections, where that happens, stays open.
-      if (!fullyConnected && l.href !== '/account') {
+      if (!fullyConnected && l.href !== '/account' && !(l.href === '/operator' && user?.isOperator)) {
         return `<span class="${cls} disabled" title="${user ? 'Connect both Revizto and ACC first' : 'Sign in first'}">${l.label}</span>`;
       }
       const active = path === l.href ? ' active' : '';
@@ -355,6 +465,8 @@ async function loadNav() {
     };
     const mainLinks = MAIN_LINKS.filter((l) => !(l.nonAdminOnly && isAdmin));
     const adminLinks = isAdmin ? ADMIN_LINKS.filter((l) => canSee(l.href)) : [];
+    // The operator console (platform operators only) — apart from the license Admins section.
+    const operatorLinks = user?.isOperator ? [{ href: '/operator', label: 'Operator console' }] : [];
     mount.innerHTML = `
       <div class="sidebar">
         <div class="sidebar-brand">Revizto <span class="bridge-glyph" aria-hidden="true">⇄</span> ACC</div>
@@ -370,13 +482,18 @@ async function loadNav() {
           }
         </nav>
         <div class="sidebar-footer" id="sidebar-footer">
+          ${operatorLinks.map((l) => linkHtml(l, ' sidebar-footer-link')).join('')}
           ${linkHtml({ href: '/account', label: 'My Connections' }, ' sidebar-footer-link')}
         </div>
       </div>
     `;
-    // The open project, under the brand — one switcher for every page.
-    if (fullyConnected && projects.length) {
-      mount.querySelector('.sidebar-brand').after(_projectSwitcher(projects, currentProjectId));
+    // The open license, under the brand, for anyone in two or more — then the
+    // open project below it. A greyed license they chose shows no projects.
+    const brand = mount.querySelector('.sidebar-brand');
+    if (fullyConnected && projects.length && !blockedLicense) brand.after(_projectSwitcher(projects, currentProjectId));
+    if (fullyConnected && licenses.length > 1) {
+      const selected = blockedLicense ? blockedLicense.license.id : (licenses.find((l) => l.current) || licenses[0]).id;
+      brand.after(_licenseSwitcher(licenses, selected));
     }
     // Who's signed in + Sign out, bottom left of the sidebar. Built with
     // textContent — the email is user data.
@@ -418,6 +535,13 @@ async function loadNav() {
       });
       footer.append(email, badge, signOut);
     }
+  }
+
+  // A license they can't open: the plain message instead of the page. The page
+  // scripts never get app:ready, so nothing of that license loads.
+  if (blockedLicense) {
+    _showBlockedLicense(blockedLicense.license, blockedLicense.message);
+    return;
   }
 
   // Wait until every page script has run before announcing. /auth/me can

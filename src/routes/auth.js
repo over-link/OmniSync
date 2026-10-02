@@ -46,7 +46,7 @@ const SESSION_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 async function _sessionUser(req) {
   if (!req.session.userId) return null;
   const signedInAt = req.session.signedInAt || 0;
-  const { rows } = await pool.query('SELECT id, email, name, role, password_version FROM users WHERE id = $1', [req.session.userId]);
+  const { rows } = await pool.query('SELECT id, email, name, role, password_version, is_operator FROM users WHERE id = $1', [req.session.userId]);
   const user = rows[0];
   const expired =
     !user ||
@@ -67,7 +67,11 @@ async function _sessionUser(req) {
   // someone removed from their last project is signed out within that.)
   req.access = await access.getAccess(user.id);
   const denied = access.denialMessage(req.access);
-  if (denied) {
+  // An operator with no license of their own stays signed in, for the operator
+  // console only (no project data: _blockedByLimit refuses everything else).
+  req.operator = !!user.is_operator;
+  req.operatorOnly = !!denied && req.operator;
+  if (denied && !req.operatorOnly) {
     await new Promise((resolve) => req.session.destroy(resolve));
     req.accessDenied = denied;
     return null;
@@ -87,8 +91,13 @@ function _sessionEnded(req, res) {
 // and the settings/sign-in plumbing. Everything else answers with the message.
 const LIMITED_ALLOWED = [/^\/api\/license\//, /^\/api\/settings\//, /^\/auth\//];
 function _blockedByLimit(req, res) {
-  if (!req.access?.adminLimited) return false;
   const path = req.originalUrl.split('?')[0];
+  if (req.operatorOnly) {
+    if (/^\/api\/operator\//.test(path) || /^\/api\/me\/name$/.test(path) || /^\/auth\//.test(path)) return false;
+    res.status(403).json({ error: 'This operator account has no license of its own.', code: 'operator_only' });
+    return true;
+  }
+  if (!req.access?.adminLimited) return false;
   if (LIMITED_ALLOWED.some((re) => re.test(path))) return false;
   res.status(403).json({ error: req.access.licenseState.message, code: 'license_suspended' });
   return true;
@@ -98,6 +107,17 @@ async function requireLogin(req, res, next) {
   try {
     if (!(await _sessionUser(req))) return _sessionEnded(req, res);
     if (_blockedByLimit(req, res)) return;
+    next();
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** The platform operator's console and routes: accounts flagged users.is_operator. */
+async function requireOperator(req, res, next) {
+  try {
+    if (!(await _sessionUser(req))) return _sessionEnded(req, res);
+    if (!req.operator) return res.status(403).json({ error: 'Operator access required.' });
     next();
   } catch (err) {
     next(err);
@@ -225,6 +245,8 @@ async function _denyUnlessMember(res, user) {
   }
   const denied = access.denialMessage(await access.getAccess(user.id));
   if (!denied) return false;
+  const { rows: op } = await pool.query('SELECT is_operator FROM users WHERE id = $1', [user.id]);
+  if (op[0]?.is_operator) return false; // operators sign in for the console even with no license
   console.warn(`[auth] Sign-in refused for ${user.email}: ${denied}`);
   res.status(403).json({ error: denied, code: 'access_denied' });
   return true;
@@ -458,7 +480,8 @@ router.get('/auth/me', async (req, res) => {
   // still enforces every one of these on each route.
   const userAccess = req.access;
   const permissions = {
-    roleLabel: access.displayRole(userAccess),
+    roleLabel: req.operatorOnly ? 'Operator' : access.displayRole(userAccess),
+    isOperator: !!req.operator,
     isLicenseAdmin: userAccess.isLicenseAdmin,
     isPrimary: userAccess.isPrimary,
     isAnyProjectAdmin: access.isAnyProjectAdmin(userAccess),
@@ -516,7 +539,28 @@ router.get('/auth/me', async (req, res) => {
       : { connected: false },
     projects,
     currentProjectId,
+    // The license drop-down (nav.js): every license still listed for them (an
+    // expired one stays, greyed, for 30 days); the open one is flagged.
+    licenses: userAccess.licenses
+      .filter((l) => l.visible)
+      .map((l) => ({ id: l.id, name: l.name, companyName: l.companyName, phase: l.phase, usable: l.usable, message: l.message, current: l.id === userAccess.licenseId })),
   });
+});
+
+// Opens a license workspace for this person on every page (the sidebar's
+// license drop-down). Only a license they belong to and can use: an expired /
+// suspended one answers 409 with its message (the page shows it as a plain
+// notice); anything else they aren't in is a 404, same as one that doesn't exist.
+router.put('/api/me/current-license', requireLogin, async (req, res) => {
+  const licenseId = Number(req.body.licenseId);
+  const entry = Number.isInteger(licenseId) ? req.access.licenses.find((l) => l.id === licenseId && l.visible) : null;
+  if (!entry) return res.status(404).json({ error: "That isn't a license you can open." });
+  const target = await access.getAccess(req.session.userId, licenseId);
+  if (!target || target.licenseId !== licenseId) return res.status(404).json({ error: "That isn't a license you can open." });
+  const denied = access.denialMessage(target);
+  if (denied) return res.status(409).json({ error: denied, code: 'license_blocked', phase: entry.phase });
+  await pool.query('UPDATE users SET current_license_id = $2 WHERE id = $1', [req.session.userId, licenseId]);
+  res.json({ currentLicenseId: licenseId });
 });
 
 // License ID is needed to browse "my Revizto projects" (GET /project/list)
@@ -599,4 +643,4 @@ router.post('/auth/revizto/exchange', requireLogin, async (req, res) => {
   }
 });
 
-module.exports = { router, requireLogin, requireLicenseAdmin, requireAnyProjectAdmin, requireProjectRole };
+module.exports = { router, requireLogin, requireOperator, requireLicenseAdmin, requireAnyProjectAdmin, requireProjectRole };

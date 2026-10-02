@@ -17,6 +17,7 @@ const authRoutes = require('./routes/auth').router;
 const mainRoutes = require('./routes/index');
 const teamRoutes = require('./routes/team');
 const licenseRoutes = require('./routes/license');
+const operatorRoutes = require('./routes/operator');
 const { startPolling } = require('./services/pollService');
 const syncPolicy = require('./services/syncPolicy');
 
@@ -57,6 +58,7 @@ app.use('/', authRoutes);
 app.use('/', mainRoutes);
 app.use('/', teamRoutes);
 app.use('/', licenseRoutes);
+app.use('/', operatorRoutes);
 
 // Express 4 only catches errors THROWN synchronously by a route handler;
 // a rejected promise from an async handler escapes as an unhandled

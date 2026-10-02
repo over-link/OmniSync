@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Operator console — Revizto ↔ ACC Sync</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<script src="/js/theme.js"></script>
+<link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <div id="sidebar-mount"></div>
+  <div id="app" class="container container-wide container-roomy">
+    <header class="app-header">
+      <h1>Operator console <span class="badge badge-warning">Operator</span></h1>
+      <p class="app-sub">Create a company and its licenses once a deal is signed and paid, invite its account owner, then renew, change slots or suspend. Billing happens outside the app. No customer issue data is shown here.</p>
+    </header>
+
+    <div id="operator-app" class="hidden">
+      <section class="card">
+        <div class="card-header-row">
+          <h2>Companies</h2>
+          <button type="button" id="new-company-btn" class="btn">+ New company</button>
+        </div>
+        <form id="new-company-form" class="new-project-form hidden" novalidate>
+          <label for="new-company-name">Company name</label>
+          <input id="new-company-name" type="text" maxlength="120" required />
+          <label for="new-company-tz">Timezone (polling hours and the daily full check follow it)</label>
+          <input id="new-company-tz" type="text" value="America/Los_Angeles" />
+          <div class="field-row">
+            <button type="submit" class="btn">Create company</button>
+            <button type="button" id="new-company-cancel" class="btn secondary">Cancel</button>
+          </div>
+          <p class="hint">Once per buyer — a later purchase is a new license on the same company, never a new company.</p>
+        </form>
+        <span id="operator-result" class="result-text" role="status"></span>
+        <p id="companies-empty" class="hint hidden">No companies yet.</p>
+      </section>
+
+      <div id="companies"></div>
+    </div>
+  </div>
+  <script src="/js/nav.js"></script>
+  <script src="/js/operator.js"></script>
+</body>
+</html>
