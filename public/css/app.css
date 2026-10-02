@@ -39,6 +39,35 @@
   --radius: 8px;
 }
 
+/* ── Medium theme: a softer mid-tone between light and dark ─────── */
+:root[data-theme="medium"] {
+  --ink: #1a2230;
+  --paper: #c5ccd6;
+  --surface: #d9dee6;
+  --line: #aab3c0;
+  --muted: #45505f;
+  --blueprint: #1f4bb8;
+  --blueprint-dim: #c3d0ee;
+  --success: #14683f;
+  --success-dim: #bcdcc9;
+  --warning: #7f4d06;
+  --warning-dim: #ead9b3;
+  --danger: #a3200f;
+  --danger-dim: #ecc4be;
+  --on-accent: #ffffff;
+  --blueprint-hover: #17399a;
+  --danger-hover: #7e170a;
+  --disabled-bg: #aab3c0;
+  --disabled-fg: #e9edf2;
+  --disabled-link: #8d97a6;
+  --badge-neutral-bg: #c0c8d3;
+  --status-off: #7f8997;
+  --chart-ink: #1a2230;
+  --chart-secondary: #3d4756;
+  --chart-grid: #b8c0cc;
+  color-scheme: light;
+}
+
 /* ── Dark theme ─────────────────────────────────────────────────── */
 :root[data-theme="dark"] {
   --ink: #e6e9ee;
@@ -74,7 +103,7 @@
   color-scheme: dark;
 }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
+  :root:not([data-theme]) {
     --ink: #e6e9ee;
     --paper: #0e1116;
     --surface: #161b22;
@@ -1222,16 +1251,28 @@ button.row-menu-item.danger { color: var(--danger); }
 .select-wrap select:disabled { background: var(--paper); color: var(--muted); cursor: progress; }
 .pairing-loading { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--muted); margin: 0.4rem 0 0; }
 
-/* ── Theme switch (js/theme.js; sidebar footer) ─────────────────── */
-.theme-switch { display: flex; align-self: stretch; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin-bottom: 0.35rem; }
-.theme-switch button {
-  flex: 1;
-  font: inherit;
-  font-size: 0.72rem;
-  font-weight: 600;
-  padding: 0.28rem 0.2rem;
-  border: none;
+/* ── Theme switch (js/theme.js): sun / half circle / moon, top-right ── */
+body { position: relative; }
+.theme-switch {
+  position: absolute;
+  top: 0.6rem;
+  right: 1rem;
+  z-index: 30;
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
   background: var(--surface);
+}
+.theme-switch button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 1.9rem;
+  padding: 0;
+  border: none;
+  background: transparent;
   color: var(--muted);
   cursor: pointer;
 }
