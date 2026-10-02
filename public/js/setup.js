@@ -425,7 +425,7 @@ document.getElementById('save-type-map-btn').addEventListener('click', async () 
 // ─── Step 1: Revizto license ↔ ACC hub, and project pairing ────────
 // Only for the project picked at the top. A paired project shows what it
 // was paired with — its Revizto license ↔ ACC hub and Revizto ↔ ACC
-// projects — locked; "Modify pairing" (license admins) reopens all four
+// projects — locked; "Modify pairing" (license admins or project admins) reopens all four
 // pickers. A project that isn't paired yet starts with blank pickers:
 // pick its Revizto license (only licenses you're a Revizto license
 // administrator of are listed) and ACC hub, then its Revizto and ACC
@@ -750,7 +750,7 @@ function _renderStep1() {
   wirePairingRowHandlers();
 }
 
-// A paired project's pairing, locked. License admins get "Modify pairing";
+// A paired project's pairing, locked. License admins or project admins get "Modify pairing";
 // the dot reflects whether the sync webhook is actually registered (set
 // automatically on save — see routes/index.js's _autoRegisterWebhook).
 // The Revizto project's own name (not the app project's). Pairings saved
