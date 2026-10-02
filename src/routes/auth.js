@@ -22,6 +22,7 @@ const emailService = require('../services/emailService');
 const access = require('../services/access');
 const membership = require('../services/membership');
 const currentProject = require('../services/currentProject');
+const tenancy = require('../services/tenancy');
 
 // Everyone signs in again at least this often, however active they are —
 // so access decisions (removed from the team, password reset) can't be
@@ -182,11 +183,15 @@ async function _validInviteLink(code) {
 async function _applyInviteLink(userId, code) {
   const link = await _validInviteLink(code);
   if (!link) return;
+  // The link's project decides the license: a person joining through it comes
+  // into THAT license (and nowhere else).
+  const licenseId = await tenancy.licenseOfProject(link.project_id);
+  await tenancy.ensureMember(licenseId, userId, link.created_by);
   await pool.query(
     `INSERT INTO project_members (project_id, user_id, role, invited_by)
-     SELECT $1, $2, $3, $4 WHERE NOT EXISTS (SELECT 1 FROM users WHERE id = $2 AND role IN ('primary_license_admin', 'license_admin'))
+     SELECT $1, $2, $3, $4 WHERE NOT EXISTS (SELECT 1 FROM license_members WHERE tenant_license_id = $5 AND user_id = $2 AND role = 'license_admin')
      ON CONFLICT (project_id, user_id) DO NOTHING`,
-    [link.project_id, userId, link.role, link.created_by]
+    [link.project_id, userId, link.role, link.created_by, licenseId]
   );
 }
 
@@ -332,6 +337,8 @@ router.post('/auth/login', async (req, res) => {
       [email, role]
     );
     user = createdRows[0];
+    // A brand-new empty install: the first user gets a company and a license to administer.
+    if (isFirstEverUser) await tenancy.ensureBootstrapLicense(user.id);
   }
 
   if (!user.password_hash) {

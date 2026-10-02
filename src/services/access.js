@@ -1,11 +1,14 @@
 /**
  * services/access.js
  * Who can see and do what — the single source of truth for roles (see
- * schema.sql "Roles"). Two layers:
- *   - license role (users.role): primary_license_admin / license_admin see
- *     and manage every project under the license; 'member' has none.
+ * schema.sql "Roles"). Everything is scoped to the person's ACTIVE LICENSE
+ * (docs/multi-tenant-architecture.md): each license is its own access
+ * boundary, so nothing here ever reaches another license's projects or people.
+ *   - license role (license_members.role in the active license):
+ *     primary_license_admin (the company's account owner) / license_admin see
+ *     and manage every project OF THAT LICENSE; 'member' has none.
  *   - project role (project_members.role): project_admin / standard, per
- *     project. A member sees ONLY projects they've been added to.
+ *     project of that license. A member sees ONLY projects they've been added to.
  *
  * Everyone's effective role on a project is one rank on a single ladder,
  * so "assign up to your own role, manage only those below it" is just a
@@ -28,33 +31,89 @@ const ROLE_LABELS = {
 const isLicenseAdminRole = (role) => LICENSE_ROLES.includes(role);
 
 /**
- * Everything needed to decide access for one user:
- * { userId, email, licenseRole (or null), isLicenseAdmin, isPrimary,
+ * Everything needed to decide access for one user, in one license:
+ * { userId, email, licenseId, tenantId, licenses (every license they belong
+ *   to, with their role in each), licenseRole (or null), isLicenseAdmin,
+ *   isPrimary, licenseProjectIds (Set — every project of the active license),
  *   projectRoles: Map(projectId -> 'project_admin' | 'standard'),
  *   invitedProjectCount, archivedProjectCount, unverifiedProjectIds: Set }.
  *
- * projectRoles holds only projects the person is invited to here AND
- * really belongs to in both Revizto and ACC (services/membership.js) — an
- * invite alone isn't access. invitedProjectCount counts every invite, so
- * callers can tell "invited but not a member anywhere" from "not invited";
- * archived projects never count (archivedProjectCount says how many of
- * their invites are to one); unverifiedProjectIds are invites whose member
- * lists couldn't be read.
+ * The active license is `forLicenseId` when given (someone else's access in a
+ * particular license — e.g. a project's), otherwise the one they have open
+ * (users.current_license_id) if they belong to it, else their first one. No
+ * license at all means no access.
+ *
+ * projectRoles holds only projects of that license the person is invited to
+ * here AND really belongs to in both Revizto and ACC (services/membership.js)
+ * — an invite alone isn't access. invitedProjectCount counts every invite in
+ * the license, so callers can tell "invited but not a member anywhere" from
+ * "not invited"; archived projects never count (archivedProjectCount says how
+ * many of their invites are to one); unverifiedProjectIds are invites whose
+ * member lists couldn't be read.
  */
-async function getAccess(userId) {
-  const [{ rows: userRows }, { rows: inviteRows }] = await Promise.all([
-    pool.query('SELECT id, email, role FROM users WHERE id = $1', [userId]),
+async function getAccess(userId, forLicenseId = null) {
+  const first = await _getAccessIn(userId, forLicenseId);
+  // The open license gives them nothing (no admin role, no project they really
+  // belong to) but another license of theirs does: open that one instead of
+  // refusing them. Only when they didn't ask for one specific license.
+  if (!first || forLicenseId != null || first.isLicenseAdmin || first.projectRoles.size || first.licenses.length < 2) return first;
+  for (const other of first.licenses) {
+    if (other.id === first.licenseId) continue;
+    const candidate = await _getAccessIn(userId, other.id);
+    if (candidate && (candidate.isLicenseAdmin || candidate.projectRoles.size)) {
+      await pool.query('UPDATE users SET current_license_id = $2 WHERE id = $1', [userId, other.id]);
+      return candidate;
+    }
+  }
+  return first;
+}
+
+async function _getAccessIn(userId, forLicenseId) {
+  const [{ rows: userRows }, { rows: licenseRows }] = await Promise.all([
+    pool.query('SELECT id, email, role, current_license_id FROM users WHERE id = $1', [userId]),
     pool.query(
-      `SELECT pm.project_id, pm.role, p.id, p.name, p.owner_user_id, p.revizto_region, p.revizto_project_uuid, p.acc_project_id, p.archived_at
-       FROM project_members pm JOIN projects p ON p.id = pm.project_id
-       WHERE pm.user_id = $1`,
+      `SELECT m.tenant_license_id AS license_id, m.role, l.tenant_id, l.name, t.account_owner_user_id
+       FROM license_members m
+       JOIN tenant_licenses l ON l.id = m.tenant_license_id
+       JOIN tenants t ON t.id = l.tenant_id
+       WHERE m.user_id = $1 ORDER BY m.id`,
       [userId]
     ),
   ]);
-  const memberRows = inviteRows.filter((r) => !r.archived_at); // archived: no access
   const user = userRows[0];
   if (!user) return null;
-  const licenseRole = isLicenseAdminRole(user.role) ? user.role : null;
+  const wanted = forLicenseId != null ? Number(forLicenseId) : user.current_license_id;
+  const active =
+    licenseRows.find((l) => l.license_id === wanted) || (forLicenseId != null ? null : licenseRows[0]) || null;
+  const licenseRole = active && active.role === 'license_admin' ? (active.account_owner_user_id === user.id ? 'primary_license_admin' : 'license_admin') : null;
+  const base = {
+    userId: user.id,
+    email: user.email,
+    licenseId: active ? active.license_id : null,
+    tenantId: active ? active.tenant_id : null,
+    licenses: licenseRows.map((l) => ({ id: l.license_id, name: l.name, role: l.role })),
+    licenseRole,
+    isLicenseAdmin: !!licenseRole,
+    isPrimary: licenseRole === 'primary_license_admin',
+    licenseProjectIds: new Set(),
+    projectRoles: new Map(),
+    invitedProjectCount: 0,
+    archivedProjectCount: 0,
+    unverifiedProjectIds: new Set(),
+  };
+  if (!active) return base;
+
+  const [{ rows: inviteRows }, { rows: licenseProjects }] = await Promise.all([
+    pool.query(
+      `SELECT pm.project_id, pm.role, p.id, p.name, p.owner_user_id, p.revizto_region, p.revizto_project_uuid, p.acc_project_id, p.archived_at
+       FROM project_members pm JOIN projects p ON p.id = pm.project_id
+       WHERE pm.user_id = $1 AND p.tenant_license_id = $2`,
+      [userId, active.license_id]
+    ),
+    pool.query('SELECT id FROM projects WHERE tenant_license_id = $1', [active.license_id]),
+  ]);
+  base.licenseProjectIds = new Set(licenseProjects.map((r) => r.id));
+  const memberRows = inviteRows.filter((r) => !r.archived_at); // archived: no access
   let projectRoles = new Map();
   let unverifiedProjectIds = new Set();
   if (!licenseRole && memberRows.length) {
@@ -70,11 +129,7 @@ async function getAccess(userId) {
     unverifiedProjectIds = unknownIds;
   }
   return {
-    userId: user.id,
-    email: user.email,
-    licenseRole,
-    isLicenseAdmin: !!licenseRole,
-    isPrimary: licenseRole === 'primary_license_admin',
+    ...base,
     projectRoles,
     invitedProjectCount: memberRows.length,
     archivedProjectCount: inviteRows.length - memberRows.length,
@@ -106,7 +161,7 @@ function denialMessage(access) {
  */
 function effectiveProjectRole(access, projectId) {
   if (!access) return null;
-  if (access.licenseRole) return access.licenseRole;
+  if (access.licenseRole) return access.licenseProjectIds.has(Number(projectId)) ? access.licenseRole : null;
   return access.projectRoles.get(Number(projectId)) || null;
 }
 
@@ -115,10 +170,11 @@ function hasProjectRole(access, projectId, minRole) {
   return !!role && RANK[role] >= RANK[minRole];
 }
 
-/** Project ids the user can see, or null meaning "all" (license admins). */
+/** Project ids the user can see: every project of the active license for a
+ *  license admin, otherwise the ones they have a role on. Always a list. */
 function accessibleProjectIds(access) {
   if (!access) return [];
-  if (access.isLicenseAdmin) return null;
+  if (access.isLicenseAdmin) return [...access.licenseProjectIds];
   return [...access.projectRoles.keys()];
 }
 

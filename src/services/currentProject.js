@@ -14,7 +14,7 @@ const access = require('./access');
 
 /** Projects this person can open, each with their role on it. */
 async function listProjects(userAccess) {
-  const allowed = access.accessibleProjectIds(userAccess); // null = all (license admins)
+  const allowed = access.accessibleProjectIds(userAccess); // a list: every project of the active license for a license admin
   const { rows } = await pool.query(
     'SELECT * FROM projects WHERE archived_at IS NULL AND ($1::int[] IS NULL OR id = ANY($1)) ORDER BY created_at DESC',
     [allowed]

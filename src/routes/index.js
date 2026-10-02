@@ -274,8 +274,8 @@ router.post('/api/projects', requireLicenseAdmin, async (req, res) => {
     ({ rows } = await licenseTerms.withProjectSlot((db) =>
       db.query(
         `INSERT INTO projects (name, revizto_project_uuid, revizto_project_id, revizto_region, acc_hub_id, acc_project_id, acc_project_name, acc_default_subtype_id, owner_user_id,
-                               revizto_license_uuid, revizto_license_name, acc_hub_name, revizto_project_name)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+                               revizto_license_uuid, revizto_license_name, acc_hub_name, revizto_project_name, tenant_id, tenant_license_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
         [
           trimmedName,
           revizto_project_uuid || null,
@@ -292,6 +292,8 @@ router.post('/api/projects', requireLicenseAdmin, async (req, res) => {
           revizto_license_name || null,
           acc_hub_name || null,
           revizto_project_name || null,
+          req.access.tenantId, // the project belongs to the license the creator has open
+          req.access.licenseId,
         ]
       )
     ));

@@ -17,6 +17,7 @@ const accService = require('../services/accService');
 const membership = require('../services/membership');
 const licenseTerms = require('../services/licenseTerms');
 const syncService = require('../services/syncService');
+const tenancy = require('../services/tenancy');
 
 router.get('/license', (req, res) => {
   res.sendFile(path.join(__dirname, '../../public/license.html'));
@@ -28,19 +29,28 @@ router.get('/license', (req, res) => {
  * for accounts without a name of their own (users.name, asked at
  * sign-up). With neither, the page shows their email.
  */
-async function _peopleNames() {
-  const { rows: projects } = await pool.query('SELECT * FROM projects WHERE owner_user_id IS NOT NULL');
+async function _peopleNames(licenseId) {
+  const { rows: projects } = await pool.query('SELECT * FROM projects WHERE owner_user_id IS NOT NULL AND tenant_license_id = $1', [licenseId]);
   return syncService.licenseMemberNames(projects);
 }
 
 router.get('/api/license/admins', requireLicenseAdmin, async (req, res) => {
+  // The license admins OF THIS LICENSE (the open one) — never another license's.
   const { rows } = await pool.query(
-    `SELECT id, email, name AS account_name, role, last_login_at, (role = 'license_admin' AND license_role_verified_at IS NULL) AS pending,
-            (role = 'license_admin' AND license_role_verified_at IS NULL AND license_role_denied_at IS NOT NULL) AS role_denied FROM users
-     WHERE role IN ('primary_license_admin', 'license_admin')
-     ORDER BY (role = 'primary_license_admin') DESC, email ASC`
+    `SELECT u.id, u.email, u.name AS account_name,
+            CASE WHEN t.account_owner_user_id = u.id THEN 'primary_license_admin' ELSE 'license_admin' END AS role,
+            u.last_login_at,
+            (t.account_owner_user_id IS DISTINCT FROM u.id AND u.license_role_verified_at IS NULL) AS pending,
+            (t.account_owner_user_id IS DISTINCT FROM u.id AND u.license_role_verified_at IS NULL AND u.license_role_denied_at IS NOT NULL) AS role_denied
+     FROM license_members m
+     JOIN users u ON u.id = m.user_id
+     JOIN tenant_licenses l ON l.id = m.tenant_license_id
+     JOIN tenants t ON t.id = l.tenant_id
+     WHERE m.tenant_license_id = $1 AND m.role = 'license_admin'
+     ORDER BY (t.account_owner_user_id = u.id) DESC, u.email ASC`,
+    [req.access.licenseId]
   );
-  const names = await _peopleNames();
+  const names = await _peopleNames(req.access.licenseId);
   res.json({
     // Any license admin can remove another license admin — never the
     // primary license admin, and never themselves.
@@ -66,7 +76,10 @@ router.post('/api/license/admins', requireLicenseAdmin, async (req, res) => {
   const email = String(req.body.email || '').toLowerCase().trim();
   if (!email || !email.includes('@')) return res.status(400).json({ error: 'Enter a valid email.' });
   const { rows: existing } = await pool.query('SELECT id, role FROM users WHERE email = $1', [email]);
-  if (existing[0]?.role === 'primary_license_admin') return res.status(400).json({ error: "That's the primary license admin." });
+  if (existing[0]) {
+    const { rows: owner } = await pool.query('SELECT 1 FROM tenants WHERE id = $1 AND account_owner_user_id = $2', [req.access.tenantId, existing[0].id]);
+    if (owner.length || existing[0].role === 'primary_license_admin') return res.status(400).json({ error: "That's the primary license admin." });
+  }
   const { rows } = await pool.query(
     `INSERT INTO users (email, role) VALUES ($1, 'license_admin')
      ON CONFLICT (email) DO UPDATE SET role = 'license_admin',
@@ -75,6 +88,9 @@ router.post('/api/license/admins', requireLicenseAdmin, async (req, res) => {
      RETURNING id, email, role`,
     [email]
   );
+  // The membership in THIS license (users.role above is the older, global copy
+  // kept in step until it's retired).
+  await tenancy.setLicenseAdmin(req.access.licenseId, rows[0].id, req.session.userId);
   let emailSent = false;
   let emailError = null;
   if (req.body.sendEmail) {
@@ -99,11 +115,22 @@ router.delete('/api/license/admins/:userId', requireLicenseAdmin, async (req, re
   if (Number(req.params.userId) === Number(req.access.userId)) {
     return res.status(400).json({ error: "You can't remove yourself as a license admin — ask another license admin." });
   }
+  // Back to a plain member of THIS license (never the company's account owner).
   const { rows } = await pool.query(
-    "UPDATE users SET role = 'member' WHERE id = $1 AND role = 'license_admin' RETURNING id",
-    [req.params.userId]
+    `UPDATE license_members m SET role = 'member'
+     FROM tenant_licenses l JOIN tenants t ON t.id = l.tenant_id
+     WHERE l.id = m.tenant_license_id AND m.tenant_license_id = $2 AND m.user_id = $1 AND m.role = 'license_admin'
+       AND t.account_owner_user_id IS DISTINCT FROM m.user_id
+     RETURNING m.user_id`,
+    [req.params.userId, req.access.licenseId]
   );
   if (!rows[0]) return res.status(404).json({ error: "That person isn't a license admin (the primary license admin can't be removed)." });
+  // The older global copy: lowered only if they're no longer a license admin anywhere.
+  await pool.query(
+    `UPDATE users SET role = 'member' WHERE id = $1 AND role = 'license_admin'
+       AND NOT EXISTS (SELECT 1 FROM license_members WHERE user_id = $1 AND role = 'license_admin')`,
+    [req.params.userId]
+  );
   console.log(`[license] ${req.session.userEmail} removed license admin #${req.params.userId}.`);
   res.json({ ok: true });
 });
@@ -120,9 +147,11 @@ router.get('/api/license/projects', requireLicenseAdmin, async (req, res) => {
             (SELECT count(*)::int FROM project_members pm WHERE pm.project_id = p.id) AS member_count,
             (SELECT count(*)::int FROM sync_map sm WHERE sm.project_id = p.id) AS synced_count
      FROM projects p LEFT JOIN users owner ON owner.id = p.owner_user_id
-     ORDER BY (p.archived_at IS NOT NULL), p.created_at DESC`
+     WHERE p.tenant_license_id = $1
+     ORDER BY (p.archived_at IS NOT NULL), p.created_at DESC`,
+      [req.access.licenseId]
     ),
-    _peopleNames(),
+    _peopleNames(req.access.licenseId),
   ]);
   for (const p of rows) {
     p.owner_name = p.owner_account_name || (p.owner_email ? names[p.owner_email.toLowerCase()] || null : null);
@@ -149,14 +178,14 @@ router.get('/api/license/projects', requireLicenseAdmin, async (req, res) => {
 // Archive: kept as is, but not synced (poll and webhook skip it) and
 // hidden from everyone but license admins. Unarchive puts it back.
 router.post('/api/license/projects/:id/archive', requireLicenseAdmin, async (req, res) => {
-  const { rows } = await pool.query('UPDATE projects SET archived_at = COALESCE(archived_at, now()) WHERE id = $1 RETURNING id, name', [req.params.id]);
+  const { rows } = await pool.query('UPDATE projects SET archived_at = COALESCE(archived_at, now()) WHERE id = $1 AND tenant_license_id = $2 RETURNING id, name', [req.params.id, req.access.licenseId]);
   if (!rows[0]) return res.status(404).json({ error: 'Project not found' });
   console.log(`[license] ${req.session.userEmail} archived project "${rows[0].name}".`);
   res.json({ ok: true });
 });
 
 router.post('/api/license/projects/:id/unarchive', requireLicenseAdmin, async (req, res) => {
-  const { rows: existing } = await pool.query('SELECT archived_at FROM projects WHERE id = $1', [req.params.id]);
+  const { rows: existing } = await pool.query('SELECT archived_at FROM projects WHERE id = $1 AND tenant_license_id = $2', [req.params.id, req.access.licenseId]);
   if (!existing[0]) return res.status(404).json({ error: 'Project not found' });
   if (!existing[0].archived_at) return res.json({ ok: true }); // already active — no slot to take
   // Unarchiving takes a project slot back — refused when none are left.
@@ -179,7 +208,7 @@ router.post('/api/license/projects/:id/unarchive', requireLicenseAdmin, async (r
 // rows stay, without the project. Issues in Revizto and ACC are never
 // touched. Its ACC webhook is unregistered first (best effort).
 router.delete('/api/license/projects/:id', requireLicenseAdmin, async (req, res) => {
-  const { rows } = await pool.query('SELECT id, name, webhook_id, owner_user_id FROM projects WHERE id = $1', [req.params.id]);
+  const { rows } = await pool.query('SELECT id, name, webhook_id, owner_user_id FROM projects WHERE id = $1 AND tenant_license_id = $2', [req.params.id, req.access.licenseId]);
   const project = rows[0];
   if (!project) return res.status(404).json({ error: 'Project not found' });
   if (project.webhook_id) {

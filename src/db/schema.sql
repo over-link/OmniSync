@@ -41,7 +41,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
 -- verified (one-time, only on the migration that creates the column).
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'license_role_verified_at') THEN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'users' AND column_name = 'license_role_verified_at') THEN
     ALTER TABLE users ADD COLUMN license_role_verified_at TIMESTAMPTZ;
     UPDATE users SET license_role_verified_at = now() WHERE role IN ('primary_license_admin', 'license_admin');
   END IF;

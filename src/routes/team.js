@@ -19,6 +19,7 @@ const membership = require('../services/membership');
 const tokenStore = require('../services/tokenStore');
 const accService = require('../services/accService');
 const webhookHealth = require('../services/webhookHealth');
+const tenancy = require('../services/tenancy');
 
 // Anyone on the project can see its team; only project admins and above
 // see the controls (canInvite / canManage), and the routes below enforce it.
@@ -33,16 +34,19 @@ router.get('/api/projects/:id/team', requireProjectRole('standard'), async (req,
     pool.query(
       `SELECT u.id, u.email, u.name AS account_name, u.last_login_at, la.latest_activity_at,
             (u.password_hash IS NULL) AS pending,
-            CASE WHEN u.role IN ('primary_license_admin', 'license_admin') THEN u.role ELSE pm.role END AS role,
-            (u.role IN ('primary_license_admin', 'license_admin')) AS is_license_level
+            CASE WHEN lm.role = 'license_admin' THEN (CASE WHEN t.account_owner_user_id = u.id THEN 'primary_license_admin' ELSE 'license_admin' END) ELSE pm.role END AS role,
+            (lm.role = 'license_admin') AS is_license_level
      FROM users u
      LEFT JOIN project_members pm ON pm.user_id = u.id AND pm.project_id = $1
+     LEFT JOIN projects proj ON proj.id = $1
+     LEFT JOIN license_members lm ON lm.user_id = u.id AND lm.tenant_license_id = proj.tenant_license_id
+     LEFT JOIN tenants t ON t.id = proj.tenant_id
      LEFT JOIN (
        SELECT LOWER(attributed_email) AS email, MAX(created_at) AS latest_activity_at
        FROM audit_log WHERE attributed_email IS NOT NULL AND project_id = $1
        GROUP BY LOWER(attributed_email)
      ) la ON la.email = LOWER(u.email)
-     WHERE pm.user_id IS NOT NULL OR u.role IN ('primary_license_admin', 'license_admin')`,
+     WHERE pm.user_id IS NOT NULL OR lm.role = 'license_admin'`,
       [projectId]
     ),
     pool.query('SELECT * FROM projects WHERE id = $1', [projectId]),
@@ -97,8 +101,13 @@ router.post('/api/projects/:id/team/invite', requireProjectRole('project_admin')
   if (!role) return;
 
   const { rows: existing } = await pool.query('SELECT id, role FROM users WHERE email = $1', [email]);
-  if (existing[0] && access.isLicenseAdminRole(existing[0].role)) {
-    return res.status(400).json({ error: 'That person is a license admin — they already have access to every project.' });
+  const licenseId = await tenancy.licenseOfProject(projectId);
+  if (existing[0]) {
+    const { rows: adminHere } = await pool.query(
+      "SELECT 1 FROM license_members WHERE tenant_license_id = $1 AND user_id = $2 AND role = 'license_admin'",
+      [licenseId, existing[0].id]
+    );
+    if (adminHere.length) return res.status(400).json({ error: 'That person is a license admin — they already have access to every project.' });
   }
   if (existing[0]) {
     const { rows: current } = await pool.query('SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2', [projectId, existing[0].id]);
@@ -114,6 +123,7 @@ router.post('/api/projects/:id/team/invite', requireProjectRole('project_admin')
     [email]
   );
   const user = userRows[0];
+  await tenancy.ensureMember(licenseId, user.id, req.session.userId); // an explicit invite brings them into this license
   await pool.query(
     `INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, $3, $4)
      ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
@@ -217,7 +227,7 @@ router.post('/api/projects/:id/owner', requireProjectRole('project_admin'), asyn
 
   // A project admin or license admin of this project (for non-license
   // users, getAccess only keeps projects they really belong to in both).
-  const targetAccess = await access.getAccess(targetId);
+  const targetAccess = await access.getAccess(targetId, project.tenant_license_id); // their access IN THIS project's license
   if (!access.hasProjectRole(targetAccess, projectId, 'project_admin')) {
     return res.status(400).json({ error: `${label} isn't a project admin of this project — make them one first.` });
   }
