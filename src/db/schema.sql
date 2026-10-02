@@ -708,3 +708,22 @@ ALTER TABLE tenant_licenses ADD COLUMN IF NOT EXISTS paused_since TIMESTAMPTZ;
 ALTER TABLE tenant_licenses ADD COLUMN IF NOT EXISTS settings_copied_at TIMESTAMPTZ;
 
 -- connect-pg-simple creates its own "session" table automatically on first run.
+
+-- ═══ One ACC project, one active Revizto project (chunk 5) ══════════
+-- Additive. projects.sync_active = this project is paired, not archived and its
+-- license is usable: it may sync. A partial unique index lets only ONE active
+-- project hold an ACC project (services/pairingGuard.js keeps the flag current;
+-- an ACC project already paired twice today keeps its OLDEST active pairing,
+-- the other is paused). Runs the backfill once, when the column is added.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'projects' AND column_name = 'sync_active') THEN
+    ALTER TABLE projects ADD COLUMN sync_active BOOLEAN NOT NULL DEFAULT false;
+    UPDATE projects SET sync_active = true WHERE id IN (
+      SELECT DISTINCT ON (acc_project_id) id FROM projects
+      WHERE revizto_project_uuid IS NOT NULL AND acc_project_id IS NOT NULL AND archived_at IS NULL
+      ORDER BY acc_project_id, id
+    );
+  END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS projects_acc_active_uq ON projects (acc_project_id) WHERE sync_active;

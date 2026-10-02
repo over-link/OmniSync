@@ -132,6 +132,10 @@ async function onActiveProjectChange(projectId) {
   // Revizto and ACC data, so they wait until it's paired (step 1).
   const paired = _isPaired(project);
   document.getElementById('unpaired-note').classList.toggle('hidden', paired);
+  // Paired, but another Revizto project keeps this ACC project's syncing (services/pairingGuard.js).
+  const pausedNote = document.getElementById('pairing-paused-note');
+  pausedNote.textContent = project?.pairing_paused || '';
+  pausedNote.classList.toggle('hidden', !project?.pairing_paused);
   if (!paired) {
     warningsEl.classList.add('hidden');
     mappingPanels.classList.add('hidden');
@@ -921,6 +925,11 @@ function wirePairingRowHandlers() {
         if (err.data?.code === 'revizto_license_role') {
           resultEl.textContent = '';
           _showNoLicenseRole({ always: true });
+          return;
+        }
+        if (err.data?.code === 'acc_project_already_paired') {
+          resultEl.textContent = '';
+          showAlertDialog('ACC project already paired', err.message); // pop-up, like the other pairing refusals
           return;
         }
         resultEl.textContent = err.message;

@@ -123,7 +123,7 @@ async function checkAllProjects() {
     return [];
   }
   const { rows: allProjects } = await pool.query(
-    'SELECT * FROM projects WHERE owner_user_id IS NOT NULL AND revizto_project_uuid IS NOT NULL AND acc_project_id IS NOT NULL AND archived_at IS NULL ORDER BY id'
+    'SELECT * FROM projects WHERE owner_user_id IS NOT NULL AND revizto_project_uuid IS NOT NULL AND acc_project_id IS NOT NULL AND archived_at IS NULL AND sync_active ORDER BY id'
   );
   // Never repair or re-register the hooks of a license that isn't active — its
   // syncing is paused (services/licenseState.js).

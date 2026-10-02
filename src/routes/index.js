@@ -15,6 +15,7 @@ const access = require('../services/access');
 const membership = require('../services/membership');
 const webhookSignature = require('../services/webhookSignature');
 const licenseState = require('../services/licenseState');
+const pairingGuard = require('../services/pairingGuard');
 const syncPolicy = require('../services/syncPolicy');
 const licenseTerms = require('../services/licenseTerms');
 const webhookHealth = require('../services/webhookHealth');
@@ -273,8 +274,8 @@ router.post('/api/projects', requireLicenseAdmin, async (req, res) => {
   // Takes a project slot — refused when the license has none left.
   let rows;
   try {
-    ({ rows } = await licenseTerms.withProjectSlot(req.access.licenseId, (db) =>
-      db.query(
+    ({ rows } = await licenseTerms.withProjectSlot(req.access.licenseId, (db) => {
+      const insert = (d) => d.query(
         `INSERT INTO projects (name, revizto_project_uuid, revizto_project_id, revizto_region, acc_hub_id, acc_project_id, acc_project_name, acc_default_subtype_id, owner_user_id,
                                revizto_license_uuid, revizto_license_name, acc_hub_name, revizto_project_name, tenant_id, tenant_license_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
@@ -297,9 +298,12 @@ router.post('/api/projects', requireLicenseAdmin, async (req, res) => {
           req.access.tenantId, // the project belongs to the license the creator has open
           req.access.licenseId,
         ]
-      )
-    ));
+      );
+      // Paired while creating: the ACC project must not already be actively fed by another Revizto project.
+      return acc_project_id ? pairingGuard.savePairing({ accProjectId: acc_project_id, tenantId: req.access.tenantId }, insert, db) : insert(db);
+    }));
   } catch (err) {
+    if (err instanceof pairingGuard.AccProjectAlreadyPairedError) return res.status(409).json({ error: err.message, code: err.code });
     if (err instanceof licenseTerms.NoProjectSlotsError || err instanceof licenseTerms.LicenseNotActiveError) return res.status(409).json({ error: err.message, code: err.code });
     throw err;
   }
@@ -341,7 +345,9 @@ router.patch('/api/projects/:id', requireProjectRole('project_admin'), async (re
     return res.status(403).json({ error: 'Only a license admin can pair a new project.' });
   }
   if (await _refuseUnlessProjectAdminOnBoth(req, res, { revizto_region: revizto_region || 'virginia', revizto_license_uuid, revizto_project_uuid, acc_project_id })) return;
-  const { rows } = await pool.query(
+  let rows;
+  try {
+    ({ rows } = await pairingGuard.savePairing({ projectId: existing.id, accProjectId: acc_project_id, tenantId: existing.tenant_id }, (db) => db.query(
     `UPDATE projects SET name = $2, revizto_project_uuid = $3, revizto_project_id = $4, revizto_region = $5, acc_hub_id = $6, acc_project_id = $7, acc_project_name = $8,
        revizto_license_uuid = $10, revizto_license_name = $11, acc_hub_name = $12, revizto_project_name = $13,
        -- First pairing: whoever pairs it owns it (sync runs on their connections,
@@ -364,7 +370,11 @@ router.patch('/api/projects/:id', requireProjectRole('project_admin'), async (re
       acc_hub_name || null,
       revizto_project_name || null,
     ]
-  );
+    )));
+  } catch (err) {
+    if (err instanceof pairingGuard.AccProjectAlreadyPairedError) return res.status(409).json({ error: err.message, code: err.code });
+    throw err;
+  }
   if (!rows[0]) return res.status(404).json({ error: 'Project not found' });
   membership.forget(rows[0].id); // re-paired: re-read who belongs to it
   await _autoRegisterWebhook(req.session.userId, rows[0], existing);
@@ -771,6 +781,9 @@ router.post('/api/projects/:id/sync', requireProjectRole('standard'), requirePai
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
+  const paused = pairingGuard.pausedNotice(project);
+  if (paused) return res.status(409).json({ error: paused, code: 'pairing_paused' });
+
   // Standard users may be barred from syncing by hand (Setup → Issue linking).
   if (!project.allow_standard_manual_sync && !access.hasProjectRole(req.access, project.id, 'project_admin')) {
     return res.status(403).json({ error: 'Manual syncing is turned off for standard users on this project. Ask a project admin.' });
@@ -821,7 +834,7 @@ async function _handleAccWebhookRequest(req, res) {
   // Confirmed from a real webhook delivery: scope is nested under
   // hook.scope.project, not top-level hookScope.project as originally
   // guessed.
-  const { rows: projects } = await pool.query('SELECT * FROM projects WHERE acc_project_id IS NOT NULL AND archived_at IS NULL'); // archived: not synced
+  const { rows: projects } = await pool.query('SELECT * FROM projects WHERE acc_project_id IS NOT NULL AND archived_at IS NULL AND sync_active'); // archived, or paused by the one-ACC-project guard: not synced
   const project = projects.find((p) => req.body?.hook?.scope?.project === p.acc_project_id.replace(/^b\./, ''));
   if (!project || !project.owner_user_id) {
     console.warn('[webhook] No matching project/owner for payload:', req.body?.hook?.scope);

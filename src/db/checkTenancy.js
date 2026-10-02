@@ -33,12 +33,18 @@ async function main() {
   );
   const unbound = await scalar('SELECT count(DISTINCT revizto_license_uuid) FROM projects WHERE revizto_license_uuid IS NOT NULL')
     - (await scalar('SELECT count(*) FROM revizto_licenses'));
+  // Chunk 5: an ACC project paired from two non-archived projects (only one may sync).
+  const doublePaired = await scalar(
+    `SELECT count(*) FROM (SELECT acc_project_id FROM projects WHERE revizto_project_uuid IS NOT NULL AND acc_project_id IS NOT NULL AND archived_at IS NULL
+       GROUP BY acc_project_id HAVING count(*) > 1) d`
+  );
   if (report.users && !report.companies) problems.push('users exist but there is no company yet (run the migration)');
   if (noLicense) problems.push(`${noLicense} project(s) have no company/license`);
   if (noMember) problems.push(`${noMember} user(s) belong to no license`);
   if (mismatch) problems.push(`${mismatch} project(s) point at a license of a different company`);
   if (adminsLost) problems.push(`${adminsLost} existing license admin(s) are not license admins in the new tables`);
   if (unbound > 0) problems.push(`${unbound} Revizto license(s) used by projects are not recorded`);
+  if (doublePaired) console.log(`NOTE: ${doublePaired} ACC project(s) are paired from more than one project — the migration keeps the oldest syncing and pauses the rest.`);
   console.log('Multi-company groundwork:', JSON.stringify(report));
   if (problems.length) {
     console.log('PROBLEMS:');

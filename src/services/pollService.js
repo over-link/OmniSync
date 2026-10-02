@@ -15,6 +15,7 @@ const syncService = require('./syncService');
 const appSettings = require('./appSettings');
 const webhookHealth = require('./webhookHealth');
 const licenseState = require('./licenseState');
+const pairingGuard = require('./pairingGuard');
 const syncPolicy = require('./syncPolicy');
 const { ReconnectRequiredError, getValidAccToken, getValidReviztoToken } = require('./authManager');
 
@@ -65,6 +66,7 @@ async function pollTick() {
   cycleRunning = true;
   try {
     await syncPolicy.copyGlobalSettingsOnce();
+    await pairingGuard.refresh(); // license state changes with the calendar: keep which pairings are active current
     const licenses = await licenseState.loadAll();
     if (await appSettings.isPlatformSyncPaused()) {
       console.log('[poll] Syncing is paused for the whole platform (operator) — skipping this cycle.');
@@ -137,7 +139,7 @@ async function pollAllProjects({ full = false, licenseIds = null, includeLegacy 
   // Unpaired projects (created on License Administration, not yet paired
   // on Project Setup) have nothing to sync; archived ones are parked.
   const { rows: allProjects } = await pool.query(
-    'SELECT * FROM projects WHERE owner_user_id IS NOT NULL AND revizto_project_uuid IS NOT NULL AND acc_project_id IS NOT NULL AND archived_at IS NULL'
+    'SELECT * FROM projects WHERE owner_user_id IS NOT NULL AND revizto_project_uuid IS NOT NULL AND acc_project_id IS NOT NULL AND archived_at IS NULL AND sync_active'
   );
   // Projects of a license that isn't active (expired, suspended, over its slot
   // limit, not started) are paused until it is. A project with no license yet

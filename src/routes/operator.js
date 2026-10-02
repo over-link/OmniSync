@@ -18,6 +18,7 @@ const { requireOperator } = require('./auth');
 const emailService = require('../services/emailService');
 const licenseState = require('../services/licenseState');
 const tenancy = require('../services/tenancy');
+const pairingGuard = require('../services/pairingGuard');
 
 router.get('/operator', (req, res) => {
   res.sendFile(path.join(__dirname, '../../public/operator.html'));
@@ -164,6 +165,7 @@ router.patch('/api/operator/licenses/:id', requireOperator, guarded(async (req, 
     'UPDATE tenant_licenses SET name = $2, slot_capacity = $3, starts_on = $4, expires_on = $5, note = $6 WHERE id = $1',
     [req.params.id, next.name, next.slot_capacity, next.starts_on, next.expires_on, next.note]
   );
+  await pairingGuard.refresh(); // a renewal / lower slot limit changes which pairings are active
   console.log(`[operator] ${req.session.userEmail} changed license #${req.params.id}: ${JSON.stringify(next)}.`);
   res.json({ ok: true });
 }));
@@ -174,6 +176,7 @@ const setSuspended = (suspended) => async (req, res) => {
     [Number(req.params.id) || 0]
   );
   if (!rowCount) return res.status(404).json({ error: 'License not found.' });
+  await pairingGuard.refresh();
   console.log(`[operator] ${req.session.userEmail} ${suspended ? 'suspended' : 'reactivated'} license #${req.params.id}.`);
   res.json({ ok: true });
 };

@@ -200,7 +200,7 @@ const EMAILS = ['owner@x.com', 'adm2@x.com', 'pa@x.com', 'std@x.com', 'outsider@
     stub('autoLinkMatchingIssues', async () => []);
     stub('pollAccCommentsForProject', async () => {});
     stub('pollAccAttachmentsForProject', async () => {});
-    const run = async () => { touched.clear(); await pollService.pollAllProjects({ full: false }); return [...touched].sort().join(','); };
+    const run = async () => { touched.clear(); await require(REPO + '/src/services/pairingGuard').refresh() /* rows were inserted by SQL; the poll tick does this */; await pollService.pollAllProjects({ full: false }); return [...touched].sort().join(','); };
     ok('5. polling: both licenses active -> every paired project is visited', (await run()) === 'P1,P2,PB1', [...touched].join());
     await q('UPDATE tenant_licenses SET expires_on = $2 WHERE id = $1', [lA, await daysFromToday(-1)]);
     ok("5. polling: A expired -> only B's project is visited", (await run()) === 'PB1');

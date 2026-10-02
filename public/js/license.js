@@ -63,6 +63,11 @@ async function loadProjects() {
     } else {
       badge.className = `badge badge-${p.paired ? 'success' : 'warning'}`;
       badge.textContent = p.paired ? `Paired${p.acc_project_name ? ` · ${p.acc_project_name}` : ''}` : 'Not paired yet';
+      if (p.pairing_paused) {
+        badge.className = 'badge badge-danger';
+        badge.textContent = 'Paused · ACC project also paired elsewhere';
+        badge.title = 'Another Revizto project keeps syncing this ACC project. Archive or re-pair one of the two.';
+      }
     }
     pairing.appendChild(badge);
     _personCell(tr, p.owner_name, p.owner_email);

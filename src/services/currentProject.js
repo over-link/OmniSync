@@ -11,6 +11,7 @@
  */
 const pool = require('../db/pool');
 const access = require('./access');
+const pairingGuard = require('./pairingGuard');
 
 /** Projects this person can open, each with their role on it. */
 async function listProjects(userAccess) {
@@ -19,7 +20,7 @@ async function listProjects(userAccess) {
     'SELECT * FROM projects WHERE archived_at IS NULL AND ($1::int[] IS NULL OR id = ANY($1)) ORDER BY created_at DESC',
     [allowed]
   );
-  return rows.map((p) => ({ ...p, my_role: access.effectiveProjectRole(userAccess, p.id) }));
+  return rows.map((p) => ({ ...p, my_role: access.effectiveProjectRole(userAccess, p.id), pairing_paused: pairingGuard.pausedNotice(p) }));
 }
 
 /**

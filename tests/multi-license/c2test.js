@@ -114,6 +114,7 @@ const EMAILS = ['owner@x.com', 'adm2@x.com', 'pa@x.com', 'std@x.com', 'outsider@
       for (const ep of endpoints(P.p1, P.p2)) {
         const [o, n] = [await get(3061, CO[user], ep), await get(3062, C[user], ep)];
         compared++;
+        for (const list of [o.body?.projects, n.body?.projects]) for (const pr of list || []) { delete pr.sync_active; delete pr.pairing_paused; } // chunk 5's two additive project fields
         if (ep === '/auth/me' && n.body) { delete n.body.licenses; if (n.body.user) delete n.body.user.isOperator; } // chunk 4's two additive /auth/me fields (the license drop-down, the operator flag)
         if (o.status !== n.status || norm(o.body) !== norm(n.body)) diffs.push(`${user} ${ep}: old ${o.status} vs new ${n.status}\n   old=${norm(o.body)?.slice(0, 200)}\n   new=${norm(n.body)?.slice(0, 200)}`);
       }

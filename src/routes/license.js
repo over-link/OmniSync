@@ -18,6 +18,7 @@ const membership = require('../services/membership');
 const licenseTerms = require('../services/licenseTerms');
 const syncService = require('../services/syncService');
 const tenancy = require('../services/tenancy');
+const pairingGuard = require('../services/pairingGuard');
 
 router.get('/license', (req, res) => {
   res.sendFile(path.join(__dirname, '../../public/license.html'));
@@ -143,6 +144,7 @@ router.get('/api/license/projects', requireLicenseAdmin, async (req, res) => {
     pool.query(
       `SELECT p.id, p.name, p.created_at, p.acc_project_name, p.archived_at,
             (p.revizto_project_uuid IS NOT NULL AND p.acc_project_id IS NOT NULL) AS paired,
+            (p.revizto_project_uuid IS NOT NULL AND p.acc_project_id IS NOT NULL AND p.archived_at IS NULL AND NOT p.sync_active) AS pairing_paused,
             owner.email AS owner_email, owner.name AS owner_account_name,
             (SELECT count(*)::int FROM project_members pm WHERE pm.project_id = p.id) AS member_count,
             (SELECT count(*)::int FROM sync_map sm WHERE sm.project_id = p.id) AS synced_count
@@ -182,6 +184,7 @@ router.get('/api/license/projects', requireLicenseAdmin, async (req, res) => {
 router.post('/api/license/projects/:id/archive', requireLicenseAdmin, async (req, res) => {
   const { rows } = await pool.query('UPDATE projects SET archived_at = COALESCE(archived_at, now()) WHERE id = $1 AND tenant_license_id = $2 RETURNING id, name', [req.params.id, req.access.licenseId]);
   if (!rows[0]) return res.status(404).json({ error: 'Project not found' });
+  await pairingGuard.refresh(); // frees its ACC project for another pairing
   console.log(`[license] ${req.session.userEmail} archived project "${rows[0].name}".`);
   res.json({ ok: true });
 });
@@ -201,6 +204,7 @@ router.post('/api/license/projects/:id/unarchive', requireLicenseAdmin, async (r
     throw err;
   }
   if (!rows[0]) return res.status(404).json({ error: 'Project not found' });
+  await pairingGuard.refresh(); // back in service — unless another project now holds its ACC project (then it stays paused, with a notice)
   console.log(`[license] ${req.session.userEmail} unarchived project "${rows[0].name}".`);
   res.json({ ok: true });
 });
@@ -222,6 +226,7 @@ router.delete('/api/license/projects/:id', requireLicenseAdmin, async (req, res)
   }
   await pool.query('DELETE FROM projects WHERE id = $1', [project.id]);
   membership.forget(project.id);
+  await pairingGuard.refresh();
   console.log(`[license] ${req.session.userEmail} deleted project "${project.name}".`);
   res.json({ ok: true });
 });

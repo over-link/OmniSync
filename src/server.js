@@ -20,6 +20,7 @@ const licenseRoutes = require('./routes/license');
 const operatorRoutes = require('./routes/operator');
 const { startPolling } = require('./services/pollService');
 const syncPolicy = require('./services/syncPolicy');
+const pairingGuard = require('./services/pairingGuard');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -90,7 +91,8 @@ app.listen(PORT, () => {
   // The older app-wide sync switches become the license's own (once), before any cycle runs.
   syncPolicy
     .copyGlobalSettingsOnce()
-    .catch((err) => console.warn('[poll] Could not copy the app-wide sync settings:', err.message))
+    .then(() => pairingGuard.refresh()) // which pairings are active, before any cycle or webhook
+    .catch((err) => console.warn('[poll] Could not prepare the sync settings / active pairings:', err.message))
     .finally(startPolling);
 });
 
