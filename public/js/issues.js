@@ -272,14 +272,19 @@ function renderBoard() {
   const pageIssues = _sortIssues(filtered).slice(pageStart, pageStart + PAGE_SIZE);
   _renderPager(filtered.length, totalPages);
 
-  const hasUnlinked = filtered.some((i) => !i.linked);
-  actionsEl.classList.toggle('hidden', !hasUnlinked);
-  selectAllGroup.classList.toggle('hidden', !hasUnlinked);
-
   const projectId = currentProjectId;
+  const openProject = currentProjects.find((p) => String(p.id) === String(projectId));
+  // Manual linking: admins always; standard users unless an admin turned it
+  // off on Setup (the server refuses them too).
+  const canManualSync = openProject?.allow_standard_manual_sync !== false || (!!openProject?.my_role && openProject.my_role !== 'standard');
+  document.getElementById('manual-sync-off-note').classList.toggle('hidden', canManualSync);
+
+  const hasUnlinked = filtered.some((i) => !i.linked);
+  actionsEl.classList.toggle('hidden', !hasUnlinked || !canManualSync);
+  selectAllGroup.classList.toggle('hidden', !hasUnlinked || !canManualSync);
+
   // Unlink button: only when the project allows it, and only for admins
   // of it (project admin or above — the server refuses anyone else).
-  const openProject = currentProjects.find((p) => String(p.id) === String(projectId));
   const allowManualUnlink = !!openProject?.allow_manual_unlink && !!openProject.my_role && openProject.my_role !== 'standard';
 
   rowsEl.innerHTML = pageIssues
@@ -290,7 +295,9 @@ function renderBoard() {
         ? i.acc?.error
           ? `<span class="hint">${i.acc.error}</span>`
           : `#${i.acc.displayId ?? i.acc.id} — ${i.acc.title} <em>(${prettyStatus(i.acc.status)})</em>`
-        : `<label class="link-checkbox"><input type="checkbox" value="${i.id}"${selectedIds.has(String(i.id)) ? ' checked' : ''} /> Select to link</label>`;
+        : canManualSync
+          ? `<label class="link-checkbox"><input type="checkbox" value="${i.id}"${selectedIds.has(String(i.id)) ? ' checked' : ''} /> Select to link</label>`
+          : '';
       // Unlink clears this app's tracked link and closes the ACC issue
       // (the API can't delete it) — see the Setup page's Issue linking
       // toggle, which an admin has to turn on before this button appears.

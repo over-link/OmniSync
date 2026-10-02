@@ -612,6 +612,17 @@ router.post('/api/projects/:id/allow-manual-unlink', requireProjectRole('project
   res.json({ project: rows[0] });
 });
 
+// Whether standard users may link & push issues by hand on the Issues page —
+// admin-only to toggle, on by default. Admins can always sync manually.
+router.post('/api/projects/:id/allow-standard-manual-sync', requireProjectRole('project_admin'), async (req, res) => {
+  const { rows } = await pool.query('UPDATE projects SET allow_standard_manual_sync = $2 WHERE id = $1 RETURNING *', [
+    req.params.id,
+    !!req.body.enabled,
+  ]);
+  if (!rows[0]) return res.status(404).json({ error: 'Project not found' });
+  res.json({ project: rows[0] });
+});
+
 // Manual unlink (Issues page) — only removes this app's own sync_map
 // bookkeeping row, never the actual issue in Revizto or ACC. Gated on the
 // project's own allow_manual_unlink flag server-side too, not just by
@@ -754,6 +765,11 @@ router.patch('/api/projects/:id/default-subtype', requireProjectRole('project_ad
 router.post('/api/projects/:id/sync', requireProjectRole('standard'), requirePaired, async (req, res) => {
   const project = await _getProject(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
+
+  // Standard users may be barred from syncing by hand (Setup → Issue linking).
+  if (!project.allow_standard_manual_sync && !access.hasProjectRole(req.access, project.id, 'project_admin')) {
+    return res.status(403).json({ error: 'Manual syncing is turned off for standard users on this project. Ask a project admin.' });
+  }
 
   const { issueIds } = req.body;
   if (!Array.isArray(issueIds) || !issueIds.length) {

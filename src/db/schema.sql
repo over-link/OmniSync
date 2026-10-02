@@ -331,6 +331,10 @@ CREATE INDEX IF NOT EXISTS idx_auto_sync_filters_project ON auto_sync_filters(pr
 -- own automatic 404 self-heal for the common case; this is the manual
 -- escape hatch for anything that doesn't self-heal.
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS allow_manual_unlink BOOLEAN NOT NULL DEFAULT false;
+-- Whether standard users may link & push issues by hand on the Issues page
+-- (Setup → Issue linking). On by default; admins can always do it. Auto-sync
+-- is unaffected.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS allow_standard_manual_sync BOOLEAN NOT NULL DEFAULT true;
 
 -- Denormalized ACC project display name, captured at pairing save time —
 -- lets the Setup page's locked pairing row always show a real name on

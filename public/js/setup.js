@@ -1038,10 +1038,31 @@ async function loadManualUnlinkSetting(projectId) {
     const { projects } = await api('/api/projects');
     const project = projects.find((p) => String(p.id) === String(projectId));
     document.getElementById('allow-manual-unlink-toggle').checked = !!project?.allow_manual_unlink;
+    // On unless an admin turned it off (a project that hasn't loaded yet reads as on).
+    document.getElementById('allow-standard-manual-sync-toggle').checked = project?.allow_standard_manual_sync !== false;
   } catch (err) {
     resultEl.textContent = err.message;
   }
 }
+
+document.getElementById('allow-standard-manual-sync-toggle').addEventListener('change', async (e) => {
+  const projectId = _setupProjectId();
+  const resultEl = document.getElementById('allow-standard-manual-sync-result');
+  if (!projectId) {
+    e.target.checked = true;
+    return;
+  }
+  try {
+    await api(`/api/projects/${projectId}/allow-standard-manual-sync`, {
+      method: 'POST',
+      body: JSON.stringify({ enabled: e.target.checked }),
+    });
+    resultEl.textContent = 'Saved ✓';
+  } catch (err) {
+    e.target.checked = !e.target.checked; // revert the toggle, the save didn't actually take
+    resultEl.textContent = err.message;
+  }
+});
 
 document.getElementById('allow-manual-unlink-toggle').addEventListener('change', async (e) => {
   const projectId = _setupProjectId();
