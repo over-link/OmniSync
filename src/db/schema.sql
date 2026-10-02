@@ -594,4 +594,102 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;
 ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS linked_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
 ALTER TABLE sync_map ADD COLUMN IF NOT EXISTS linked_via TEXT;
 
+-- ═══ Multi-company groundwork (chunk 1) ════════════════════════════
+-- Additive only and NOT read by the app yet (docs/multi-tenant-architecture.md):
+-- today's behaviour is unchanged. A company ("tenant") buys one or more
+-- LICENSES (a purchased plan: its own name, project slots and term); each
+-- license sits on a Revizto license and is its own access boundary, with its
+-- own members. Projects belong to one license.
+CREATE TABLE IF NOT EXISTS tenants (
+  id                     SERIAL PRIMARY KEY,
+  name                   TEXT NOT NULL,
+  status                 TEXT NOT NULL DEFAULT 'active',
+  timezone               TEXT NOT NULL DEFAULT 'America/Los_Angeles',
+  -- The buyer; sees only this company's licenses (and has data access only as
+  -- a member of each license).
+  account_owner_user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- A Revizto license as the app knows it. Belongs to exactly one company; the
+-- company's licenses (below) may be several on the same Revizto license.
+CREATE TABLE IF NOT EXISTS revizto_licenses (
+  id                    SERIAL PRIMARY KEY,
+  tenant_id             INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  revizto_license_uuid  TEXT NOT NULL UNIQUE,
+  region                TEXT,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- The purchased plan ("license" in the app's own words): its own slots and term.
+CREATE TABLE IF NOT EXISTS tenant_licenses (
+  id                  SERIAL PRIMARY KEY,
+  tenant_id           INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name                TEXT NOT NULL,
+  revizto_license_id  INTEGER REFERENCES revizto_licenses(id) ON DELETE SET NULL,
+  slot_capacity       INTEGER NOT NULL CHECK (slot_capacity >= 0),
+  starts_on           DATE NOT NULL DEFAULT CURRENT_DATE,
+  expires_on          DATE NOT NULL,
+  suspended_at        TIMESTAMPTZ,
+  note                TEXT,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS tenant_licenses_name_uq ON tenant_licenses (tenant_id, lower(name));
+
+-- Who belongs to which license (one role per person per license). Anyone may
+-- belong to several; a row exists only through an explicit invite.
+CREATE TABLE IF NOT EXISTS license_members (
+  id                 SERIAL PRIMARY KEY,
+  tenant_license_id  INTEGER NOT NULL REFERENCES tenant_licenses(id) ON DELETE CASCADE,
+  user_id            INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role               TEXT NOT NULL CHECK (role IN ('license_admin', 'member')),
+  invited_by         INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (tenant_license_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS license_members_user_idx ON license_members(user_id);
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_operator BOOLEAN NOT NULL DEFAULT false;
+-- The license workspace a person has open (like current_project_id, one level up).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS current_license_id INTEGER REFERENCES tenant_licenses(id) ON DELETE SET NULL;
+-- RESTRICT: a company or license with projects can't be deleted by accident.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS tenant_id INTEGER REFERENCES tenants(id) ON DELETE RESTRICT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS tenant_license_id INTEGER REFERENCES tenant_licenses(id) ON DELETE RESTRICT;
+
+-- One-time backfill: everything that exists today becomes company #1 with ONE
+-- license. Runs only when users exist and no company does yet, so it never
+-- repeats and never touches a brand-new empty install. Names, slots and expiry
+-- are placeholders (slots/expiry = services/licenseTerms.js) the operator
+-- corrects later. Today's license admins become that license's admins, everyone
+-- else a member; existing project roles (project_members) are unchanged.
+DO $$
+DECLARE
+  t_id INTEGER;
+  l_id INTEGER;
+  owner_id INTEGER;
+  first_rl INTEGER;
+BEGIN
+  IF EXISTS (SELECT 1 FROM users) AND NOT EXISTS (SELECT 1 FROM tenants) THEN
+    SELECT id INTO owner_id FROM users WHERE role = 'primary_license_admin' ORDER BY id LIMIT 1;
+    INSERT INTO tenants (name, account_owner_user_id) VALUES ('My company', owner_id) RETURNING id INTO t_id;
+
+    INSERT INTO revizto_licenses (tenant_id, revizto_license_uuid, region)
+      SELECT t_id, revizto_license_uuid, MIN(revizto_region)
+      FROM projects WHERE revizto_license_uuid IS NOT NULL GROUP BY revizto_license_uuid;
+    SELECT id INTO first_rl FROM revizto_licenses WHERE tenant_id = t_id ORDER BY id LIMIT 1;
+
+    INSERT INTO tenant_licenses (tenant_id, name, revizto_license_id, slot_capacity, starts_on, expires_on)
+      VALUES (t_id, 'My license', first_rl, 5, CURRENT_DATE, DATE '2027-07-15') RETURNING id INTO l_id;
+
+    UPDATE projects SET tenant_id = t_id, tenant_license_id = l_id WHERE tenant_id IS NULL;
+
+    INSERT INTO license_members (tenant_license_id, user_id, role)
+      SELECT l_id, id, CASE WHEN role IN ('primary_license_admin', 'license_admin') THEN 'license_admin' ELSE 'member' END
+      FROM users
+      ON CONFLICT (tenant_license_id, user_id) DO NOTHING;
+
+    UPDATE users SET current_license_id = l_id WHERE current_license_id IS NULL;
+  END IF;
+END $$;
+
 -- connect-pg-simple creates its own "session" table automatically on first run.
