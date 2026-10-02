@@ -15,6 +15,7 @@ const access = require('../services/access');
 const membership = require('../services/membership');
 const webhookSignature = require('../services/webhookSignature');
 const licenseState = require('../services/licenseState');
+const syncPolicy = require('../services/syncPolicy');
 const licenseTerms = require('../services/licenseTerms');
 const webhookHealth = require('../services/webhookHealth');
 const currentProject = require('../services/currentProject');
@@ -651,22 +652,22 @@ router.post('/api/projects/:id/issues/:reviztoIssueId/unlink', requireProjectRol
 // making API calls in the background, which is the actual thing this
 // toggle exists to stop while testing.
 router.get('/api/settings/sync-paused', requireLicenseAdmin, async (req, res) => {
-  res.json({ paused: await appSettings.isSyncPaused() });
+  res.json({ paused: await syncPolicy.getFlag(req.access.licenseId, 'sync_paused') });
 });
 
 router.post('/api/settings/sync-paused', requireLicenseAdmin, async (req, res) => {
-  await appSettings.setSyncPaused(!!req.body.paused);
+  await syncPolicy.setFlag(req.access.licenseId, 'sync_paused', !!req.body.paused);
   res.json({ paused: !!req.body.paused });
 });
 
 // Background sync outside 6 AM–6 PM (pollService) — off by default; on
 // for testing after hours (License Administration).
 router.get('/api/settings/poll-24-7', requireLicenseAdmin, async (req, res) => {
-  res.json({ on: await appSettings.isPoll247() });
+  res.json({ on: await syncPolicy.getFlag(req.access.licenseId, 'poll_247') });
 });
 
 router.post('/api/settings/poll-24-7', requireLicenseAdmin, async (req, res) => {
-  await appSettings.setPoll247(!!req.body.on);
+  await syncPolicy.setFlag(req.access.licenseId, 'poll_247', !!req.body.on);
   res.json({ on: !!req.body.on });
 });
 
@@ -817,11 +818,6 @@ async function _handleAccWebhookRequest(req, res) {
   // off / log / enforce via WEBHOOK_SIGNATURE_MODE.)
   if (!webhookSignature.decide(req).proceed) return;
 
-  if (await appSettings.isSyncPaused()) {
-    console.log('[webhook] Sync is paused (Setup page toggle) — ignoring this delivery.');
-    return;
-  }
-
   // Confirmed from a real webhook delivery: scope is nested under
   // hook.scope.project, not top-level hookScope.project as originally
   // guessed.
@@ -832,6 +828,12 @@ async function _handleAccWebhookRequest(req, res) {
     return;
   }
 
+  // Paused (the license's own switch, or the operator's platform pause): background
+  // syncing is off, including edits arriving from ACC.
+  if (await syncPolicy.isPaused(project)) {
+    console.log(`[webhook] "${project.name}": syncing is paused — ignoring this delivery.`);
+    return;
+  }
   // The project's license isn't active (expired, suspended, over its slot limit):
   // all syncing for it is paused, including edits arriving from ACC.
   if (!(await licenseState.projectMaySync(project))) {

@@ -346,7 +346,7 @@ document.getElementById('add-admin-form').addEventListener('submit', async (e) =
   await loadAdmins();
 });
 
-// ─── App-wide sync pause (moved here from Project Setup) ─────────────
+// ─── This license's sync pause (moved here from Project Setup) ───────
 // Checked = syncing enabled (normal operation), so checked still means
 // "on/green" like every other toggle in the app.
 

@@ -15,7 +15,7 @@
   <div id="app" class="container container-wide container-roomy">
     <header class="app-header">
       <h1>License Administration <span id="license-role-badge" class="badge badge-warning"></span></h1>
-      <p class="app-sub">Projects under this license, who the license admins are, and app-wide settings.</p>
+      <p class="app-sub">Projects under this license, who the license admins are, and this license&rsquo;s sync settings.</p>
     </header>
 
     <div id="license-app" class="hidden">
@@ -90,7 +90,7 @@
         <div id="add-admin-result" class="result-text" role="status"></div>
       </section>
 
-      <!-- App-wide, not per project: pauses the background sync (2-minute
+      <!-- Per license, not per project: pauses the background sync (2-minute
            poll + incoming ACC webhooks) for every project. -->
       <section class="card">
         <h2>Automatic syncing</h2>

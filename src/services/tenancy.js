@@ -55,8 +55,8 @@ async function ensureBootstrapLicense(userId) {
     if (!existing.length) {
       const { rows: t } = await client.query("INSERT INTO tenants (name, account_owner_user_id) VALUES ('My company', $1) RETURNING id", [userId]);
       const { rows: l } = await client.query(
-        `INSERT INTO tenant_licenses (tenant_id, name, slot_capacity, starts_on, expires_on)
-         VALUES ($1, 'My license', 5, CURRENT_DATE, DATE '2027-07-15') RETURNING id`,
+        `INSERT INTO tenant_licenses (tenant_id, name, slot_capacity, starts_on, expires_on, settings_copied_at)
+         VALUES ($1, 'My license', 5, CURRENT_DATE, DATE '2027-07-15', now()) RETURNING id`,
         [t[0].id]
       );
       await setLicenseAdmin(l[0].id, userId, null, client);

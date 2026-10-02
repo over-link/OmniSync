@@ -79,6 +79,7 @@ const LICENSE_SELECT = `
   SELECT l.id, l.tenant_id, l.name, l.slot_capacity,
          to_char(l.starts_on, 'YYYY-MM-DD') AS starts_on, to_char(l.expires_on, 'YYYY-MM-DD') AS expires_on,
          l.suspended_at, t.timezone,
+         l.sync_paused, l.poll_247, to_char(l.last_full_check_date, 'YYYY-MM-DD') AS last_full_check_date, l.paused_since,
          (SELECT count(*)::int FROM projects p WHERE p.tenant_license_id = l.id AND p.archived_at IS NULL) AS slots_used
   FROM tenant_licenses l JOIN tenants t ON t.id = l.tenant_id`;
 

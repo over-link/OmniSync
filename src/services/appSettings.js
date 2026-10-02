@@ -8,6 +8,9 @@
 const pool = require('../db/pool');
 
 const SYNC_PAUSED_KEY = 'sync_paused';
+// The OPERATOR's pause for the whole platform (npm run platform:sync) — stops
+// background syncing for every license (services/syncPolicy.js).
+const PLATFORM_SYNC_PAUSED_KEY = 'platform_sync_paused';
 // Polling runs 6 AM–6 PM (pollService) unless this is 'true'. Switched
 // on License Administration ("Sync outside working hours") — for testing
 // for now; intended to become a per-paid-tier setting (e.g. an
@@ -38,6 +41,14 @@ async function setSyncPaused(paused) {
   await _set(SYNC_PAUSED_KEY, paused ? 'true' : 'false');
 }
 
+async function isPlatformSyncPaused() {
+  return (await _get(PLATFORM_SYNC_PAUSED_KEY)) === 'true';
+}
+
+async function setPlatformSyncPaused(paused) {
+  await _set(PLATFORM_SYNC_PAUSED_KEY, paused ? 'true' : 'false');
+}
+
 async function isPoll247() {
   return (await _get(POLL_24_7_KEY)) === 'true';
 }
@@ -54,4 +65,13 @@ async function setLastFullCheckDate(date) {
   await _set(LAST_FULL_CHECK_KEY, date);
 }
 
-module.exports = { isSyncPaused, setSyncPaused, isPoll247, setPoll247, getLastFullCheckDate, setLastFullCheckDate };
+module.exports = {
+  isSyncPaused,
+  setSyncPaused,
+  isPlatformSyncPaused,
+  setPlatformSyncPaused,
+  isPoll247,
+  setPoll247,
+  getLastFullCheckDate,
+  setLastFullCheckDate,
+};

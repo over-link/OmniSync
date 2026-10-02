@@ -18,6 +18,7 @@ const mainRoutes = require('./routes/index');
 const teamRoutes = require('./routes/team');
 const licenseRoutes = require('./routes/license');
 const { startPolling } = require('./services/pollService');
+const syncPolicy = require('./services/syncPolicy');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -84,7 +85,11 @@ app.use((err, req, res, _next) => {
 
 app.listen(PORT, () => {
   console.log(`\n🔄 Revizto ↔ ACC Sync running on port ${PORT}`);
-  startPolling();
+  // The older app-wide sync switches become the license's own (once), before any cycle runs.
+  syncPolicy
+    .copyGlobalSettingsOnce()
+    .catch((err) => console.warn('[poll] Could not copy the app-wide sync settings:', err.message))
+    .finally(startPolling);
 });
 
 module.exports = app;

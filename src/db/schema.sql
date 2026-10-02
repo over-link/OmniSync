@@ -692,4 +692,19 @@ BEGIN
   END IF;
 END $$;
 
+-- ═══ Per-license sync settings (chunk 3b) ═══════════════════════════
+-- Additive. Each license has its own sync switches (changed by its admins on
+-- License Administration) and its own daily-full-check date; working hours
+-- follow its company's timezone. paused_since = when its syncing stopped (a
+-- pause, an inactive license, or the operator's platform pause) — what the
+-- catch-up after a pause is measured from. settings_copied_at: the older
+-- app-wide switches (app_settings) were copied into this license once
+-- (services/syncPolicy.js copyGlobalSettingsOnce); a license created later is
+-- created with it already set so it never inherits another company's pause.
+ALTER TABLE tenant_licenses ADD COLUMN IF NOT EXISTS sync_paused BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE tenant_licenses ADD COLUMN IF NOT EXISTS poll_247 BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE tenant_licenses ADD COLUMN IF NOT EXISTS last_full_check_date DATE;
+ALTER TABLE tenant_licenses ADD COLUMN IF NOT EXISTS paused_since TIMESTAMPTZ;
+ALTER TABLE tenant_licenses ADD COLUMN IF NOT EXISTS settings_copied_at TIMESTAMPTZ;
+
 -- connect-pg-simple creates its own "session" table automatically on first run.

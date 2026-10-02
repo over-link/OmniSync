@@ -15,6 +15,7 @@ const syncService = require('./syncService');
 const appSettings = require('./appSettings');
 const webhookHealth = require('./webhookHealth');
 const licenseState = require('./licenseState');
+const syncPolicy = require('./syncPolicy');
 const { ReconnectRequiredError, getValidAccToken, getValidReviztoToken } = require('./authManager');
 
 // Polling hours and the daily full check, in the team's local time (all
@@ -42,13 +43,17 @@ function _localNow() {
 }
 
 let cycleRunning = false;
-let quietLoggedForDate = null;
+const quietLogged = new Map(); // license id -> date its "outside working hours" line was logged
+
+const _ids = (licenses) => licenses.map((l) => l.id);
 
 /**
- * One 2-minute tick: decides whether this tick is a normal changed-only
- * cycle, the day's full check, or nothing (paused / overnight). Never
- * overlaps itself — a cycle still running when the next tick fires (e.g.
- * a large project, or the full check) just makes that tick a no-op.
+ * One 2-minute tick. Each LICENSE is decided on its own (services/syncPolicy.js):
+ * its own pause switch, its own working hours and daily full check in its
+ * company's timezone, and only while the license is active. The operator's
+ * platform pause stops everything. Never overlaps itself — a cycle still
+ * running when the next tick fires (e.g. a large project, or a full check)
+ * just makes that tick a no-op.
  */
 async function pollTick() {
   if (cycleRunning) {
@@ -57,28 +62,40 @@ async function pollTick() {
   }
   cycleRunning = true;
   try {
-    if (await appSettings.isSyncPaused()) {
-      console.log('[poll] Sync is paused (Setup page toggle) — skipping this cycle.');
+    await syncPolicy.copyGlobalSettingsOnce();
+    const licenses = await licenseState.loadAll();
+    if (await appSettings.isPlatformSyncPaused()) {
+      console.log('[poll] Syncing is paused for the whole platform (operator) — skipping this cycle.');
+      await syncPolicy.markPaused(_ids(licenses));
       return;
     }
-    const { date, hour } = _localNow();
-    // Due any time from 6 PM until midnight if it hasn't run today — so a
-    // restart or deploy right at 6 PM doesn't lose that day's check.
-    if (hour >= FULL_CHECK_HOUR && (await appSettings.getLastFullCheckDate()) !== date) {
-      console.log(`[poll] Daily full check (${SYNC_TIMEZONE} ${date}) — re-checking every linked issue.`);
-      await pollAllProjects({ full: true });
-      await appSettings.setLastFullCheckDate(date);
-      return;
-    }
-    const activeHours = hour >= ACTIVE_START_HOUR && hour < ACTIVE_END_HOUR;
-    if (!activeHours && !(await appSettings.isPoll247())) {
-      if (quietLoggedForDate !== date) {
-        console.log(`[poll] Outside polling hours (6 AM–6 PM ${SYNC_TIMEZONE}) — paused until 6 AM. ACC webhooks still apply.`);
-        quietLoggedForDate = date;
+    const now = new Date();
+    const plan = syncPolicy.planTick(licenses, now);
+    await syncPolicy.markPaused([..._ids(plan.paused), ..._ids(plan.inactive)]);
+    for (const l of plan.paused) console.log(`[poll] License "${l.name}": sync is paused (License Administration toggle) — skipping.`);
+    for (const l of plan.inactive) console.log(`[poll] License "${l.name}": ${l.state.phase} — its syncing is paused until it is active.`);
+    for (const l of plan.quiet) {
+      const date = syncPolicy.localParts(l.timezone, now).date;
+      if (quietLogged.get(l.id) !== date) {
+        console.log(`[poll] License "${l.name}": outside polling hours (6 AM–6 PM ${l.timezone}) — paused until 6 AM. ACC webhooks still apply.`);
+        quietLogged.set(l.id, date);
       }
-      return;
     }
-    await pollAllProjects({ full: false });
+    for (const l of plan.resumed) console.log(`[poll] License "${l.name}": syncing again after a pause since ${l.paused_since.toISOString()}.`);
+
+    if (plan.full.length) {
+      console.log(`[poll] Daily full check for ${plan.full.map((l) => `"${l.name}"`).join(', ')} — re-checking every linked issue.`);
+      await pollAllProjects({ full: true, licenseIds: _ids(plan.full) });
+      for (const l of plan.full) await syncPolicy.markFullCheckDone(l.id, syncPolicy.localParts(l.timezone, now).date);
+    }
+    // A project with no license yet (legacy data awaiting npm run tenancy:repair)
+    // keeps the older app-wide rules: SYNC_TIMEZONE working hours, the old switch.
+    const legacy = _localNow();
+    const legacyRuns = !(await appSettings.isSyncPaused()) && legacy.hour >= ACTIVE_START_HOUR && legacy.hour < ACTIVE_END_HOUR;
+    if (plan.normal.length || legacyRuns) {
+      await pollAllProjects({ full: false, licenseIds: _ids(plan.normal), includeLegacy: legacyRuns });
+    }
+    await syncPolicy.clearPaused(_ids(plan.resumed));
   } catch (err) {
     console.error('[poll] Cycle failed:', err.message);
   } finally {
@@ -86,7 +103,12 @@ async function pollTick() {
   }
 }
 
-async function pollAllProjects({ full = false } = {}) {
+/**
+ * Re-syncs the linked issues of the paired, active projects of `licenseIds`
+ * (and, with includeLegacy, of projects that have no license yet). Passing no
+ * options covers every license that may sync — the old behaviour.
+ */
+async function pollAllProjects({ full = false, licenseIds = null, includeLegacy = true } = {}) {
   // Unpaired projects (created on License Administration, not yet paired
   // on Project Setup) have nothing to sync; archived ones are parked.
   const { rows: allProjects } = await pool.query(
@@ -96,7 +118,10 @@ async function pollAllProjects({ full = false } = {}) {
   // limit, not started) are paused until it is. A project with no license yet
   // (legacy, see npm run tenancy:repair) still syncs.
   const syncing = await licenseState.syncingLicenseIds();
-  const projects = allProjects.filter((p) => !p.tenant_license_id || syncing.has(p.tenant_license_id));
+  const wanted = licenseIds ? new Set(licenseIds) : null;
+  const projects = allProjects.filter((p) =>
+    p.tenant_license_id ? syncing.has(p.tenant_license_id) && (!wanted || wanted.has(p.tenant_license_id)) : includeLegacy
+  );
   for (const project of projects) {
     try {
       // One bulk look at both sides for every linked issue, shared by the
