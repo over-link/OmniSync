@@ -19,6 +19,10 @@ const ALL_FILTER_FIELDS = [...SCALAR_FILTER_FIELDS, ...ARRAY_FILTER_FIELDS];
 // so multiple values can be chosen per filter at once.
 let activeFilters = Object.fromEntries(ALL_FILTER_FIELDS.map((f) => [f, []]));
 
+// What's typed in the search box (the Select all bar): matches the Revizto
+// issue number or the title; combined with the filters above.
+let searchText = '';
+
 const PAGE_SIZE = 50;
 let currentPage = 1;
 // { key: 'revizto' | 'acc' | 'linked', dir: 'asc' | 'desc' } — remembered per
@@ -159,8 +163,26 @@ function populateFilterOptions() {
   }
 }
 
+// Does the issue match the search? "#42" / "42" find issue numbers containing
+// it (so 42 also shows 142); any text finds titles containing it, ignoring case.
+function _matchesSearch(issue, query) {
+  if (!query) return true;
+  const q = query.toLowerCase();
+  if (String(issue.title || '').toLowerCase().includes(q)) return true;
+  const digits = q.replace(/^#/, '');
+  return /^\d+$/.test(digits) && String(issue.id).includes(digits);
+}
+
+document.getElementById('issue-search').addEventListener('input', (e) => {
+  searchText = e.target.value.trim();
+  _resetPageAndSelection();
+  renderBoard();
+});
+
 document.getElementById('reset-filters-btn').addEventListener('click', () => {
   for (const field of ALL_FILTER_FIELDS) activeFilters[field] = [];
+  searchText = '';
+  document.getElementById('issue-search').value = '';
   _resetPageAndSelection();
   populateFilterOptions();
   renderBoard();
@@ -206,12 +228,14 @@ function renderBoard() {
   const emptyEl = document.getElementById('board-empty');
   const actionsEl = document.getElementById('board-actions');
 
-  const filtered = currentBoard.filter((i) =>
-    Object.entries(activeFilters).every(([field, selected]) => {
-      if (!selected.length) return true;
-      if (ARRAY_FILTER_FIELDS.includes(field)) return (i[field] || []).some((v) => selected.includes(v));
-      return selected.includes(i[field]);
-    })
+  const filtered = currentBoard.filter(
+    (i) =>
+      _matchesSearch(i, searchText) &&
+      Object.entries(activeFilters).every(([field, selected]) => {
+        if (!selected.length) return true;
+        if (ARRAY_FILTER_FIELDS.includes(field)) return (i[field] || []).some((v) => selected.includes(v));
+        return selected.includes(i[field]);
+      })
   );
 
   document.getElementById('filter-issue-count').textContent = `${filtered.length} issue${filtered.length === 1 ? '' : 's'}`;
@@ -224,11 +248,17 @@ function renderBoard() {
   linkableIds = new Set(filtered.filter((i) => !i.linked).map((i) => String(i.id)));
   for (const id of [...selectedIds]) if (!linkableIds.has(id)) selectedIds.delete(id);
 
+  const selectAllGroup = document.getElementById('select-all-group');
+  // The bar holds the search box too: it stays whenever the project has issues
+  // (so a search with no hits can be cleared); Select all only when there's
+  // something to select.
+  selectAllBar.classList.toggle('hidden', !currentBoard.length);
+
   if (!filtered.length) {
     rowsEl.innerHTML = '';
     emptyEl.classList.remove('hidden');
     actionsEl.classList.add('hidden');
-    selectAllBar.classList.add('hidden');
+    selectAllGroup.classList.add('hidden');
     _renderPager(0, 0);
     return;
   }
@@ -244,7 +274,7 @@ function renderBoard() {
 
   const hasUnlinked = filtered.some((i) => !i.linked);
   actionsEl.classList.toggle('hidden', !hasUnlinked);
-  selectAllBar.classList.toggle('hidden', !hasUnlinked);
+  selectAllGroup.classList.toggle('hidden', !hasUnlinked);
 
   const projectId = currentProjectId;
   // Unlink button: only when the project allows it, and only for admins

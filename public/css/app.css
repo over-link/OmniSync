@@ -358,6 +358,9 @@ body {
 .bridge-connector { color: var(--blueprint); font-family: var(--font-mono); text-align: center; }
 .link-checkbox { font-size: 0.85rem; color: var(--muted); }
 .board-select-all-bar { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0.4rem; border-bottom: 1px solid var(--line); }
+.select-all-group { display: flex; align-items: center; gap: 0.75rem; }
+/* Search the list by Revizto # or title — on the right of the Select all bar. */
+.issue-search { margin-left: auto; width: min(280px, 100%); min-width: 0; }
 /* Column headers double as sort toggles — styled as the header text
    itself, not as a button, with an arrow showing the active sort. */
 .sort-btn {

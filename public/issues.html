@@ -97,11 +97,14 @@
           <span></span>
         </div>
         <div id="board-select-all-bar" class="board-select-all-bar hidden">
-          <button type="button" id="select-all-btn" class="btn secondary">Select all</button>
-          <span id="selected-count" class="hint">0 selected</span>
+          <span id="select-all-group" class="select-all-group">
+            <button type="button" id="select-all-btn" class="btn secondary">Select all</button>
+            <span id="selected-count" class="hint">0 selected</span>
+          </span>
+          <input type="search" id="issue-search" class="issue-search" placeholder="Search by # or title" aria-label="Search issues by Revizto number or title" autocomplete="off" />
         </div>
         <div id="board-rows"></div>
-        <div id="board-empty" class="hint hidden">No issues match the current filters.</div>
+        <div id="board-empty" class="hint hidden">No issues match the current filters or search.</div>
         <div id="board-pager" class="board-pager hidden">
           <button type="button" id="page-prev-btn" class="btn secondary">‹ Previous</button>
           <span id="page-info" class="hint"></span>
