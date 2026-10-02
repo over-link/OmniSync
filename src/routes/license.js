@@ -162,13 +162,15 @@ router.get('/api/license/projects', requireLicenseAdmin, async (req, res) => {
   // archived or deleted (services/licenseTerms.js — placeholder terms for
   // now). Synced issues = currently linked issue pairs, the same count as
   // the Dashboards page's "Linked issues".
+  const terms = await licenseTerms.summary(req.access.licenseId);
   res.json({
     projects: rows,
     summary: {
-      projectSlotCapacity: licenseTerms.PROJECT_SLOT_CAPACITY,
-      projectSlotsUsed: rows.filter((p) => !p.archived_at).length,
-      licenseExpiresOn: licenseTerms.LICENSE_EXPIRES_ON,
+      projectSlotCapacity: terms.projectSlotCapacity,
+      projectSlotsUsed: terms.projectSlotsUsed,
+      licenseExpiresOn: terms.licenseExpiresOn,
       syncedIssues: rows.reduce((sum, p) => sum + p.synced_count, 0),
+      ...(terms.license.usable ? {} : { license: terms.license }),
     },
   });
 });
@@ -191,11 +193,11 @@ router.post('/api/license/projects/:id/unarchive', requireLicenseAdmin, async (r
   // Unarchiving takes a project slot back — refused when none are left.
   let rows;
   try {
-    ({ rows } = await licenseTerms.withProjectSlot((db) =>
+    ({ rows } = await licenseTerms.withProjectSlot(req.access.licenseId, (db) =>
       db.query('UPDATE projects SET archived_at = NULL WHERE id = $1 RETURNING id, name', [req.params.id])
     ));
   } catch (err) {
-    if (err instanceof licenseTerms.NoProjectSlotsError) return res.status(409).json({ error: err.message, code: err.code });
+    if (err instanceof licenseTerms.NoProjectSlotsError || err instanceof licenseTerms.LicenseNotActiveError) return res.status(409).json({ error: err.message, code: err.code });
     throw err;
   }
   if (!rows[0]) return res.status(404).json({ error: 'Project not found' });

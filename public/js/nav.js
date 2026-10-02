@@ -255,6 +255,7 @@ async function loadNav() {
   let acc = { connected: false };
   let revizto = { connected: false };
   let accessDenied = null;
+  let licenseNotice = null; // set when the open license is over its slot limit (its admins can only manage its projects)
   let projects = [];
   let currentProjectId = null;
   try {
@@ -264,6 +265,7 @@ async function loadNav() {
     acc = data.acc;
     revizto = data.revizto;
     accessDenied = data.accessDenied || null;
+    licenseNotice = data.license || null;
     projects = data.projects || [];
     currentProjectId = data.currentProjectId || null;
   } catch {
@@ -303,6 +305,12 @@ async function loadNav() {
   // page, since fullyConnected requires a signed-in user first.
   if (path !== '/account' && !fullyConnected) {
     window.location.replace('/account');
+    return;
+  }
+
+  // Over its slot limit: its license admins can only manage the projects (License Administration).
+  if (user && licenseNotice?.adminLimited && path !== '/license' && path !== '/account') {
+    window.location.replace('/license');
     return;
   }
 

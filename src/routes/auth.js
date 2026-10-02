@@ -82,9 +82,22 @@ function _sessionEnded(req, res) {
   return res.status(401).json({ error: SESSION_ENDED });
 }
 
+// While a license is over its slot limit its license admins may only do what
+// gets it back under the limit: manage its projects (License Administration)
+// and the settings/sign-in plumbing. Everything else answers with the message.
+const LIMITED_ALLOWED = [/^\/api\/license\//, /^\/api\/settings\//, /^\/auth\//];
+function _blockedByLimit(req, res) {
+  if (!req.access?.adminLimited) return false;
+  const path = req.originalUrl.split('?')[0];
+  if (LIMITED_ALLOWED.some((re) => re.test(path))) return false;
+  res.status(403).json({ error: req.access.licenseState.message, code: 'license_suspended' });
+  return true;
+}
+
 async function requireLogin(req, res, next) {
   try {
     if (!(await _sessionUser(req))) return _sessionEnded(req, res);
+    if (_blockedByLimit(req, res)) return;
     next();
   } catch (err) {
     next(err);
@@ -102,6 +115,7 @@ function _requireAccess(allowed, deniedMessage) {
   return async (req, res, next) => {
     try {
       if (!(await _sessionUser(req))) return _sessionEnded(req, res);
+      if (_blockedByLimit(req, res)) return;
       if (!allowed(req)) return res.status(403).json({ error: deniedMessage });
       next();
     } catch (err) {
@@ -128,6 +142,7 @@ function requireProjectRole(minRole) {
   return async (req, res, next) => {
     try {
       if (!(await _sessionUser(req))) return _sessionEnded(req, res);
+      if (_blockedByLimit(req, res)) return;
       const role = access.effectiveProjectRole(req.access, req.params.id);
       if (!role) return res.status(404).json({ error: 'Project not found' });
       if (!access.hasProjectRole(req.access, req.params.id, minRole)) {
@@ -473,6 +488,9 @@ router.get('/auth/me', async (req, res) => {
   const reviztoStillValid = !!reviztoTokens && new Date(reviztoTokens.refresh_expires_at) > new Date();
 
   res.json({
+    license: req.access?.licenseState && !req.access.licenseState.usable
+      ? { phase: req.access.licenseState.phase, message: req.access.licenseState.message, adminLimited: !!req.access.adminLimited }
+      : undefined,
     user: { id: req.session.userId, email: req.session.userEmail, name: sessionUser.name || null, role, ...permissions },
     acc: accStillValid
       ? {

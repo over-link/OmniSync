@@ -16,6 +16,7 @@
  */
 const pool = require('../db/pool');
 const membership = require('./membership');
+const licenseState = require('./licenseState');
 
 const RANK = { standard: 1, project_admin: 2, license_admin: 3, primary_license_admin: 4 };
 const LICENSE_ROLES = ['primary_license_admin', 'license_admin'];
@@ -53,14 +54,15 @@ const isLicenseAdminRole = (role) => LICENSE_ROLES.includes(role);
  */
 async function getAccess(userId, forLicenseId = null) {
   const first = await _getAccessIn(userId, forLicenseId);
-  // The open license gives them nothing (no admin role, no project they really
-  // belong to) but another license of theirs does: open that one instead of
-  // refusing them. Only when they didn't ask for one specific license.
-  if (!first || forLicenseId != null || first.isLicenseAdmin || first.projectRoles.size || first.licenses.length < 2) return first;
+  // The open license gives them nothing (not usable, no admin role, no project
+  // they really belong to) but another license of theirs does: open that one
+  // instead of refusing them. Only when they didn't ask for one specific license.
+  const gives = (acc) => acc.licenseState?.usable !== false && (acc.isLicenseAdmin || acc.projectRoles.size);
+  if (!first || forLicenseId != null || gives(first) || first.adminLimited || first.licenses.length < 2) return first;
   for (const other of first.licenses) {
     if (other.id === first.licenseId) continue;
     const candidate = await _getAccessIn(userId, other.id);
-    if (candidate && (candidate.isLicenseAdmin || candidate.projectRoles.size)) {
+    if (candidate && gives(candidate)) {
       await pool.query('UPDATE users SET current_license_id = $2 WHERE id = $1', [userId, other.id]);
       return candidate;
     }
@@ -82,6 +84,7 @@ async function _getAccessIn(userId, forLicenseId) {
   ]);
   const user = userRows[0];
   if (!user) return null;
+  const licenseStates = new Map((await licenseState.loadMany(licenseRows.map((l) => l.license_id))).map((l) => [l.id, l.state]));
   const wanted = forLicenseId != null ? Number(forLicenseId) : user.current_license_id;
   const active =
     licenseRows.find((l) => l.license_id === wanted) || (forLicenseId != null ? null : licenseRows[0]) || null;
@@ -91,7 +94,7 @@ async function _getAccessIn(userId, forLicenseId) {
     email: user.email,
     licenseId: active ? active.license_id : null,
     tenantId: active ? active.tenant_id : null,
-    licenses: licenseRows.map((l) => ({ id: l.license_id, name: l.name, role: l.role })),
+    licenses: licenseRows.map((l) => ({ id: l.license_id, name: l.name, role: l.role, phase: licenseStates.get(l.license_id)?.phase })),
     licenseRole,
     isLicenseAdmin: !!licenseRole,
     isPrimary: licenseRole === 'primary_license_admin',
@@ -102,6 +105,12 @@ async function _getAccessIn(userId, forLicenseId) {
     unverifiedProjectIds: new Set(),
   };
   if (!active) return base;
+  // The state of the open license (services/licenseState.js). Not usable =
+  // blocked, except a license over its slot limit: its license admins may still
+  // manage (archive / delete) its projects to get back under the limit.
+  const state = licenseStates.get(active.license_id) || null;
+  base.licenseState = state;
+  base.adminLimited = !!state && !state.usable && state.adminLimited && !!licenseRole;
 
   const [{ rows: inviteRows }, { rows: licenseProjects }] = await Promise.all([
     pool.query(
@@ -113,6 +122,7 @@ async function _getAccessIn(userId, forLicenseId) {
     pool.query('SELECT id FROM projects WHERE tenant_license_id = $1', [active.license_id]),
   ]);
   base.licenseProjectIds = new Set(licenseProjects.map((r) => r.id));
+  if (state && !state.usable) return base; // blocked: no project roles, nothing to open
   const memberRows = inviteRows.filter((r) => !r.archived_at); // archived: no access
   let projectRoles = new Map();
   let unverifiedProjectIds = new Set();
@@ -145,6 +155,9 @@ async function _getAccessIn(userId, forLicenseId) {
  */
 function denialMessage(access) {
   if (!access) return membership.ACCESS_DENIED_MESSAGE;
+  // The license itself is expired / suspended / not started: say so (a license
+  // over its slot limit still lets its license admins in, to fix it).
+  if (access.licenseState && !access.licenseState.usable) return access.adminLimited ? null : access.licenseState.message;
   if (access.isLicenseAdmin || access.projectRoles.size) return null;
   // Couldn't read a project's lists at all — don't tell a real member
   // they aren't one.

@@ -1280,3 +1280,6 @@ body { position: relative; }
 .theme-switch button:hover { background: var(--blueprint-dim); color: var(--blueprint); }
 .theme-switch button[aria-pressed="true"] { background: var(--blueprint); color: var(--on-accent); }
 .theme-switch button:focus-visible { outline: 2px solid var(--blueprint); outline-offset: -2px; }
+
+/* A license that isn't active (License Administration banner). */
+.license-banner { background: var(--danger-dim); color: var(--danger); border: 1px solid var(--danger); border-radius: 8px; padding: 0.7rem 0.9rem; font-weight: 600; margin: 0 0 1rem; }

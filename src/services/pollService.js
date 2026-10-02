@@ -14,6 +14,7 @@ const pool = require('../db/pool');
 const syncService = require('./syncService');
 const appSettings = require('./appSettings');
 const webhookHealth = require('./webhookHealth');
+const licenseState = require('./licenseState');
 const { ReconnectRequiredError, getValidAccToken, getValidReviztoToken } = require('./authManager');
 
 // Polling hours and the daily full check, in the team's local time (all
@@ -88,9 +89,14 @@ async function pollTick() {
 async function pollAllProjects({ full = false } = {}) {
   // Unpaired projects (created on License Administration, not yet paired
   // on Project Setup) have nothing to sync; archived ones are parked.
-  const { rows: projects } = await pool.query(
+  const { rows: allProjects } = await pool.query(
     'SELECT * FROM projects WHERE owner_user_id IS NOT NULL AND revizto_project_uuid IS NOT NULL AND acc_project_id IS NOT NULL AND archived_at IS NULL'
   );
+  // Projects of a license that isn't active (expired, suspended, over its slot
+  // limit, not started) are paused until it is. A project with no license yet
+  // (legacy, see npm run tenancy:repair) still syncs.
+  const syncing = await licenseState.syncingLicenseIds();
+  const projects = allProjects.filter((p) => !p.tenant_license_id || syncing.has(p.tenant_license_id));
   for (const project of projects) {
     try {
       // One bulk look at both sides for every linked issue, shared by the

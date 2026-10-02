@@ -14,6 +14,7 @@ const dashboards = require('../services/dashboards');
 const access = require('../services/access');
 const membership = require('../services/membership');
 const webhookSignature = require('../services/webhookSignature');
+const licenseState = require('../services/licenseState');
 const licenseTerms = require('../services/licenseTerms');
 const webhookHealth = require('../services/webhookHealth');
 const currentProject = require('../services/currentProject');
@@ -271,7 +272,7 @@ router.post('/api/projects', requireLicenseAdmin, async (req, res) => {
   // Takes a project slot — refused when the license has none left.
   let rows;
   try {
-    ({ rows } = await licenseTerms.withProjectSlot((db) =>
+    ({ rows } = await licenseTerms.withProjectSlot(req.access.licenseId, (db) =>
       db.query(
         `INSERT INTO projects (name, revizto_project_uuid, revizto_project_id, revizto_region, acc_hub_id, acc_project_id, acc_project_name, acc_default_subtype_id, owner_user_id,
                                revizto_license_uuid, revizto_license_name, acc_hub_name, revizto_project_name, tenant_id, tenant_license_id)
@@ -298,7 +299,7 @@ router.post('/api/projects', requireLicenseAdmin, async (req, res) => {
       )
     ));
   } catch (err) {
-    if (err instanceof licenseTerms.NoProjectSlotsError) return res.status(409).json({ error: err.message, code: err.code });
+    if (err instanceof licenseTerms.NoProjectSlotsError || err instanceof licenseTerms.LicenseNotActiveError) return res.status(409).json({ error: err.message, code: err.code });
     throw err;
   }
   if (_isPaired(rows[0])) await _autoRegisterWebhook(req.session.userId, rows[0]);
@@ -828,6 +829,13 @@ async function _handleAccWebhookRequest(req, res) {
   const project = projects.find((p) => req.body?.hook?.scope?.project === p.acc_project_id.replace(/^b\./, ''));
   if (!project || !project.owner_user_id) {
     console.warn('[webhook] No matching project/owner for payload:', req.body?.hook?.scope);
+    return;
+  }
+
+  // The project's license isn't active (expired, suspended, over its slot limit):
+  // all syncing for it is paused, including edits arriving from ACC.
+  if (!(await licenseState.projectMaySync(project))) {
+    console.log(`[webhook] "${project.name}": its license isn't active — ignoring this delivery.`);
     return;
   }
 

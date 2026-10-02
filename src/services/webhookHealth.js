@@ -15,6 +15,7 @@
  * who created them and another user's token can't even see them.
  */
 const pool = require('../db/pool');
+const licenseState = require('./licenseState');
 const accService = require('./accService');
 const auditLog = require('./auditLog');
 const { ReconnectRequiredError } = require('./authManager');
@@ -121,9 +122,13 @@ async function checkAllProjects() {
     console.log('[webhook-health] PUBLIC_BASE_URL is not a real deployed URL — skipping the webhook check.');
     return [];
   }
-  const { rows: projects } = await pool.query(
+  const { rows: allProjects } = await pool.query(
     'SELECT * FROM projects WHERE owner_user_id IS NOT NULL AND revizto_project_uuid IS NOT NULL AND acc_project_id IS NOT NULL AND archived_at IS NULL ORDER BY id'
   );
+  // Never repair or re-register the hooks of a license that isn't active — its
+  // syncing is paused (services/licenseState.js).
+  const syncing = await licenseState.syncingLicenseIds();
+  const projects = allProjects.filter((p) => !p.tenant_license_id || syncing.has(p.tenant_license_id));
   const results = [];
   for (const project of projects) {
     results.push({ projectId: project.id, ...(await checkProject(project)) });

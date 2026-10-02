@@ -95,6 +95,10 @@ function _showNoProjectSlots() {
 
 function _renderSummary(s) {
   slotSummary = s;
+  // A license that isn't active (suspended / over its limit...) says so here.
+  const banner = document.getElementById('license-state-banner');
+  banner.textContent = s.license ? s.license.message : '';
+  banner.classList.toggle('hidden', !s.license);
   document.getElementById('tile-slots').textContent = s.projectSlotCapacity.toLocaleString();
   document.getElementById('tile-slots-used').textContent = s.projectSlotsUsed.toLocaleString();
   // "YYYY-MM-DD" as a local date (new Date('YYYY-MM-DD') would be UTC
