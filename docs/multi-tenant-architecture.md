@@ -77,13 +77,40 @@ A person is one account (email). **Decided (owner, 2026-10-01, latest):**
 
 ## 3. Journey — Company A buys a 5-project plan
 
-### 3a. Operator (before the customer touches anything)
-1. **Create the tenant** (the company, once) and its first **license** with a
-   unique name: company name, license name, plan = 5 slots, expiry date, timezone
-   (for polling hours), status = active. *(Today: capacity 5 and the expiry are
-   placeholders in `services/licenseTerms.js`.)*
-2. **Invite the primary license admin** by email → tenant member with role
-   `primary_license_admin`.
+### 3a. Operator — starting a license once the deal is signed and paid
+
+The **operator** is you or your team: accounts flagged `is_operator`, who can open
+a private **operator console** (a new page, built in chunk 4; until it exists this
+is done by hand in the database). The license starts here, **only after** the deal
+is signed and paid. The app has **no billing**: you confirm payment yourself, and
+may record the invoice/contract reference in a note on the license.
+
+**What the operator needs from the customer:** company name, a unique license
+name, the plan (project slots and term), a timezone, and the buyer's email. The
+customer's **Revizto license is not typed in** — it is tied to the company when
+the buyer connects Revizto (the app reads it and checks they are License
+administrator on it).
+
+**Steps**
+1. **Deal signed and paid** — outside the app.
+2. **Open the operator console** (operator accounts only).
+3. **Create the company, once**: name and timezone (for polling hours). Never
+   duplicate a company for a later purchase.
+4. **Add its first license**: a **unique name** (e.g. "Company A – US"), plan = 5
+   slots, **start date and expiry date** (expiry = start + the term bought),
+   region, optional billing note. Status = active from the start date; the
+   expiry clock starts here, not when the buyer first signs in. *(Today: capacity
+   5 and the expiry are placeholders in `services/licenseTerms.js`.)*
+5. **Invite the buyer** by email → they become the company's **account owner** and
+   the license's **first license admin** (an explicit step, still verified against
+   Revizto when they connect).
+6. **Hand over and check**: the buyer follows 3b; the operator confirms the
+   license shows **active** and **0 of 5 slots used**.
+
+**Later operator actions, same screen:** add a further license (a new purchase =
+a new, separately named license on the existing company), renew/extend an expiry,
+correct slots, suspend, list expired licenses, purge after retention. (Self-serve
+sign-up with payment is a possible later replacement for this manual step.)
 
 ### 3b. Primary license admin
 1. **Accept the invite**: emailed 6-digit code → create password → enter full
@@ -181,13 +208,33 @@ New:
 - **Projects belong to one license.** A project is created under a license (name
   only, using one of *that license's* slots) and paired with a Revizto project
   inside the license's Revizto license.
-- **No blocking between licenses that share a Revizto license** (owner,
-  2026-10-01): every Revizto project in the Revizto license is selectable when
-  pairing under *any* of the company's licenses on it, including one that is
-  already paired under another license. Project Setup may annotate it ("also
-  paired under <license name>") but never disables it. (A real use: a license
-  expires or is replaced and the same Revizto project is re-paired under the new
-  one so syncing continues.) Another company's projects never appear.
+- **Licenses may share a Revizto license, but an ACC project can only be fed by
+  ONE Revizto project** (owner, 2026-10-01). Every Revizto project in the Revizto
+  license is selectable under any of the company's licenses on it, but an **ACC
+  project can be actively paired to only one Revizto project in the whole app**
+  — that covers the identical pair (the same two projects paired twice) and also
+  two *different* Revizto projects pointing at the same ACC project, either of
+  which would write issues from several sources into one place and create
+  duplicates. Pairing one Revizto project with *different* ACC projects is
+  allowed (the team's choice), as is any other combination.
+  - **At pairing:** refused with "This ACC project is already paired with a
+    Revizto project under <license name>. Archive or re-pair that one first." (If
+    the existing pairing belongs to another company the name is withheld:
+    "…already paired by another account.")
+  - **What counts as active:** the project isn't archived and its license isn't
+    expired or suspended. So a license can expire (or a project be archived) and
+    the same ACC project be **re-paired under the new license** so syncing
+    continues.
+  - **When an old pairing comes back** (e.g. the expired license is renewed while
+    the ACC project is now paired under the new license): the returning project
+    stays **paused with a notice** until the team archives or re-pairs one of the
+    two; the other keeps syncing. Nothing is deleted.
+  - **Enforced in the database, not just the page:** `projects.sync_active` is
+    kept in step with license/archive state, and a **partial unique index on
+    (`acc_project_id`) WHERE sync_active** makes a second active pairing of the
+    same ACC project impossible, even from two admins saving at once.
+  - Project Setup may also annotate a Revizto project that is paired elsewhere
+    ("also paired under <license name>"); that notice never disables it.
 - **Separate boundaries still hold.** Members are invited per license, so a person
   invited only to license 1 can't see license 2's projects or people even though
   both sit on the same Revizto license (and even though, in Revizto itself, a
@@ -200,13 +247,8 @@ New:
 - **Sync lanes** stay per Revizto license/region (rate limits and tokens are
   shared by what's on the same Revizto license), with fairness between the
   licenses on it.
-- **What gets paired is the team's choice** (owner, 2026-10-01): the app does
-  not restrict, pause or choose between pairings. That includes pairing the
-  same Revizto project (even with the same ACC project) under more than one
-  license. The only thing shown is an informational, non-blocking notice on
-  Project Setup ("this Revizto project is also paired under <license name>"), so
-  the team knows when two active pairings could write the same issues twice.
-  Still checked, as security rather than policy: a Revizto project's company
+- **Otherwise what gets paired is the team's choice:** the app doesn't restrict
+  other combinations. Still checked, as security: a Revizto project's company
   must match the license's company, and the person pairing must be project admin
   of both projects (as today).
 
@@ -345,7 +387,9 @@ current number of non-archived projects.
 
 Problem *(today)*: one 2-minute cycle visits every project **sequentially** in one
 process under one lock; Revizto has no webhooks so it must be polled; calls use
-the project owner's tokens; there is no rate-limit back-off.
+the project owner's tokens; retries cover only transient gateway errors
+(502/503/504 on idempotent calls, `services/httpRetry.js`) — **429 / Retry-After
+is not handled**.
 
 Design:
 1. **Separate the worker from the web app.** The poller moves to its own
@@ -417,6 +461,88 @@ for B as a stopgap (own app + database), knowing it must be merged into the
 shared app later.
 
 ---
+
+### Phase 1 breakdown (the gate to onboarding a second company)
+
+**Goal:** a second company can be created and used without any chance of seeing
+or affecting the first. **Not in phase 1:** the worker split, job queue, fair
+scheduling and rate-limit work (phase 2); the only sync change is "skip
+expired/suspended licenses".
+
+**A. Database (one backwards-compatible migration, then backfill)**
+- New: `tenants`, `revizto_licenses`, `tenant_licenses` (name, slots, expiry,
+  state), `license_members`; `users.is_operator`; `users.current_license_id`
+  (next to today's `current_project_id`).
+- Add `tenant_id` / `tenant_license_id` to `projects`, `invites`,
+  `invite_links`, `audit_log`; add `projects.sync_active` with the partial
+  unique index on `acc_project_id`. Child tables (`sync_map`, `status_map`,
+  `type_map`, `acc_status_map`, `user_map`, `auto_sync_filters`,
+  `acc_issue_numbers`) already hang off `project_id` and inherit.
+- `app_settings` (sync paused, 24/7 polling, last full check) becomes per license
+  plus an operator-level global pause.
+- **Backfill:** today's data becomes company #1 with one license (slots and expiry
+  from the current placeholders in `licenseTerms.js`: 5 and 2027-07-15), bound to
+  the Revizto license already stored on its projects; today's primary license
+  admin becomes account owner + license admin; other license admins become
+  license admins; everyone else a member; `project_members` unchanged.
+  `users.role` is kept read-only until phase 1 ships, then dropped.
+
+**B. Access layer** (`services/access.js`, `membership.js`,
+`currentProject.js`, `routes/auth.js`)
+- `getAccess(userId, licenseId)`: roles come from `license_members` +
+  `project_members` for the *active license*; "license admins see every project"
+  becomes "see every project **of their license**".
+- Session carries the active license; `requireLogin` loads it and refuses a
+  license the person isn't a member of; no route accepts a license/company id as
+  scope. The Revizto license-role check (pending/denied flow) runs per license.
+- One `licenseState()` function (active / expired-greyed / gone / suspended)
+  used by access, the drop-down, scheduler, webhooks and webhook-health.
+
+**C. Routes and queries to scope** (every one gets a cross-license test)
+`routes/index.js` (projects list, pairing, status/type maps, issues board,
+settings), `routes/license.js` (admins, projects, archive/delete, slots),
+`routes/team.js` (team, invites, links, owner handoff), `routes/auth.js`
+(sign-in gate, invites), plus the services with project-spanning reads:
+`dashboards.js`, `auditLog.js` / Activity Log, `currentProject.js`,
+`licenseTerms.js` (slots counted and locked **per license**).
+
+**D. Pairing**
+Licenses list = the company's own; the Revizto/ACC project lists are as today;
+admin checks unchanged (project admin of both sides). New: the active-ACC-project
+guard, `sync_active` upkeep, the "already paired" messages, and the
+re-pair-after-expiry flow.
+
+**E. Pages**
+- `nav.js`: **license drop-down** above the project drop-down (anyone in 2+
+  licenses); greyed entry + the expired/suspended message page.
+- **License Administration**: per-license slots/expiry, admins and members, projects.
+- **Project Setup**, **Team**, **Dashboards**, **Activity Log**, **My Connections**:
+  scoped to the active license.
+- New **operator console**: create a company and its first license (name, Revizto
+  license, slots, expiry, timezone), invite the account owner, add further
+  licenses, renew/extend, change slots, suspend, list expired.
+
+**F. Sync touch-points (minimal)**
+`pollAllProjects` skips projects whose license isn't active (or whose pairing is
+paused by the duplicate guard); the ACC webhook handler and `webhookHealth` ignore
+inactive ones; token keep-alive continues; the first sync after any pause runs the
+reconcile pass.
+
+**G. Security and tests**
+Row-level security on `app.license_id`; CI harness that seeds two companies and
+three licenses (one expired, one suspended) and asserts, for every route, that a
+session of one license gets 403/404 or empty lists for another's ids.
+
+**H. Rollout**
+Ship migration + backfill first (no behaviour change, single company); then the
+scoped access layer behind a "multi-license" switch that stays off until a second
+license exists; run the leak tests in CI and on a staging copy; then turn it on
+and create company #2 from the operator console. Rollback = switch off (data is
+unchanged). **Exit:** two seeded companies cannot see or affect each other
+through any page or API route, and slot/expiry/suspension behave as specified.
+
+**Rough size:** large — most of the work is the careful scoping of existing
+routes and tests (C, G), not new features.
 
 ## 9. Open decisions (need the owner's call)
 
