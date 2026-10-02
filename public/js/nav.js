@@ -373,6 +373,8 @@ async function loadNav() {
     // Who's signed in + Sign out, bottom left of the sidebar. Built with
     // textContent — the email is user data.
     const footer = document.getElementById('sidebar-footer');
+    // Light / dark switch — for everyone, signed in or not (js/theme.js).
+    if (window.theme) window.theme.mountSwitch(footer);
     if (user) {
       // Their name when known (email on hover), else the email.
       const email = document.createElement('div');

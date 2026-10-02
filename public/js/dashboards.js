@@ -26,8 +26,8 @@ const FIELD_SERIES = [
   { key: 'watchers', label: 'Watchers', color: '#1baf7a' },
   { key: 'priority', label: 'Priority', color: '#eda100' },
   { key: 'deadline', label: 'Due date', color: '#e87ba4' },
-  { key: 'title', label: 'Title', color: '#008300' },
-  { key: 'comment', label: 'Comments', color: '#4a3aa7' },
+  { key: 'title', label: 'Title', get color() { return _themed('#008300'); } },
+  { key: 'comment', label: 'Comments', get color() { return _themed('#4a3aa7'); } },
   { key: 'attachment', label: 'Attachments', color: '#e34948' },
 ];
 // "Issues synced" by person: people take the first five categorical slots
@@ -38,8 +38,8 @@ const FIELD_SERIES = [
 // for lines); three sit under 3:1 on white, so this view carries legend
 // totals, a per-period tooltip and a table as relief.
 const PERSON_SLOTS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4'];
-const OTHER_PEOPLE = { key: 'others', label: 'Other people', color: '#008300' };
-const AUTO_SYNC = { key: 'auto', label: 'Auto-sync', color: '#4a3aa7' };
+const OTHER_PEOPLE = { key: 'others', label: 'Other people', get color() { return _themed('#008300'); } };
+const AUTO_SYNC = { key: 'auto', label: 'Auto-sync', get color() { return _themed('#4a3aa7'); } };
 const NOT_RECORDED = { key: 'unknown', label: 'Not recorded', color: '#e34948' };
 // Total / By person toggle, remembered per browser (a viewer convenience).
 let timelineView = (() => {
@@ -52,7 +52,23 @@ let timelineView = (() => {
 let timelineState = null; // what the per-period card needs to redraw on a toggle
 // Chart id prefix -> which edits it shows (audit_log.direction).
 const FIELD_CHARTS = { 'fields-revizto': 'revizto_to_acc', 'fields-acc': 'acc_to_revizto' };
-const INK = { primary: '#12161c', secondary: '#52514e', muted: '#6b7280', grid: '#e8ebf0', surface: '#ffffff' };
+// Chart ink follows the theme (css/app.css --chart-* / --muted / --surface).
+// Read when a chart is drawn; the charts redraw on a theme change (below).
+const _cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+// The two darkest series colours need a lighter twin on the dark theme to stay
+// visible (the rest read fine on both surfaces).
+const DARK_TWINS = { '#4a3aa7': '#9a8cf0', '#008300': '#2fae4e' };
+function _themed(hex) {
+  return document.documentElement.getAttribute('data-theme') === 'dark' || (window.theme && window.theme.effective() === 'dark') ? DARK_TWINS[hex] || hex : hex;
+}
+const INK = {
+  get primary() { return _cssVar('--chart-ink'); },
+  get secondary() { return _cssVar('--chart-secondary'); },
+  get muted() { return _cssVar('--muted'); },
+  get grid() { return _cssVar('--chart-grid'); },
+  get surface() { return _cssVar('--surface'); },
+};
+window.addEventListener('themechange', () => render());
 // [singular, plural] — tooltip rows read "1 attachment", "3 attachments".
 const ACTION_LABELS = { field_change: ['field change', 'field changes'], comment: ['comment', 'comments'], attachment: ['attachment', 'attachments'] };
 const DEFAULT_MONTHS = 3;

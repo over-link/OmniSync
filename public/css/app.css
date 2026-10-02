@@ -13,9 +13,100 @@
   --warning-dim: #fbf0dd;
   --danger: #b42318;
   --danger-dim: #fcebe9;
+  /* Text on a --blueprint / --danger fill, the greyed-out look, and the
+     few other colours that used to be hard-coded. */
+  --on-accent: #ffffff;
+  --blueprint-hover: #1e46a8;
+  --danger-hover: #8f1c13;
+  --disabled-bg: #c3c8d1;
+  --disabled-fg: #ffffff;
+  --disabled-link: #c3c8d1;
+  --badge-neutral-bg: #eceef2;
+  --status-off: #9aa1ad;
+  --status-offline: #f2b705;
+  --hover-wash: rgba(0, 0, 0, 0.08);
+  --overlay: rgba(18, 22, 28, 0.45);
+  --shadow: rgba(0, 0, 0, 0.15);
+  --success-glow: rgba(31, 122, 77, 0.55);
+  --success-glow-0: rgba(31, 122, 77, 0);
+  /* Charts (js/dashboards.js reads these). */
+  --chart-ink: #12161c;
+  --chart-secondary: #52514e;
+  --chart-grid: #e8ebf0;
+  color-scheme: light;
   --font-sans: "IBM Plex Sans", -apple-system, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --radius: 8px;
+}
+
+/* ── Dark theme ─────────────────────────────────────────────────── */
+:root[data-theme="dark"] {
+  --ink: #e6e9ee;
+  --paper: #0e1116;
+  --surface: #161b22;
+  --line: #2b323c;
+  --muted: #9aa4b2;
+  --blueprint: #7aa2ff;
+  --blueprint-dim: #1b2744;
+  --success: #4cc38a;
+  --success-dim: #12301f;
+  --warning: #e3a64a;
+  --warning-dim: #38290f;
+  --danger: #f2776c;
+  --danger-dim: #3b1a17;
+  --on-accent: #0b1220;
+  --blueprint-hover: #9bb9ff;
+  --danger-hover: #f79a91;
+  --disabled-bg: #2a313b;
+  --disabled-fg: #6b7482;
+  --disabled-link: #4a5260;
+  --badge-neutral-bg: #232a33;
+  --status-off: #6b7482;
+  --status-offline: #f2b705;
+  --hover-wash: rgba(255, 255, 255, 0.1);
+  --overlay: rgba(0, 0, 0, 0.62);
+  --shadow: rgba(0, 0, 0, 0.55);
+  --success-glow: rgba(76, 195, 138, 0.55);
+  --success-glow-0: rgba(76, 195, 138, 0);
+  --chart-ink: #e6e9ee;
+  --chart-secondary: #b3bac5;
+  --chart-grid: #2b323c;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ink: #e6e9ee;
+    --paper: #0e1116;
+    --surface: #161b22;
+    --line: #2b323c;
+    --muted: #9aa4b2;
+    --blueprint: #7aa2ff;
+    --blueprint-dim: #1b2744;
+    --success: #4cc38a;
+    --success-dim: #12301f;
+    --warning: #e3a64a;
+    --warning-dim: #38290f;
+    --danger: #f2776c;
+    --danger-dim: #3b1a17;
+    --on-accent: #0b1220;
+    --blueprint-hover: #9bb9ff;
+    --danger-hover: #f79a91;
+    --disabled-bg: #2a313b;
+    --disabled-fg: #6b7482;
+    --disabled-link: #4a5260;
+    --badge-neutral-bg: #232a33;
+    --status-off: #6b7482;
+    --status-offline: #f2b705;
+    --hover-wash: rgba(255, 255, 255, 0.1);
+    --overlay: rgba(0, 0, 0, 0.62);
+    --shadow: rgba(0, 0, 0, 0.55);
+    --success-glow: rgba(76, 195, 138, 0.55);
+    --success-glow-0: rgba(76, 195, 138, 0);
+    --chart-ink: #e6e9ee;
+    --chart-secondary: #b3bac5;
+    --chart-grid: #2b323c;
+    color-scheme: dark;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -76,8 +167,8 @@ body {
   border-radius: 6px;
 }
 .sidebar-link:hover:not(.disabled) { background: var(--blueprint-dim); color: var(--blueprint); }
-.sidebar-link.active { background: var(--blueprint); color: #fff; }
-.sidebar-link.disabled { color: #c3c8d1; cursor: not-allowed; }
+.sidebar-link.active { background: var(--blueprint); color: var(--on-accent); }
+.sidebar-link.disabled { color: var(--disabled-link); cursor: not-allowed; }
 /* "Admins" section (license admins, project admins) under the main links. */
 .sidebar-section { display: flex; flex-direction: column; gap: 0.15rem; margin-top: 0.9rem; padding-top: 0.9rem; border-top: 1px solid var(--line); }
 .sidebar-section-label {
@@ -217,7 +308,7 @@ body {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 6px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 4px 14px var(--shadow);
   padding: 0.35rem;
   z-index: 20;
   display: flex;
@@ -417,7 +508,7 @@ input[type="text"], input[type="email"], select { min-width: 220px; }
   padding: 0.1rem 0.3rem;
   border-radius: 50%;
 }
-.chip-remove:hover { background: rgba(0, 0, 0, 0.08); }
+.chip-remove:hover { background: var(--hover-wash); }
 .chipbox-input {
   flex: 1 1 160px;
   min-width: 160px;
@@ -438,15 +529,15 @@ button, .btn {
   border: none;
   cursor: pointer;
   background: var(--blueprint);
-  color: #fff;
+  color: var(--on-accent);
   text-decoration: none;
   display: inline-block;
   transition: background 0.15s ease;
 }
-.btn:hover { background: #1e46a8; }
+.btn:hover { background: var(--blueprint-hover); }
 .btn.secondary { background: var(--surface); color: var(--blueprint); border: 1px solid var(--blueprint); }
 .btn.secondary:hover { background: var(--blueprint-dim); }
-.btn:disabled, .btn:disabled:hover { background: #c3c8d1; color: #fff; cursor: not-allowed; }
+.btn:disabled, .btn:disabled:hover { background: var(--disabled-bg); color: var(--disabled-fg); cursor: not-allowed; }
 
 /* ── Status badges ──────────────────────────────────────────────── */
 .badge {
@@ -466,7 +557,7 @@ button, .btn {
   border-radius: 50%;
   background: currentColor;
 }
-.badge-neutral { background: #eceef2; color: var(--muted); }
+.badge-neutral { background: var(--badge-neutral-bg); color: var(--muted); }
 .badge-success { background: var(--success-dim); color: var(--success); }
 .badge-success::before { animation: pulse 2s ease-in-out infinite; }
 .badge-warning { background: var(--warning-dim); color: var(--warning); }
@@ -554,17 +645,17 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
   animation: pairing-pulse 1.8s infinite;
 }
 @keyframes pairing-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(31, 122, 77, 0.55); }
-  70% { box-shadow: 0 0 0 7px rgba(31, 122, 77, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(31, 122, 77, 0); }
+  0% { box-shadow: 0 0 0 0 var(--success-glow); }
+  70% { box-shadow: 0 0 0 7px var(--success-glow-0); }
+  100% { box-shadow: 0 0 0 0 var(--success-glow-0); }
 }
 /* The sidebar's role badge: its dot shows the connection (nav.js) —
    pulsing green = Revizto and ACC connected, gray = one isn't, yellow =
    no internet. */
 .status-badge::before { width: 7px; height: 7px; }
 .status-badge[data-status="connected"]::before { background: var(--success); animation: pairing-pulse 1.8s infinite; }
-.status-badge[data-status="disconnected"]::before { background: #9aa1ad; }
-.status-badge[data-status="offline"]::before { background: #f2b705; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15); }
+.status-badge[data-status="disconnected"]::before { background: var(--status-off); }
+.status-badge[data-status="offline"]::before { background: var(--status-offline); box-shadow: 0 0 0 1px var(--shadow); }
 
 .hint { color: var(--muted); font-size: 0.78rem; }
 
@@ -793,7 +884,7 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
   align-items: center;
   justify-content: center;
 }
-.accordion-item.open .accordion-step { color: #fff; background: var(--blueprint); border-color: var(--blueprint); }
+.accordion-item.open .accordion-step { color: var(--on-accent); background: var(--blueprint); border-color: var(--blueprint); }
 .accordion-item.open .accordion-header { color: var(--blueprint); border-bottom: 1px solid var(--line); }
 .accordion-caret { margin-left: auto; color: var(--muted); font-size: 1rem; line-height: 1; transition: transform 0.15s ease; }
 .accordion-item.open .accordion-caret { transform: rotate(180deg); color: var(--blueprint); }
@@ -898,7 +989,7 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
   cursor: pointer;
 }
 .dash-preset:hover, .dash-view-btn:hover { background: var(--blueprint-dim); color: var(--blueprint); }
-.dash-preset.active, .dash-view-btn.active { background: var(--blueprint); border-color: var(--blueprint); color: #fff; }
+.dash-preset.active, .dash-view-btn.active { background: var(--blueprint); border-color: var(--blueprint); color: var(--on-accent); }
 .dash-chart-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
 .dash-view-btn { padding: 0.3rem 0.65rem; font-size: 0.8rem; }
 #dash-date-hint { flex-basis: 100%; margin: 0; }
@@ -937,7 +1028,7 @@ details summary { cursor: pointer; font-weight: 600; color: var(--blueprint); ma
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 6px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 4px 14px var(--shadow);
   padding: 0.45rem 0.6rem;
   font-size: 0.8rem;
   color: var(--ink);
@@ -1016,7 +1107,7 @@ tr.pending-row td:not(:last-child) { opacity: 0.55; }
   overflow-y: auto;
   background: var(--surface);
   border-left: 1px solid var(--line);
-  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.12);
+  box-shadow: -12px 0 32px var(--shadow);
   padding: 1.5rem;
 }
 .side-panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; }
@@ -1042,7 +1133,7 @@ tr.pending-row td:not(:last-child) { opacity: 0.55; }
   position: fixed;
   inset: 0;
   z-index: 100;
-  background: rgba(18, 22, 28, 0.45);
+  background: var(--overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1051,7 +1142,7 @@ tr.pending-row td:not(:last-child) { opacity: 0.55; }
 .modal {
   background: var(--surface);
   border-radius: var(--radius);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 12px 32px var(--shadow);
   padding: 1.4rem 1.5rem 1.2rem;
   max-width: 420px;
   width: 100%;
@@ -1064,7 +1155,7 @@ tr.pending-row td:not(:last-child) { opacity: 0.55; }
 .modal .result-text { margin: 0.4rem 0 0.8rem; min-height: 1.2em; color: var(--danger); }
 .modal-actions { display: flex; gap: 0.5rem; }
 .btn.btn-danger { background: var(--danger); }
-.btn.btn-danger:hover { background: #8f1c13; }
+.btn.btn-danger:hover { background: var(--danger-hover); }
 
 /* ── Row "⋯" menu (License Administration project actions) ────────── */
 .row-menu { position: relative; display: inline-block; margin-left: 0.4rem; vertical-align: middle; }
@@ -1086,7 +1177,7 @@ button.row-menu-btn[aria-expanded="true"] { background: var(--paper); border-col
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 8px 24px var(--shadow);
   padding: 0.3rem 0;
   text-align: left;
 }
@@ -1127,3 +1218,21 @@ button.row-menu-item.danger { color: var(--danger); }
 .select-wrap .spinner { position: absolute; right: 30px; top: 50%; margin-top: -7px; pointer-events: none; }
 .select-wrap select:disabled { background: var(--paper); color: var(--muted); cursor: progress; }
 .pairing-loading { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--muted); margin: 0.4rem 0 0; }
+
+/* ── Theme switch (js/theme.js; sidebar footer) ─────────────────── */
+.theme-switch { display: flex; align-self: stretch; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin-bottom: 0.35rem; }
+.theme-switch button {
+  flex: 1;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.28rem 0.2rem;
+  border: none;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+}
+.theme-switch button + button { border-left: 1px solid var(--line); }
+.theme-switch button:hover { background: var(--blueprint-dim); color: var(--blueprint); }
+.theme-switch button[aria-pressed="true"] { background: var(--blueprint); color: var(--on-accent); }
+.theme-switch button:focus-visible { outline: 2px solid var(--blueprint); outline-offset: -2px; }
