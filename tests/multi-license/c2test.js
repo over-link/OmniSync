@@ -125,7 +125,7 @@ const EMAILS = ['owner@x.com', 'adm2@x.com', 'pa@x.com', 'std@x.com', 'outsider@
 
     // ── B. second license
     const t2 = (await q("INSERT INTO tenants(name, account_owner_user_id) VALUES ('Company B', $1) RETURNING id", [U.adminb]))[0].id;
-    const lB = (await q("INSERT INTO tenant_licenses(tenant_id, name, slot_capacity, expires_on) VALUES ($1,'B license', 5, '2030-01-01') RETURNING id", [t2]))[0].id;
+    const lB = (await q("INSERT INTO tenant_licenses(tenant_id, name, slot_capacity, starts_on, expires_on) VALUES ($1,'B license', 5, '2020-01-01', '2030-01-01') RETURNING id", [t2]))[0].id;
     const lA = (await q('SELECT id FROM tenant_licenses WHERE tenant_id <> $1 LIMIT 1', [t2]))[0].id;
     await q('DELETE FROM license_members WHERE user_id = ANY($1)', [[U.adminb, U.memberb]]); // new people, only in B
     await q("INSERT INTO license_members(tenant_license_id, user_id, role) VALUES ($1,$2,'license_admin'), ($1,$3,'member'), ($1,$4,'member')", [lB, U.adminb, U.memberb, U.dual]);

@@ -172,7 +172,7 @@ const ok = (name, cond, extra) => { results.push([name, !!cond]); console.log((c
 
     // a second license that was never paused is not caught up
     const t2id = (await q("INSERT INTO tenants(name, timezone) VALUES ('B', $1) RETURNING id", [zNormal]))[0].id;
-    const lB = (await q("INSERT INTO tenant_licenses(tenant_id, name, slot_capacity, expires_on, settings_copied_at) VALUES ($1,'B lic',3,'2030-01-01', now()) RETURNING id", [t2id]))[0].id;
+    const lB = (await q("INSERT INTO tenant_licenses(tenant_id, name, slot_capacity, starts_on, expires_on, settings_copied_at) VALUES ($1,'B lic',3,'2020-01-01','2030-01-01', now()) RETURNING id", [t2id]))[0].id;
     await q("INSERT INTO projects(name, revizto_project_uuid, acc_hub_id, acc_project_id, owner_user_id, tenant_id, tenant_license_id) VALUES ('PB','rvb','hub','b.accb',$1,$2,$3)", [owner, t2id, lB]);
     await q('UPDATE tenants SET timezone = $2 WHERE id = $1', [lic.tenant_id, zNormal]);
     await q('UPDATE tenant_licenses SET sync_paused = true WHERE id = $1', [lic.id]);

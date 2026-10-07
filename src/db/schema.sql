@@ -679,7 +679,7 @@ BEGIN
     SELECT id INTO first_rl FROM revizto_licenses WHERE tenant_id = t_id ORDER BY id LIMIT 1;
 
     INSERT INTO tenant_licenses (tenant_id, name, revizto_license_id, slot_capacity, starts_on, expires_on)
-      VALUES (t_id, 'My license', first_rl, 5, CURRENT_DATE, DATE '2027-07-15') RETURNING id INTO l_id;
+      VALUES (t_id, 'My license', first_rl, 5, (now() AT TIME ZONE 'America/Los_Angeles')::date, DATE '2027-07-15') RETURNING id INTO l_id; -- today in the company's (default Pacific) timezone, like licenseState.js; CURRENT_DATE is UTC and made it 'not started' on Pacific evenings
 
     UPDATE projects SET tenant_id = t_id, tenant_license_id = l_id WHERE tenant_id IS NULL;
 

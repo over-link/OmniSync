@@ -137,7 +137,8 @@ function licenseCard(company, l) {
 function newLicenseForm(company) {
   const form = el('form', 'operator-terms hidden');
   form.noValidate = true;
-  const today = new Date().toISOString().slice(0, 10);
+  // Today in the COMPANY's timezone (the app judges a license's start in it) — not the browser's UTC date, which is already tomorrow on a Pacific evening.
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: company.timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const name = field('License name (unique in this company)', input('text', '', { maxLength: 120 }));
   const slots = field('Project slots', input('number', '5', { min: 0, max: 10000 }));
   const starts = field('Starts', input('date', today));
