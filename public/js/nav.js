@@ -187,7 +187,7 @@ async function switchLicense(licenseId) {
 }
 window.switchLicense = switchLicense;
 
-function _licenseLabel(l) {
+function _licenseOptionLabel(l) {
   const suffix = l.usable ? '' : l.phase === 'expired' ? ' (expired)' : l.phase === 'not_started' ? ' (not started)' : ' (suspended)';
   return `${l.name} · ${l.companyName}${suffix}`;
 }
@@ -207,7 +207,7 @@ function _licenseSwitcher(licenses, selectedId) {
   const select = document.createElement('select');
   select.id = 'sidebar-license-select';
   for (const l of licenses) {
-    const opt = new Option(_licenseLabel(l), l.id);
+    const opt = new Option(_licenseOptionLabel(l), l.id);
     if (!l.usable) opt.className = 'is-greyed';
     select.add(opt);
   }
