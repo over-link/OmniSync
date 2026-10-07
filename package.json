@@ -10,7 +10,8 @@
     "tokens:encrypt": "node src/db/encryptTokens.js",
     "tenancy:check": "node src/db/checkTenancy.js",
     "tenancy:repair": "node src/db/repairTenancy.js",
-    "platform:sync": "node src/db/platformSync.js"
+    "platform:sync": "node src/db/platformSync.js",
+    "webhook:secret": "node src/db/registerWebhookSecret.js"
   },
   "dependencies": {
     "axios": "^1.7.2",
