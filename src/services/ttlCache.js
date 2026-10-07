@@ -12,10 +12,14 @@
  */
 function createTtlCache(ttlMs) {
   const entries = new Map(); // key -> { at, promise }
+  const MAX_ENTRIES = 200; // expired entries are swept once the cache grows past this
   return {
     get(key, load, { fresh = false } = {}) {
       const hit = entries.get(key);
       if (!fresh && hit && Date.now() - hit.at < ttlMs) return hit.promise;
+      if (entries.size >= MAX_ENTRIES) {
+        for (const [k, e] of entries) if (Date.now() - e.at >= ttlMs) entries.delete(k);
+      }
       const promise = Promise.resolve().then(load);
       entries.set(key, { at: Date.now(), promise });
       promise.catch(() => {
@@ -25,6 +29,10 @@ function createTtlCache(ttlMs) {
     },
     clear() {
       entries.clear();
+    },
+    /** Drops every entry whose key satisfies `predicate(key)`. */
+    deleteWhere(predicate) {
+      for (const key of entries.keys()) if (predicate(key)) entries.delete(key);
     },
   };
 }

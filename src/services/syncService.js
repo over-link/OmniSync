@@ -11,6 +11,7 @@ const fieldMapping = require('./fieldMapping');
 const tokenStore = require('./tokenStore');
 const auditLog = require('./auditLog');
 const { createTtlCache } = require('./ttlCache');
+const issueReadCache = require('./issueReadCache');
 
 /**
  * Wraps an auditLog.record call so a logging failure (DB hiccup, etc.)
@@ -84,6 +85,7 @@ async function recordLink(projectId, reviztoIssueId, accIssueId, { linkedBy = nu
        linked_via = COALESCE(sync_map.linked_via, EXCLUDED.linked_via)`,
     [projectId, String(reviztoIssueId), accIssueId, linkedBy, via]
   );
+  issueReadCache.invalidate(projectId); // the Issues board / stats must not judge this link against an older list
   const { rows } = linkedBy ? await pool.query('SELECT email FROM users WHERE id = $1', [linkedBy]) : { rows: [] };
   await _audit({
     projectId,
@@ -119,6 +121,7 @@ function _isAccIssueGoneError(err) {
  */
 async function clearLink(projectId, reviztoIssueId) {
   await pool.query('DELETE FROM sync_map WHERE project_id = $1 AND revizto_issue_id = $2', [projectId, String(reviztoIssueId)]);
+  issueReadCache.invalidate(projectId);
 }
 
 // How long an ACC issue must look persistently gone (403/404, or absent
@@ -233,6 +236,15 @@ async function _handlePossibleAccIssueGone(userId, project, reviztoIssueId, accI
  * any pending "looks gone" flag left over from a past transient blip that
  * has since resolved itself.
  */
+/** Same as _clearAccIssueMissingFlag for many issues at once — one query, not one per issue. */
+async function _clearAccIssueMissingFlags(project, reviztoIssueIds) {
+  if (!reviztoIssueIds.length) return;
+  await pool.query(
+    'UPDATE sync_map SET acc_issue_missing_since = NULL WHERE project_id = $1 AND revizto_issue_id = ANY($2::text[]) AND acc_issue_missing_since IS NOT NULL',
+    [project.id, reviztoIssueIds.map(String)]
+  );
+}
+
 async function _clearAccIssueMissingFlag(project, reviztoIssueId) {
   await pool.query(
     'UPDATE sync_map SET acc_issue_missing_since = NULL WHERE project_id = $1 AND revizto_issue_id = $2 AND acc_issue_missing_since IS NOT NULL',
@@ -2270,23 +2282,33 @@ async function getIssuesBoard(userId, project) {
   // linked. null (not []) on failure, so a transient bulk-fetch error falls
   // back to the old per-issue GET below instead of wrongly treating every
   // linked issue as gone.
+  // The two full lists come from a 30-second shared read cache (the stats call
+  // asks for the same lists at the same moment); anything that changes a link
+  // clears it (services/issueReadCache.js).
   const [issues, linkRows, lookups, accIssues] = await Promise.all([
-    reviztoService.getIssues(userId, project.revizto_region, project.revizto_project_uuid),
+    issueReadCache.reviztoIssues(userId, project, () => reviztoService.getIssues(userId, project.revizto_region, project.revizto_project_uuid)),
     pool.query('SELECT revizto_issue_id, acc_issue_id, linked_at FROM sync_map WHERE project_id = $1', [project.id]).then((r) => r.rows),
     _loadFilterableFieldLookups(userId, project),
-    accService.getIssues(userId, project).catch(() => null),
+    issueReadCache.accIssues(userId, project, () => accService.getIssues(userId, project)).catch(() => null),
   ]);
   const isOwner = _isProjectOwner(userId, project);
   const linkMap = new Map(linkRows.map((r) => [String(r.revizto_issue_id), r.acc_issue_id]));
   const linkedAtById = new Map(linkRows.map((r) => [String(r.revizto_issue_id), r.linked_at]));
   const accIssueById = accIssues ? new Map(accIssues.map((i) => [i.id, i])) : null;
   if (accIssues) {
-    await _rememberAccIssueNumbers(project.id, accIssues);
-    await _backfillLinkedAt(project.id, accIssues);
-    await _backfillLinkedBy(project.id, accIssues);
+    // The numbers table is separate from sync_map's two backfills, so it runs
+    // alongside them; the two backfills touch the same rows and stay in order.
+    await Promise.all([
+      _rememberAccIssueNumbers(project.id, accIssues),
+      (async () => {
+        await _backfillLinkedAt(project.id, accIssues);
+        await _backfillLinkedBy(project.id, accIssues);
+      })(),
+    ]);
   }
 
   const board = [];
+  const foundInAcc = []; // Revizto issue ids whose ACC issue is in the bulk list: cleared in one query after the loop
   for (const issue of issues) {
     const accIssueId = linkMap.get(String(issue.id)) || null;
     let acc = null;
@@ -2300,7 +2322,7 @@ async function getIssuesBoard(userId, project) {
         const accIssue = accIssueById.get(accIssueId);
         if (accIssue) {
           acc = { id: accIssueId, displayId: accIssue.displayId ?? accIssueId, title: accIssue.title, status: accIssue.status };
-          await _clearAccIssueMissingFlag(project, issue.id);
+          foundInAcc.push(issue.id);
         } else {
           // Not in the bulk list — the ACC issue MIGHT no longer exist, or
           // this one bulk snapshot might just be incomplete/stale. Same
@@ -2353,6 +2375,7 @@ async function getIssuesBoard(userId, project) {
       acc,
     });
   }
+  await _clearAccIssueMissingFlags(project, foundInAcc);
   return board;
 }
 
@@ -2419,8 +2442,8 @@ async function autoLinkMatchingIssues(userId, project) {
  */
 async function getSyncStats(userId, project) {
   const [reviztoIssues, accIssues, syncRows] = await Promise.all([
-    reviztoService.getIssues(userId, project.revizto_region, project.revizto_project_uuid),
-    accService.getIssues(userId, project).catch(() => []),
+    issueReadCache.reviztoIssues(userId, project, () => reviztoService.getIssues(userId, project.revizto_region, project.revizto_project_uuid)),
+    issueReadCache.accIssues(userId, project, () => accService.getIssues(userId, project)).catch(() => []),
     pool.query('SELECT revizto_issue_id, last_error FROM sync_map WHERE project_id = $1', [project.id]).then((r) => r.rows),
   ]);
   const errorRows = syncRows.filter((r) => r.last_error);
@@ -2766,6 +2789,7 @@ module.exports = {
   clearLink,
   unlinkIssue,
   getSyncStats,
+  _clearAccIssueMissingFlags, // exported for the tests only
   pollAccCommentsForProject,
   pollAccAttachmentsForProject,
   labelAuditEntries,

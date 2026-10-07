@@ -9,6 +9,7 @@ const axios = require('axios');
 const FormData = require('form-data');
 const { getValidReviztoToken } = require('./authManager');
 const { createTtlCache } = require('./ttlCache');
+const { fetchAllPages } = require('./pagedFetch');
 
 function baseUrl(region) {
   return `https://api.${region}.revizto.com/v5`;
@@ -61,19 +62,14 @@ async function request(userId, region, method, url, options = {}) {
 const ADDITIONAL_FIELDS = ['appendClashAndLocationFields'];
 
 async function getIssues(userId, region, projectUuid, filters = {}) {
-  const allIssues = [];
-  let page = 0;
-  let totalPages = 1;
-  while (page < totalPages) {
+  // The first page says how many pages there are; the rest are read a few at a
+  // time (services/pagedFetch.js), in page order.
+  return fetchAllPages(async (page) => {
     const response = await request(userId, region, 'POST', `/project/${projectUuid}/issue-filter/filter`, {
       body: { page, limit: 100, sendFullIssueData: true, alwaysFiltersDTO: [], additionalFields: ADDITIONAL_FIELDS, ...filters },
     });
-    const issues = response.data?.data || [];
-    allIssues.push(...issues);
-    totalPages = response.data?.pages || 1;
-    page++;
-  }
-  return allIssues;
+    return { items: response.data?.data || [], totalPages: response.data?.pages || 1 };
+  });
 }
 
 /**

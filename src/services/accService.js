@@ -9,6 +9,7 @@ const axios = require('axios');
 const { getValidAccToken } = require('./authManager');
 const { APS_BASE } = require('./accAuth');
 const { createTtlCache } = require('./ttlCache');
+const { fetchAllPages } = require('./pagedFetch');
 
 function _containerId(project) {
   return project.acc_project_id.startsWith('b.') ? project.acc_project_id.slice(2) : project.acc_project_id;
@@ -24,19 +25,16 @@ async function _client(userId, project) {
 
 async function getIssues(userId, project, filters = {}) {
   const { token, baseURL } = await _client(userId, project);
-  const issues = [];
-  let offset = 0;
   const limit = 100;
-  while (true) {
+  // The first page reports the total; the remaining pages are read a few at a
+  // time (services/pagedFetch.js), in order.
+  return fetchAllPages(async (page) => {
     const { data } = await axios.get(`${baseURL}/issues`, {
       headers: { Authorization: `Bearer ${token}` },
-      params: { limit, offset, ...filters },
+      params: { limit, offset: page * limit, ...filters },
     });
-    issues.push(...(data.results || []));
-    if (issues.length >= (data.pagination?.totalResults || 0)) break;
-    offset += limit;
-  }
-  return issues;
+    return { items: data.results || [], totalPages: Math.ceil((data.pagination?.totalResults || 0) / limit) };
+  });
 }
 
 /**
