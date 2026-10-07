@@ -18,7 +18,8 @@
  */
 const crypto = require('crypto');
 const { promisify } = require('util');
-const pool = require('../db/pool');
+// Unrestricted on purpose: db/pool.js (row-level security) — this module looks across licenses / holds per-user secrets.
+const pool = require('../db/pool').admin;
 
 const scrypt = promisify(crypto.scrypt);
 const SCRYPT = { N: 16384, r: 8, p: 1, keyLen: 64 };

@@ -14,7 +14,8 @@
  * so "assign up to your own role, manage only those below it" is just a
  * rank comparison.
  */
-const pool = require('../db/pool');
+// Unrestricted on purpose: db/pool.js (row-level security) — this module looks across licenses / holds per-user secrets.
+const pool = require('../db/pool').admin;
 const membership = require('./membership');
 const licenseState = require('./licenseState');
 

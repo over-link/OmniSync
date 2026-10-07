@@ -84,7 +84,8 @@ const EMAILS = ['op@x.com', 'adma@x.com', 'admb@x.com'];
     proc.stdout.on('data', (d) => (log += d));
     proc.stderr.on('data', (d) => (log += d));
     for (let i = 0; i < 40; i++) { try { await fetch(`http://localhost:${PORT}/auth/me`); break; } catch { await wait(500); } }
-    await wait(1500); // the startup refresh
+    // the startup refresh (after the RLS self-test, when RLS_MODE=on): wait until it has run, up to 30 s
+    for (let i = 0; i < 60 && !(await q('SELECT 1 FROM projects WHERE id = $1 AND sync_active', [P1])).length; i++) await wait(500);
 
     const session = async (userId) => {
       const u = (await q('SELECT id, email, role, password_version FROM users WHERE id = $1', [userId]))[0];
@@ -187,6 +188,7 @@ const EMAILS = ['op@x.com', 'adma@x.com', 'admb@x.com'];
     ok('9. the partial unique index rejects a second active project on the same ACC project (even by direct SQL)', dbRefused);
     ok('9. no ACC project is held by two active projects', (await q('SELECT 1 FROM projects WHERE sync_active GROUP BY acc_project_id HAVING count(*) > 1')).length === 0);
 
+    if (process.env.RLS_MODE === 'on') ok('(RLS on) the restricted role was never silently refused a query that should be classified', !log.includes('[rls] The restricted role was refused'), log.split('\n').filter((l) => l.includes('[rls] The restricted role was refused')).join('\n'));
     const failed = results.filter(([, p]) => !p);
     console.log(`\n${results.length - failed.length}/${results.length} passed`);
     if (/Unhandled error/.test(log)) console.log('NOTE: server logged an unhandled error:\n' + log.split('\n').filter((l) => /Unhandled/.test(l)).slice(0, 3).join('\n'));

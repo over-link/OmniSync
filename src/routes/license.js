@@ -76,12 +76,13 @@ router.get('/api/license/admins', requireLicenseAdmin, async (req, res) => {
 router.post('/api/license/admins', requireLicenseAdmin, async (req, res) => {
   const email = String(req.body.email || '').toLowerCase().trim();
   if (!email || !email.includes('@')) return res.status(400).json({ error: 'Enter a valid email.' });
-  const { rows: existing } = await pool.query('SELECT id, role FROM users WHERE email = $1', [email]);
+  // accounts are global (one email, many licenses): looked up / created on the unrestricted pool — db/pool.js
+  const { rows: existing } = await pool.admin.query('SELECT id, role FROM users WHERE email = $1', [email]);
   if (existing[0]) {
     const { rows: owner } = await pool.query('SELECT 1 FROM tenants WHERE id = $1 AND account_owner_user_id = $2', [req.access.tenantId, existing[0].id]);
     if (owner.length || existing[0].role === 'primary_license_admin') return res.status(400).json({ error: "That's the primary license admin." });
   }
-  const { rows } = await pool.query(
+  const { rows } = await pool.admin.query(
     `INSERT INTO users (email, role) VALUES ($1, 'license_admin')
      ON CONFLICT (email) DO UPDATE SET role = 'license_admin',
        license_role_verified_at = CASE WHEN users.role = 'license_admin' THEN users.license_role_verified_at END,
@@ -127,7 +128,8 @@ router.delete('/api/license/admins/:userId', requireLicenseAdmin, async (req, re
   );
   if (!rows[0]) return res.status(404).json({ error: "That person isn't a license admin (the primary license admin can't be removed)." });
   // The older global copy: lowered only if they're no longer a license admin anywhere.
-  await pool.query(
+  // (looks across ALL licenses, so it runs on the unrestricted pool — a restricted one would only see this license's memberships)
+  await pool.admin.query(
     `UPDATE users SET role = 'member' WHERE id = $1 AND role = 'license_admin'
        AND NOT EXISTS (SELECT 1 FROM license_members WHERE user_id = $1 AND role = 'license_admin')`,
     [req.params.userId]

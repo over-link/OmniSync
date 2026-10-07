@@ -180,7 +180,9 @@ const EMAILS = ['owner@x.com', 'adm2@x.com', 'pa@x.com', 'std@x.com', 'outsider@
     ok('B. removing a license admin makes them a plain member of THAT license', rm.status === 200 && (await q('SELECT role FROM license_members WHERE user_id=$1', [newId]))[0].role === 'member' && (await q('SELECT role FROM users WHERE id=$1', [newId]))[0].role === 'member');
     ok("B. the company's account owner can't be removed", (await N(C.adm2, `/api/license/admins/${U.owner}`, { method: 'DELETE' })).status === 404);
     ok('B. nobody was swept into the other license by those writes', Number((await q('SELECT count(*) FROM license_members WHERE tenant_license_id = $1', [lB]))[0].count) === 3);
-    ok('B. the new code logged no server errors', !/Error|error:|at .*\.js/.test(newP.getLog().split('\n').filter((l) => !/blocked in test|fake 404|No matching|SMTP|\[auth\]|\[license\]|\[webhook\]|\[team\]/.test(l)).join('\n')), newP.getLog().slice(-400));
+    ok('B. the new code logged no server errors', !/Error|error:|at .*\.js/.test(newP.getLog().split('\n').filter((l) => !/blocked in test|fake 404|No matching|SMTP|\[auth\]|\[license\]|\[webhook\]|\[team\]/.test(l)).join('\n')), newP.getLog().slice(-400))
+    if (process.env.RLS_MODE === 'on') ok('B. (RLS on) the restricted role was never silently refused a query that should be classified', !/\[rls\] The restricted role was refused/.test(newP.getLog()), (newP.getLog().match(/\[rls\] The restricted role was refused[^\n]*/g) || []).join('\n'));
+    if (process.env.SHOW_SERVER_LOG) console.log('SERVER LOG:\n' + newP.getLog().slice(-6000));;
   } catch (err) {
     console.error('TEST ERROR', err);
     results.push(['harness', false]);

@@ -13,7 +13,8 @@
 const express = require('express');
 const path = require('path');
 const router = express.Router();
-const pool = require('../db/pool');
+// Unrestricted on purpose: db/pool.js (row-level security) — this module looks across licenses / holds per-user secrets.
+const pool = require('../db/pool').admin;
 const { requireOperator } = require('./auth');
 const emailService = require('../services/emailService');
 const licenseState = require('../services/licenseState');

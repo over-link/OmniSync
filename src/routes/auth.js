@@ -103,11 +103,21 @@ function _blockedByLimit(req, res) {
   return true;
 }
 
+/**
+ * Hands the request on inside its license's database scope (db/pool.js): from here the
+ * route's queries run as the restricted role, which sees only the open license's rows
+ * (RLS_MODE=on; otherwise this just calls next()).
+ */
+function _next(req, next) {
+  if (req.operatorOnly || !req.access?.licenseId) return next();
+  return pool.runScoped(req.access.licenseId, next);
+}
+
 async function requireLogin(req, res, next) {
   try {
     if (!(await _sessionUser(req))) return _sessionEnded(req, res);
     if (_blockedByLimit(req, res)) return;
-    next();
+    _next(req, next);
   } catch (err) {
     next(err);
   }
@@ -137,7 +147,7 @@ function _requireAccess(allowed, deniedMessage) {
       if (!(await _sessionUser(req))) return _sessionEnded(req, res);
       if (_blockedByLimit(req, res)) return;
       if (!allowed(req)) return res.status(403).json({ error: deniedMessage });
-      next();
+      _next(req, next);
     } catch (err) {
       next(err);
     }
@@ -168,7 +178,7 @@ function requireProjectRole(minRole) {
       if (!access.hasProjectRole(req.access, req.params.id, minRole)) {
         return res.status(403).json({ error: minRole === 'project_admin' ? 'Project admin access required.' : 'No access to this project.' });
       }
-      next();
+      _next(req, next);
     } catch (err) {
       next(err);
     }

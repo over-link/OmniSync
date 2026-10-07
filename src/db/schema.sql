@@ -727,3 +727,121 @@ BEGIN
   END IF;
 END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS projects_acc_active_uq ON projects (acc_project_id) WHERE sync_active;
+
+-- ═══ Row-level security backstop (chunk 6) ═════════════════════════
+-- Additive and INERT until the app runs with RLS_MODE=on (db/pool.js): the app's
+-- normal database user bypasses RLS, so these policies change nothing for it.
+-- With RLS_MODE=on, requests inside a license run as the restricted role app_rls
+-- with app.license_id set to the open license, and these policies show it ONLY that
+-- license's rows — a query that forgets its license filter returns nothing of another
+-- license's. app_rls gets no access at all to tokens, sessions, password codes, app
+-- settings or Revizto licenses (those stay on the unrestricted pool), and may only
+-- INSERT into invites / read-and-add audit_log.
+DO $$
+DECLARE
+  s text := current_schema();
+  t text;
+  scoped text[] := ARRAY['tenants', 'tenant_licenses', 'license_members', 'users', 'projects', 'project_members',
+                         'sync_map', 'status_map', 'type_map', 'acc_status_map', 'user_map', 'auto_sync_filters',
+                         'acc_issue_numbers', 'invite_links', 'audit_log', 'invites'];
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_rls') THEN
+    CREATE ROLE app_rls NOLOGIN NOBYPASSRLS;
+  END IF;
+  -- The app's login role must be able to SET ROLE to it.
+  BEGIN
+    EXECUTE format('GRANT app_rls TO %I', current_user);
+  EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Could not grant app_rls to %: %', current_user, SQLERRM;
+  END;
+  EXECUTE format('GRANT USAGE ON SCHEMA %I TO app_rls', s);
+  FOREACH t IN ARRAY scoped LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+  END LOOP;
+  GRANT SELECT ON tenants TO app_rls;
+  GRANT SELECT, UPDATE ON tenant_licenses TO app_rls;
+  GRANT SELECT, INSERT, UPDATE, DELETE ON license_members, users, projects, project_members, sync_map, status_map, type_map, acc_status_map, user_map, auto_sync_filters, acc_issue_numbers, invite_links TO app_rls;
+  GRANT SELECT, INSERT ON audit_log TO app_rls;
+  GRANT INSERT ON invites TO app_rls;
+  EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %I TO app_rls', s);
+END $$;
+
+-- The open license, as app.license_id (NULL when unset -> every policy matches nothing).
+DROP POLICY IF EXISTS rls_license ON tenant_licenses;
+CREATE POLICY rls_license ON tenant_licenses FOR ALL TO app_rls
+  USING (id = NULLIF(current_setting('app.license_id', true), '')::int)
+  WITH CHECK (id = NULLIF(current_setting('app.license_id', true), '')::int);
+
+DROP POLICY IF EXISTS rls_license ON tenants;
+CREATE POLICY rls_license ON tenants FOR SELECT TO app_rls
+  USING (id = (SELECT l.tenant_id FROM tenant_licenses l WHERE l.id = NULLIF(current_setting('app.license_id', true), '')::int));
+
+DROP POLICY IF EXISTS rls_license ON license_members;
+CREATE POLICY rls_license ON license_members FOR ALL TO app_rls
+  USING (tenant_license_id = NULLIF(current_setting('app.license_id', true), '')::int)
+  WITH CHECK (tenant_license_id = NULLIF(current_setting('app.license_id', true), '')::int);
+
+DROP POLICY IF EXISTS rls_license ON projects;
+CREATE POLICY rls_license ON projects FOR ALL TO app_rls
+  USING (tenant_license_id = NULLIF(current_setting('app.license_id', true), '')::int)
+  WITH CHECK (tenant_license_id = NULLIF(current_setting('app.license_id', true), '')::int);
+
+-- People: only those who belong to the open license can be seen or changed; anyone can be
+-- created (a new account is created before it is invited into a license).
+DROP POLICY IF EXISTS rls_license_read ON users;
+CREATE POLICY rls_license_read ON users FOR SELECT TO app_rls
+  USING (EXISTS (SELECT 1 FROM license_members m WHERE m.user_id = users.id AND m.tenant_license_id = NULLIF(current_setting('app.license_id', true), '')::int));
+DROP POLICY IF EXISTS rls_license_update ON users;
+CREATE POLICY rls_license_update ON users FOR UPDATE TO app_rls
+  USING (EXISTS (SELECT 1 FROM license_members m WHERE m.user_id = users.id AND m.tenant_license_id = NULLIF(current_setting('app.license_id', true), '')::int))
+  WITH CHECK (EXISTS (SELECT 1 FROM license_members m WHERE m.user_id = users.id AND m.tenant_license_id = NULLIF(current_setting('app.license_id', true), '')::int));
+DROP POLICY IF EXISTS rls_license_insert ON users;
+CREATE POLICY rls_license_insert ON users FOR INSERT TO app_rls WITH CHECK (true);
+
+-- Everything that belongs to a project: visible only if the project is (projects has its own policy above).
+DROP POLICY IF EXISTS rls_project ON project_members;
+CREATE POLICY rls_project ON project_members FOR ALL TO app_rls
+  USING (EXISTS (SELECT 1 FROM projects p WHERE p.id = project_members.project_id))
+  WITH CHECK (EXISTS (SELECT 1 FROM projects p WHERE p.id = project_members.project_id));
+DROP POLICY IF EXISTS rls_project ON sync_map;
+CREATE POLICY rls_project ON sync_map FOR ALL TO app_rls
+  USING (EXISTS (SELECT 1 FROM projects p WHERE p.id = sync_map.project_id))
+  WITH CHECK (EXISTS (SELECT 1 FROM projects p WHERE p.id = sync_map.project_id));
+DROP POLICY IF EXISTS rls_project ON status_map;
+CREATE POLICY rls_project ON status_map FOR ALL TO app_rls
+  USING (EXISTS (SELECT 1 FROM projects p WHERE p.id = status_map.project_id))
+  WITH CHECK (EXISTS (SELECT 1 FROM projects p WHERE p.id = status_map.project_id));
+DROP POLICY IF EXISTS rls_project ON type_map;
+CREATE POLICY rls_project ON type_map FOR ALL TO app_rls
+  USING (EXISTS (SELECT 1 FROM projects p WHERE p.id = type_map.project_id))
+  WITH CHECK (EXISTS (SELECT 1 FROM projects p WHERE p.id = type_map.project_id));
+DROP POLICY IF EXISTS rls_project ON acc_status_map;
+CREATE POLICY rls_project ON acc_status_map FOR ALL TO app_rls
+  USING (EXISTS (SELECT 1 FROM projects p WHERE p.id = acc_status_map.project_id))
+  WITH CHECK (EXISTS (SELECT 1 FROM projects p WHERE p.id = acc_status_map.project_id));
+DROP POLICY IF EXISTS rls_project ON user_map;
+CREATE POLICY rls_project ON user_map FOR ALL TO app_rls
+  USING (EXISTS (SELECT 1 FROM projects p WHERE p.id = user_map.project_id))
+  WITH CHECK (EXISTS (SELECT 1 FROM projects p WHERE p.id = user_map.project_id));
+DROP POLICY IF EXISTS rls_project ON auto_sync_filters;
+CREATE POLICY rls_project ON auto_sync_filters FOR ALL TO app_rls
+  USING (EXISTS (SELECT 1 FROM projects p WHERE p.id = auto_sync_filters.project_id))
+  WITH CHECK (EXISTS (SELECT 1 FROM projects p WHERE p.id = auto_sync_filters.project_id));
+DROP POLICY IF EXISTS rls_project ON acc_issue_numbers;
+CREATE POLICY rls_project ON acc_issue_numbers FOR ALL TO app_rls
+  USING (EXISTS (SELECT 1 FROM projects p WHERE p.id = acc_issue_numbers.project_id))
+  WITH CHECK (EXISTS (SELECT 1 FROM projects p WHERE p.id = acc_issue_numbers.project_id));
+DROP POLICY IF EXISTS rls_project ON invite_links;
+CREATE POLICY rls_project ON invite_links FOR ALL TO app_rls
+  USING (EXISTS (SELECT 1 FROM projects p WHERE p.id = invite_links.project_id))
+  WITH CHECK (EXISTS (SELECT 1 FROM projects p WHERE p.id = invite_links.project_id));
+-- The Activity Log: rows of the open license's projects (rows whose project was deleted have no project: not shown).
+DROP POLICY IF EXISTS rls_project_read ON audit_log;
+CREATE POLICY rls_project_read ON audit_log FOR SELECT TO app_rls
+  USING (EXISTS (SELECT 1 FROM projects p WHERE p.id = audit_log.project_id));
+DROP POLICY IF EXISTS rls_project_insert ON audit_log;
+CREATE POLICY rls_project_insert ON audit_log FOR INSERT TO app_rls
+  WITH CHECK (project_id IS NULL OR EXISTS (SELECT 1 FROM projects p WHERE p.id = audit_log.project_id));
+-- Invitations: write-only (nothing reads them back).
+DROP POLICY IF EXISTS rls_invites_insert ON invites;
+CREATE POLICY rls_invites_insert ON invites FOR INSERT TO app_rls WITH CHECK (true);

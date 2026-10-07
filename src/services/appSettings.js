@@ -5,7 +5,8 @@
  * without needing a Render env var change/redeploy or suspending the
  * whole service. See schema.sql's app_settings table for the "why".
  */
-const pool = require('../db/pool');
+// Unrestricted on purpose: db/pool.js (row-level security) — this module looks across licenses / holds per-user secrets.
+const pool = require('../db/pool').admin;
 
 const SYNC_PAUSED_KEY = 'sync_paused';
 // The OPERATOR's pause for the whole platform (npm run platform:sync) — stops

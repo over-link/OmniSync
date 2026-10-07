@@ -30,7 +30,7 @@ app.set('trust proxy', 1); // needed for secure cookies behind Render/Railway's 
 app.use(cookieParser());
 app.use(
   session({
-    store: new pgSession({ pool, tableName: 'session', createTableIfMissing: true }),
+    store: new pgSession({ pool: pool.admin, tableName: 'session', createTableIfMissing: true }),
     secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
@@ -91,6 +91,7 @@ app.listen(PORT, () => {
   // The older app-wide sync switches become the license's own (once), before any cycle runs.
   syncPolicy
     .copyGlobalSettingsOnce()
+    .then(() => pool.selfTest()) // RLS_MODE=on: prove the restricted role works (else fall back, loudly)
     .then(() => pairingGuard.refresh()) // which pairings are active, before any cycle or webhook
     .catch((err) => console.warn('[poll] Could not prepare the sync settings / active pairings:', err.message))
     .finally(startPolling);

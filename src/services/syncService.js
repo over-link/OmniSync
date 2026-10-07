@@ -794,7 +794,9 @@ async function _backfillLinkedBy(projectId, accIssues) {
   const rows = accIssues.filter((i) => i?.id && i.createdBy);
   if (!rows.length) return;
   try {
-    await pool.query(
+    // acc_tokens is closed to the restricted role (per-user secrets), so this runs on the unrestricted pool
+    // (still limited to one project by its WHERE clause).
+    await pool.admin.query(
       `UPDATE sync_map SET linked_by = t.user_id, linked_via = 'acc_creator'
        FROM unnest($2::text[], $3::text[]) AS v(acc_issue_id, created_by)
        JOIN acc_tokens t ON t.autodesk_user_id = v.created_by
@@ -1321,7 +1323,7 @@ async function _resolveReviztoAuthorName(userId, project, email) {
  */
 async function _findAccUserIdForEmail(email) {
   if (!email) return null;
-  const { rows } = await pool.query(
+  const { rows } = await pool.admin.query(
     `SELECT u.id FROM users u JOIN acc_tokens at ON at.user_id = u.id WHERE lower(u.email) = lower($1)`,
     [email]
   );

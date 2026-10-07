@@ -247,6 +247,7 @@ const EMAILS = ['op@x.com', 'oponly@x.com', 'ownera@x.com', 'dual@x.com', 'solo@
     ok('7. a non-operator with no license is still signed out (no user, access-denied message)', r.body.user === null && !!r.body.accessDenied, JSON.stringify(r));
     ok('7. the operator flag is not settable through any route', (await q("SELECT count(*)::int n FROM users WHERE is_operator")) [0].n === 2);
 
+    if (process.env.RLS_MODE === 'on') ok('(RLS on) the restricted role was never silently refused a query that should be classified', !log.includes('[rls] The restricted role was refused'), log.split('\n').filter((l) => l.includes('[rls] The restricted role was refused')).join('\n'));
     const failed = results.filter(([, p]) => !p);
     console.log(`\n${results.length - failed.length}/${results.length} passed`);
     if (/Unhandled error/.test(log)) console.log('NOTE: server logged an unhandled error:\n' + log.split('\n').filter((l) => /Unhandled/.test(l)).slice(0, 3).join('\n'));

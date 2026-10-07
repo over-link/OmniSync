@@ -100,7 +100,8 @@ router.post('/api/projects/:id/team/invite', requireProjectRole('project_admin')
   const role = _checkAssignable(req, res, req.body.role);
   if (!role) return;
 
-  const { rows: existing } = await pool.query('SELECT id, role FROM users WHERE email = $1', [email]);
+  // accounts are global (one email, many licenses): looked up / created on the unrestricted pool — db/pool.js
+  const { rows: existing } = await pool.admin.query('SELECT id, role FROM users WHERE email = $1', [email]);
   const licenseId = await tenancy.licenseOfProject(projectId);
   if (existing[0]) {
     const { rows: adminHere } = await pool.query(
@@ -116,7 +117,7 @@ router.post('/api/projects/:id/team/invite', requireProjectRole('project_admin')
     }
   }
 
-  const { rows: userRows } = await pool.query(
+  const { rows: userRows } = await pool.admin.query(
     `INSERT INTO users (email, role) VALUES ($1, 'member')
      ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email
      RETURNING id, email`,

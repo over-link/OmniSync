@@ -363,10 +363,37 @@ current number of non-archived projects.
    Row-level security therefore filters on the license id (and tenant id).
 2. **One data-access layer.** Queries go through helpers that require a tenant;
    a lint/CI check fails on raw queries against tenant tables.
-3. **Row-level security as a backstop.** Per request/transaction set
-   `app.tenant_id`; RLS policies on tenant tables filter by it, using a
-   database role that cannot bypass RLS. A forgotten `WHERE tenant_id` returns
-   nothing instead of leaking.
+3. **Row-level security as a backstop.** *(Built — chunk 6, switch `RLS_MODE`.)*
+   Per request the open **license** is set as `app.license_id`; RLS policies on
+   the license-owned tables filter by it, using a database role (`app_rls`) that
+   cannot bypass RLS. A forgotten `WHERE` returns nothing of another license's
+   instead of leaking. How it works:
+   - **Two pools** (`db/pool.js`). The *unrestricted* pool (the app's normal
+     Supabase user, which bypasses RLS) is used for sign-in, sessions, tokens,
+     the poller, webhooks, migrations, the operator console and anything that
+     must look across licenses (`pool.admin`). The *restricted* pool runs as
+     `app_rls`. A request is handed to the restricted pool once its license is
+     known (`routes/auth.js`: `requireLogin` / `requireProjectRole` / ...);
+     `pool.query()` picks the right pool by itself, so route code is unchanged.
+   - **Policies** (`schema.sql`): `projects`, `license_members`,
+     `tenant_licenses` (and `tenants`) by license; `users` only for members of
+     the open license; everything that belongs to a project (links, mappings,
+     invite links, Activity Log, project members) through its project. The
+     restricted role has **no access at all** to tokens, sessions, password codes,
+     app settings or Revizto licenses, and may only add invitations.
+   - **Safe by default.** `RLS_MODE` unset/`off` = exactly the old behaviour.
+     `RLS_MODE=on` runs a self-test at start-up and, if the role isn't set up,
+     logs a loud error and carries on *without* restriction rather than failing.
+     Every refusal of the restricted role is logged (`[rls] The restricted role
+     was refused ...`) so a query that needs the unrestricted pool shows up
+     even where the caller swallows errors.
+   - **Limits, honestly.** It guards against forgotten filters, not against SQL
+     injection: `app_rls` is entered with `SET ROLE`, so injected SQL could
+     `RESET ROLE`. (Hardening later: a separate login role with its own
+     connection string.) The unrestricted pool is still trusted code.
+   - **Connections.** Supabase's session pooler allows **15 connections in total**;
+     with RLS on each pool defaults to 5 (`DB_POOL_MAX`). A deploy briefly runs
+     the old and new instance together.
 4. **Cross-tenant tests** run in CI: seed A and B, then for every API route
    assert that A's session gets 404/403 for B's ids and never B's rows in lists.
 5. **Webhooks.** An ACC event resolves hook id → project → tenant. **Verifying

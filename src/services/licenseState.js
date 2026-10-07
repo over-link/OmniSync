@@ -16,7 +16,8 @@
  * "Today" is the license's COMPANY timezone date. Expiry wins over suspension.
  * While a license is not active ALL syncing for its projects is paused.
  */
-const pool = require('../db/pool');
+// Unrestricted on purpose: db/pool.js (row-level security) — this module looks across licenses / holds per-user secrets.
+const pool = require('../db/pool').admin;
 
 const EXPIRED_GREY_DAYS = 30;
 const RETENTION_DAYS = 90;

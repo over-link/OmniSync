@@ -14,7 +14,13 @@ Run from the repo root (each takes about 1-3 minutes — most of it database rou
     node tests/multi-license/c3ctest.js    # catch-up after a pause (32; no network, in-process)
     node tests/multi-license/c4test.js     # license drop-down API (greyed licenses) + operator console routes (60)
     node tests/multi-license/c5test.js     # one ACC project, one active Revizto project: the guard, migration backfill, expiry/archive release (34)
+    node tests/multi-license/c6test.js     # row-level security: the real restricted role, policies, leaks, self-test (50; in-process)
     node tests/multi-license/perftest.js   # Issues-page speed-up: parallel page reads, the 30 s shared read cache, batched clean-up (25; in-process, no network)
+
+Run the whole set twice for chunk 6: normally, and with RLS_MODE=on (and DB_POOL_MAX=3, because two servers share
+Supabase's 15 connections):  DB_POOL_MAX=3 RLS_MODE=on node tests/multi-license/c2test.js
+With RLS on they also fail if the restricted role was refused a query ("[rls] The restricted role was refused" in the
+server log). The first run creates the database-level role app_rls (login-less, no bypass); scratch schemas are dropped.
 
 c2test.js compares the working tree against a baseline commit — by default 9c5afd0
 (the version live on Render when this was written). Use BASELINE=<commit> to change it.
