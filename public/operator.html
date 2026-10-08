@@ -39,10 +39,31 @@
         <p id="companies-empty" class="hint hidden">No companies yet.</p>
       </section>
 
+      <!-- Finding things: search, status and a date range — all applied in the browser to what is already loaded (js/operatorFilter.js). -->
+      <section class="card operator-filters" id="operator-filters" aria-label="Find companies and licenses">
+        <input id="op-search" type="search" placeholder="Search companies, licenses, people, notes…" aria-label="Search companies, licenses, people and notes" autocomplete="off" />
+        <div id="op-status" class="op-chips" role="group" aria-label="Status"></div>
+        <div class="op-date-row">
+          <label for="op-date-field" class="op-inline-label">Date</label>
+          <select id="op-date-field" aria-label="Which date the range applies to">
+            <option value="expires">Expires</option>
+            <option value="starts">Starts</option>
+          </select>
+          <label for="op-from" class="op-inline-label">from</label>
+          <input id="op-from" type="date" />
+          <label for="op-to" class="op-inline-label">to</label>
+          <input id="op-to" type="date" />
+          <button type="button" id="op-clear" class="btn secondary">Clear filters</button>
+        </div>
+        <p id="op-summary" class="hint" role="status"></p>
+      </section>
+      <p id="no-matches" class="hint hidden">No companies or licenses match these filters.</p>
+
       <div id="companies"></div>
     </div>
   </div>
   <script src="/js/nav.js"></script>
+  <script src="/js/operatorFilter.js"></script>
   <script src="/js/operator.js"></script>
 </body>
 </html>

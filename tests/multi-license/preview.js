@@ -52,11 +52,12 @@ const EMAILS = ['operator@demo.test', 'amy@demo.test', 'dan@demo.test', 'bob@dem
   const tB = (await q("INSERT INTO tenants(name, account_owner_user_id) VALUES ('Beta Builders', $1) RETURNING id", [U.bob]))[0].id;
   const day = async (n) => (await q("SELECT to_char((now() AT TIME ZONE 'America/Los_Angeles')::date + $1::int, 'YYYY-MM-DD') AS d", [n]))[0].d;
   const mkLic = async (t, name, slots, expires, suspended = false) => (await q(`INSERT INTO tenant_licenses(tenant_id, name, slot_capacity, starts_on, expires_on, settings_copied_at, suspended_at) VALUES ($1,$2,$3,'2020-01-01',$4,now(), ${suspended ? 'now()' : 'NULL'}) RETURNING id`, [t, name, slots, expires]))[0].id;
+  await q("INSERT INTO tenants(name) VALUES ('Gamma Group (no licenses yet)')");
   const L = {
     us: await mkLic(tA, 'Acme US', 5, '2035-01-01'),
-    eu: await mkLic(tA, 'Acme EU', 3, '2035-01-01'),
+    eu: await mkLic(tA, 'Acme EU', 3, await day(12)), // expiring soon, to show the operator console's filters
     old: await mkLic(tA, 'Acme 2025 plan', 2, await day(-6)),
-    beta: await mkLic(tB, 'Beta main', 4, '2035-01-01'),
+    beta: await mkLic(tB, 'Beta main', 4, await day(40)),
     betaSusp: await mkLic(tB, 'Beta trial', 1, '2035-01-01', true),
   };
   const adminOf = async (lic, u) => q("INSERT INTO license_members(tenant_license_id, user_id, role) VALUES ($1,$2,'license_admin')", [lic, u]);

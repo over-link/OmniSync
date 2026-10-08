@@ -1292,3 +1292,14 @@ body { position: relative; }
 .operator-terms { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.6rem 1rem; align-items: end; margin: 0.6rem 0; }
 .operator-field { display: flex; flex-direction: column; gap: 0.25rem; }
 .operator-field label { font-size: 0.78rem; color: var(--muted); }
+
+/* Operator console: finding things */
+.operator-filters { display: flex; flex-direction: column; gap: 0.7rem; }
+.operator-filters input[type="search"] { width: 100%; }
+.op-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.op-chip { font: inherit; font-size: 0.82rem; font-weight: 600; cursor: pointer; padding: 0.3rem 0.75rem; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--muted); }
+.op-chip:hover { border-color: var(--blueprint); color: var(--blueprint); }
+.op-chip[aria-pressed="true"] { background: var(--blueprint); border-color: var(--blueprint); color: var(--on-accent); }
+.op-chip .op-count { opacity: 0.75; font-weight: 500; margin-left: 0.25rem; }
+.op-date-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.op-inline-label { font-size: 0.8rem; color: var(--muted); }

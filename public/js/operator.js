@@ -67,7 +67,7 @@ function licenseCard(company, l) {
   head.append(title);
   box.append(head);
 
-  const facts = el('p', 'hint', `${l.slotsUsed} of ${l.slotCapacity} project slots used · ${l.startsOn} to ${l.expiresOn} · ${l.memberCount} member${l.memberCount === 1 ? '' : 's'}${l.note ? ` · ${l.note}` : ''}`);
+  const facts = el('p', 'hint', `${l.slotsUsed} of ${l.slotCapacity} project slots used · ${l.startsOn} to ${l.expiresOn} (${window.operatorFilter.expiryPhrase(l, company)}) · ${l.memberCount} member${l.memberCount === 1 ? '' : 's'}${l.note ? ` · ${l.note}` : ''}`);
   box.append(facts);
   if (l.slotsUsed > l.slotCapacity) box.append(el('p', 'hint', 'Over its slot limit — suspended until projects are archived or slots are raised.'));
 
@@ -174,10 +174,94 @@ function companyCard(c) {
   return card;
 }
 
+// ─── Finding things (search / status / date range) ───────────────────
+
+const FILTER_KEY = 'operatorFilters';
+const STATUS_CHIPS = [
+  ['all', 'All'],
+  ['active', 'Active'],
+  ['expiring', `Expiring soon (${window.operatorFilter.EXPIRING_DAYS} days)`],
+  ['suspended', 'Suspended'],
+  ['expired', 'Expired'],
+  ['not_started', 'Not started'],
+];
+let allCompanies = [];
+let filters = { query: '', status: 'all', dateField: 'expires', from: '', to: '' };
+try {
+  Object.assign(filters, JSON.parse(sessionStorage.getItem(FILTER_KEY) || '{}')); // kept across reloads of this tab
+} catch {
+  // storage blocked or corrupt — start with no filters
+}
+
+const filtersActive = () => !!(filters.query || filters.status !== 'all' || filters.from || filters.to);
+
+function renderCompanies() {
+  const result = window.operatorFilter.filterCompanies(allCompanies, filters);
+  document.getElementById('companies-empty').classList.toggle('hidden', allCompanies.length > 0);
+  document.getElementById('no-matches').classList.toggle('hidden', !allCompanies.length || result.companies.length > 0);
+  document.getElementById('companies').replaceChildren(...result.companies.map(companyCard));
+  // Status chips with how many licenses each would show (given the search and dates).
+  const chips = document.getElementById('op-status');
+  chips.replaceChildren(
+    ...STATUS_CHIPS.map(([key, label]) => {
+      const chip = el('button', 'op-chip');
+      chip.type = 'button';
+      chip.setAttribute('aria-pressed', String(filters.status === key));
+      chip.append(label, el('span', 'op-count', String(result.counts[key])));
+      chip.addEventListener('click', () => {
+        filters.status = key;
+        saveFilters();
+        renderCompanies();
+      });
+      return chip;
+    })
+  );
+  const companyCount = result.companies.length; // includes a company with no licenses yet that the search found
+  document.getElementById('op-summary').textContent = filtersActive()
+    ? `Showing ${result.shown} of ${result.total} license${result.total === 1 ? '' : 's'} in ${companyCount} compan${companyCount === 1 ? 'y' : 'ies'}.`
+    : `${result.total} license${result.total === 1 ? '' : 's'} in ${allCompanies.length} compan${allCompanies.length === 1 ? 'y' : 'ies'}.`;
+}
+
+function saveFilters() {
+  try {
+    sessionStorage.setItem(FILTER_KEY, JSON.stringify(filters));
+  } catch {
+    // storage blocked — filters just won't survive a reload
+  }
+}
+
+function wireFilters() {
+  const search = document.getElementById('op-search');
+  const dateField = document.getElementById('op-date-field');
+  const from = document.getElementById('op-from');
+  const to = document.getElementById('op-to');
+  search.value = filters.query;
+  dateField.value = filters.dateField;
+  from.value = filters.from;
+  to.value = filters.to;
+  const apply = () => {
+    filters.query = search.value.trim();
+    filters.dateField = dateField.value;
+    filters.from = from.value;
+    filters.to = to.value;
+    saveFilters();
+    renderCompanies();
+  };
+  for (const input of [search, dateField, from, to]) input.addEventListener('input', apply);
+  document.getElementById('op-clear').addEventListener('click', () => {
+    filters = { query: '', status: 'all', dateField: 'expires', from: '', to: '' };
+    search.value = '';
+    dateField.value = 'expires';
+    from.value = '';
+    to.value = '';
+    saveFilters();
+    renderCompanies();
+  });
+}
+
 async function loadCompanies() {
-  const { companies } = await api('/api/operator/companies');
-  document.getElementById('companies-empty').classList.toggle('hidden', companies.length > 0);
-  document.getElementById('companies').replaceChildren(...companies.map(companyCard));
+  ({ companies: allCompanies } = await api('/api/operator/companies'));
+  renderCompanies();
 }
 
 window.addEventListener('app:ready', async (e) => {
@@ -195,5 +279,6 @@ window.addEventListener('app:ready', async (e) => {
       say('Company created. Add its first license.');
     });
   });
+  wireFilters();
   await loadCompanies().catch((err) => say(err.message, true));
 });
