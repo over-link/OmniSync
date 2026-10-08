@@ -57,15 +57,17 @@ const EMAILS = ['operator@demo.test', 'amy@demo.test', 'dan@demo.test', 'bob@dem
     us: await mkLic(tA, 'Acme US', 5, '2035-01-01'),
     eu: await mkLic(tA, 'Acme EU', 3, await day(12)), // expiring soon, to show the operator console's filters
     old: await mkLic(tA, 'Acme 2025 plan', 2, await day(-6)),
+    sandbox: await mkLic(tA, 'Acme sandbox (empty)', 2, '2035-01-01'), // no projects: can be deleted from the operator console
     beta: await mkLic(tB, 'Beta main', 4, await day(40)),
     betaSusp: await mkLic(tB, 'Beta trial', 1, '2035-01-01', true),
   };
   const adminOf = async (lic, u) => q("INSERT INTO license_members(tenant_license_id, user_id, role) VALUES ($1,$2,'license_admin')", [lic, u]);
   const memberOf = async (lic, u) => q("INSERT INTO license_members(tenant_license_id, user_id, role) VALUES ($1,$2,'member')", [lic, u]);
   await adminOf(L.us, U.amy); await adminOf(L.eu, U.amy); await adminOf(L.old, U.amy); await adminOf(L.beta, U.bob);
+  await adminOf(L.sandbox, U.amy);
   await adminOf(L.us, U.operator);                                   // the operator also administers a license, to see both sides
   await memberOf(L.us, U.dan); await memberOf(L.beta, U.dan); await memberOf(L.old, U.dan); await memberOf(L.betaSusp, U.dan);
-  const T = { [L.us]: tA, [L.eu]: tA, [L.old]: tA, [L.beta]: tB, [L.betaSusp]: tB };
+  const T = { [L.us]: tA, [L.eu]: tA, [L.old]: tA, [L.sandbox]: tA, [L.beta]: tB, [L.betaSusp]: tB };
   const mkProject = async (name, lic, { rv = null, acc = null, accName = null } = {}) => (await q(
     `INSERT INTO projects(name, revizto_project_uuid, revizto_region, acc_hub_id, acc_project_id, acc_project_name, owner_user_id, revizto_license_uuid, tenant_id, tenant_license_id)
      VALUES ($1,$2,'virginia',$3,$4,$5,$6,'LIC',$7,$8) RETURNING id`, [name, rv, acc ? 'hub' : null, acc, accName, lic === L.beta ? U.bob : U.amy, T[lic], lic]))[0].id;
@@ -89,9 +91,9 @@ const EMAILS = ['operator@demo.test', 'amy@demo.test', 'dan@demo.test', 'bob@dem
   await q('UPDATE users SET current_license_id = $2 WHERE id = $1', [U.dan, L.us]);
   await q('UPDATE users SET current_license_id = $2 WHERE id = $1', [U.operator, L.us]);
 
-  proc = spawn(process.execPath, ['-r', path.join(SCRATCH, 'preload.js'), '-r', path.join(SCRATCH, 'preload-pairing.js'), 'src/server.js'], {
+  proc = spawn(process.execPath, ['-r', path.join(SCRATCH, 'preload.js'), '-r', path.join(SCRATCH, 'preload-pairing.js'), '-r', path.join(SCRATCH, 'preload-email.js'), 'src/server.js'], {
     cwd: REPO,
-    env: { ...process.env, PORT: String(PORT), TEST_SCHEMA: SCHEMA, TEST_EMAILS: EMAILS.join(','), SESSION_SECRET: SECRET, NODE_ENV: 'development', PUBLIC_BASE_URL: '' },
+    env: { ...process.env, PORT: String(PORT), TEST_SCHEMA: SCHEMA, TEST_EMAILS: EMAILS.join(','), SESSION_SECRET: SECRET, NODE_ENV: 'development', PUBLIC_BASE_URL: '', TEST_SMTP: 'ok', TEST_MAIL_FILE: path.join(require('os').tmpdir(), 'preview-mail.jsonl') }, // mail is faked: 'Resend invite' works and sends nothing
     stdio: ['ignore', 'inherit', 'inherit'],
   });
   const cookies = {};

@@ -65,6 +65,7 @@ const guarded = (fn) => async (req, res) => {
     if (err.code === '23505' && /tenant_licenses_name_uq/.test(err.constraint || err.message)) {
       return res.status(409).json({ error: 'This company already has a license with that name.' });
     }
+    if (err.code === '23503') return res.status(409).json({ error: "That is still in use by other records, so it can't be deleted." });
     throw err;
   }
 };
@@ -72,21 +73,27 @@ const guarded = (fn) => async (req, res) => {
 // Every company with its licenses (any phase — expired ones too, for renewals
 // and purges), slot usage, and who administers each.
 router.get('/api/operator/companies', requireOperator, async (req, res) => {
-  const [{ rows: companies }, licenses, { rows: admins }, { rows: counts }] = await Promise.all([
+  const [{ rows: companies }, licenses, { rows: admins }, { rows: counts }, { rows: projectCounts }] = await Promise.all([
     pool.query(
       `SELECT t.id, t.name, t.timezone, t.status, owner.email AS owner_email
        FROM tenants t LEFT JOIN users owner ON owner.id = t.account_owner_user_id ORDER BY lower(t.name), t.id`
     ),
     licenseState.loadAll(),
     pool.query(
-      `SELECT m.tenant_license_id AS license_id, u.email, (u.license_role_verified_at IS NOT NULL) AS verified
-       FROM license_members m JOIN users u ON u.id = m.user_id WHERE m.role = 'license_admin' ORDER BY u.email`
+      `SELECT m.tenant_license_id AS license_id, u.id AS user_id, u.email, (u.license_role_verified_at IS NOT NULL) AS verified,
+              (t.account_owner_user_id = u.id) AS is_owner
+       FROM license_members m JOIN users u ON u.id = m.user_id
+       JOIN tenant_licenses l ON l.id = m.tenant_license_id JOIN tenants t ON t.id = l.tenant_id
+       WHERE m.role = 'license_admin' ORDER BY u.email`
     ),
     pool.query('SELECT tenant_license_id AS license_id, count(*)::int AS members FROM license_members GROUP BY 1'),
+    pool.query('SELECT tenant_license_id AS license_id, count(*)::int AS projects FROM projects WHERE tenant_license_id IS NOT NULL GROUP BY 1'),
   ]);
+  const projectCount = new Map(projectCounts.map((r) => [r.license_id, r.projects])); // archived ones included
   const notes = new Map((await pool.query('SELECT id, note FROM tenant_licenses')).rows.map((r) => [r.id, r.note]));
   const memberCount = new Map(counts.map((r) => [r.license_id, r.members]));
   res.json({
+    emailConfigured: emailService.isConfigured(),
     companies: companies.map((c) => ({
       id: c.id,
       name: c.name,
@@ -108,7 +115,8 @@ router.get('/api/operator/companies', requireOperator, async (req, res) => {
           purgeable: l.state.purgeable,
           note: notes.get(l.id) || '',
           memberCount: memberCount.get(l.id) || 0,
-          admins: admins.filter((a) => a.license_id === l.id).map((a) => ({ email: a.email, verified: a.verified })),
+          projectCount: projectCount.get(l.id) || 0,
+          admins: admins.filter((a) => a.license_id === l.id).map((a) => ({ userId: a.user_id, email: a.email, verified: a.verified, isOwner: !!a.is_owner })),
         })),
     })),
   });
@@ -222,6 +230,130 @@ router.post('/api/operator/licenses/:id/admins', requireOperator, guarded(async 
   await pool.query('INSERT INTO invites (email, role, invited_by, email_sent, email_error) VALUES ($1, $2, $3, $4, $5)', [email, 'license_admin', req.session.userId, emailSent, emailError]);
   console.log(`[operator] ${req.session.userEmail} made ${email} a license admin of license #${lic[0].id}${accountOwner ? ' (account owner)' : ''}.`);
   res.json({ ok: true, accountOwner, emailSent, emailError });
+}));
+
+// ─── Company: rename, timezone, account owner, delete ────────────────
+
+const sameName = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+
+// Rename, change the timezone (working hours and each license's day boundaries follow it),
+// or change the account owner — who must already be a license admin of one of the company's
+// licenses (invite them as one first), so an owner always has access to something.
+router.patch('/api/operator/companies/:id', requireOperator, guarded(async (req, res) => {
+  const { rows: cur } = await pool.query('SELECT id, name, timezone, account_owner_user_id FROM tenants WHERE id = $1', [Number(req.params.id) || 0]);
+  if (!cur[0]) return res.status(404).json({ error: 'Company not found.' });
+  const b = req.body;
+  const name = b.name !== undefined ? cleanName(b.name, 'company name') : cur[0].name;
+  const timezone = b.timezone !== undefined ? cleanTimezone(b.timezone) : cur[0].timezone;
+  if (name !== cur[0].name) {
+    const { rows: dupe } = await pool.query('SELECT 1 FROM tenants WHERE lower(name) = lower($1) AND id <> $2', [name, cur[0].id]);
+    if (dupe.length) return res.status(409).json({ error: 'Another company already has that name.' });
+  }
+  let ownerId = cur[0].account_owner_user_id;
+  if (b.accountOwnerEmail !== undefined) {
+    const email = String(b.accountOwnerEmail || '').toLowerCase().trim();
+    if (!email) throw new BadInput('Choose the account owner.');
+    const { rows } = await pool.query(
+      `SELECT u.id FROM users u JOIN license_members m ON m.user_id = u.id AND m.role = 'license_admin'
+       JOIN tenant_licenses l ON l.id = m.tenant_license_id AND l.tenant_id = $2
+       WHERE u.email = $1 LIMIT 1`,
+      [email, cur[0].id]
+    );
+    if (!rows[0]) throw new BadInput("That person isn't a license admin of any of this company's licenses. Invite them as a license admin of one first.");
+    ownerId = rows[0].id;
+  }
+  await pool.query('UPDATE tenants SET name = $2, timezone = $3, account_owner_user_id = $4 WHERE id = $1', [cur[0].id, name, timezone, ownerId]);
+  if (timezone !== cur[0].timezone) await pairingGuard.refresh(); // a license's day (start / expiry) is judged in the company's timezone
+  console.log(`[operator] ${req.session.userEmail} changed company #${cur[0].id}: name "${name}", timezone ${timezone}, owner #${ownerId}.`);
+  res.json({ ok: true });
+}));
+
+/** The operator must type the exact name of what they are deleting (also enforced here, not only in the page). */
+function requireConfirmName(req, name) {
+  if (String(req.body?.confirmName || '').trim() !== name) throw new BadInput(`Type the exact name "${name}" to confirm.`);
+}
+
+// Only a company with no licenses can go (delete its licenses first).
+router.delete('/api/operator/companies/:id', requireOperator, guarded(async (req, res) => {
+  const { rows } = await pool.query('SELECT id, name FROM tenants WHERE id = $1', [Number(req.params.id) || 0]);
+  if (!rows[0]) return res.status(404).json({ error: 'Company not found.' });
+  requireConfirmName(req, rows[0].name);
+  const { rows: lic } = await pool.query('SELECT count(*)::int AS n FROM tenant_licenses WHERE tenant_id = $1', [rows[0].id]);
+  if (lic[0].n) return res.status(409).json({ error: `This company still has ${lic[0].n} license${lic[0].n === 1 ? '' : 's'} — delete them first.` });
+  await pool.query('DELETE FROM tenants WHERE id = $1', [rows[0].id]);
+  console.log(`[operator] ${req.session.userEmail} deleted company "${rows[0].name}" (#${rows[0].id}).`);
+  res.json({ ok: true });
+}));
+
+// ─── License: delete ─────────────────────────────────────────────────
+
+// Only a license with no projects at all (archived ones count) can be deleted: projects hold the
+// customer's issue links and mappings, and removing them is the customer's own license admins' call.
+// Its memberships go with it; the people keep their accounts.
+router.delete('/api/operator/licenses/:id', requireOperator, guarded(async (req, res) => {
+  const { rows } = await pool.query('SELECT id, name FROM tenant_licenses WHERE id = $1', [Number(req.params.id) || 0]);
+  if (!rows[0]) return res.status(404).json({ error: 'License not found.' });
+  requireConfirmName(req, rows[0].name);
+  const { rows: pr } = await pool.query('SELECT count(*)::int AS n FROM projects WHERE tenant_license_id = $1', [rows[0].id]);
+  if (pr[0].n) {
+    return res.status(409).json({ error: `This license still has ${pr[0].n} project${pr[0].n === 1 ? '' : 's'} (archived ones count). Its license admins must delete them on License Administration first.` });
+  }
+  await pool.query('DELETE FROM tenant_licenses WHERE id = $1', [rows[0].id]);
+  await pairingGuard.refresh();
+  console.log(`[operator] ${req.session.userEmail} deleted license "${rows[0].name}" (#${rows[0].id}).`);
+  res.json({ ok: true });
+}));
+
+// ─── License admins: remove, resend the invitation ───────────────────
+
+// Takes away license-admin rights (they stay a plain member, as when a customer's admin removes one).
+// The company's account owner can't be removed — change the owner first.
+router.delete('/api/operator/licenses/:id/admins/:userId', requireOperator, guarded(async (req, res) => {
+  const licenseId = Number(req.params.id) || 0;
+  const userId = Number(req.params.userId) || 0;
+  const { rows } = await pool.query(
+    `SELECT u.email, t.account_owner_user_id FROM license_members m JOIN users u ON u.id = m.user_id
+     JOIN tenant_licenses l ON l.id = m.tenant_license_id JOIN tenants t ON t.id = l.tenant_id
+     WHERE m.tenant_license_id = $1 AND m.user_id = $2 AND m.role = 'license_admin'`,
+    [licenseId, userId]
+  );
+  if (!rows[0]) return res.status(404).json({ error: "That person isn't a license admin of this license." });
+  if (rows[0].account_owner_user_id === userId) throw new BadInput("That person is the company's account owner. Change the account owner first, then remove them.");
+  await pool.query("UPDATE license_members SET role = 'member' WHERE tenant_license_id = $1 AND user_id = $2", [licenseId, userId]);
+  // The older global copy of the role: lowered only if they are no longer a license admin anywhere.
+  await pool.query(
+    `UPDATE users SET role = 'member' WHERE id = $1 AND role = 'license_admin'
+       AND NOT EXISTS (SELECT 1 FROM license_members WHERE user_id = $1 AND role = 'license_admin')`,
+    [userId]
+  );
+  console.log(`[operator] ${req.session.userEmail} removed ${rows[0].email} as a license admin of license #${licenseId}.`);
+  res.json({ ok: true });
+}));
+
+// Sends the invitation email again (they may have lost it). Nothing else changes.
+router.post('/api/operator/licenses/:id/admins/:userId/resend', requireOperator, guarded(async (req, res) => {
+  const licenseId = Number(req.params.id) || 0;
+  const userId = Number(req.params.userId) || 0;
+  const { rows } = await pool.query(
+    `SELECT u.email FROM license_members m JOIN users u ON u.id = m.user_id
+     WHERE m.tenant_license_id = $1 AND m.user_id = $2 AND m.role = 'license_admin'`,
+    [licenseId, userId]
+  );
+  if (!rows[0]) return res.status(404).json({ error: "That person isn't a license admin of this license." });
+  if (!emailService.isConfigured()) {
+    return res.status(409).json({ error: "Email isn't set up on the server (SMTP), so nothing was sent. They can still sign in with their email address." });
+  }
+  let emailError = null;
+  try {
+    const appUrl = process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
+    await emailService.sendInviteEmail({ toEmail: rows[0].email, invitedByEmail: req.session.userEmail, appUrl, role: 'license admin' });
+  } catch (err) {
+    emailError = err.message;
+  }
+  await pool.query('INSERT INTO invites (email, role, invited_by, email_sent, email_error) VALUES ($1, $2, $3, $4, $5)', [rows[0].email, 'license_admin', req.session.userId, !emailError, emailError]);
+  if (emailError) return res.status(502).json({ error: `The email couldn't be sent: ${emailError}` });
+  console.log(`[operator] ${req.session.userEmail} resent the invitation to ${rows[0].email}.`);
+  res.json({ ok: true });
 }));
 
 module.exports = router;

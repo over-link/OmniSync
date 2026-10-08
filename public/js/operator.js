@@ -54,6 +54,55 @@ function input(type, value = '', attrs = {}) {
   return i;
 }
 
+let emailConfigured = false; // can the server send invitation emails? (from the listing)
+
+/**
+ * "Type the name to confirm" pop-up for deletions: resolves true only if the exact name is typed and
+ * Delete is clicked. (The server checks the name too.) Built with textContent — names are user data.
+ */
+function confirmTyped(titleText, message, expected, confirmLabel = 'Delete') {
+  return new Promise((resolve) => {
+    const backdrop = el('div', 'modal-backdrop');
+    const dialog = el('form', 'modal');
+    dialog.noValidate = true;
+    dialog.setAttribute('role', 'alertdialog');
+    dialog.setAttribute('aria-modal', 'true');
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.autocomplete = 'off';
+    input.setAttribute('aria-label', `Type ${expected} to confirm`);
+    const label = el('label', null, `Type "${expected}" to confirm`);
+    const del = el('button', 'btn btn-danger', confirmLabel);
+    del.type = 'submit';
+    del.disabled = true;
+    const cancel = el('button', 'btn secondary', 'Cancel');
+    cancel.type = 'button';
+    const actions = el('div', 'modal-actions');
+    actions.append(del, cancel);
+    dialog.append(el('h2', null, titleText), el('p', null, message), label, input, el('p', 'result-text'), actions);
+    backdrop.append(dialog);
+    const close = (value) => {
+      document.removeEventListener('keydown', onKey);
+      backdrop.remove();
+      resolve(value);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') close(false);
+    };
+    document.addEventListener('keydown', onKey);
+    input.addEventListener('input', () => {
+      del.disabled = input.value.trim() !== expected;
+    });
+    dialog.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (input.value.trim() === expected) close(true);
+    });
+    cancel.addEventListener('click', () => close(false));
+    document.body.append(backdrop);
+    input.focus();
+  });
+}
+
 const PHASE_BADGES = { active: 'success', not_started: 'neutral', suspended: 'warning', expired: 'danger', gone: 'danger' };
 const PHASE_LABELS = { active: 'Active', not_started: 'Not started', suspended: 'Suspended', expired: 'Expired (greyed)', gone: 'Expired (hidden)' };
 
@@ -104,14 +153,53 @@ function licenseCard(company, l) {
     run(() => api(`/api/operator/licenses/${l.id}/${l.suspended ? 'unsuspend' : 'suspend'}`, { method: 'POST' }), l.suspended ? 'Reactivated.' : 'Suspended.');
   });
   actions.append(susp);
+  // Delete: only a license with no projects at all (archived ones count) — removing projects is the customer's own admins' call.
+  const delLicense = el('button', 'btn btn-danger', 'Delete license');
+  delLicense.type = 'button';
+  if (l.projectCount > 0) {
+    delLicense.disabled = true;
+    delLicense.title = `It has ${l.projectCount} project${l.projectCount === 1 ? '' : 's'} (archived ones count). Its license admins must delete them on License Administration first.`;
+    actions.append(delLicense, el('span', 'hint', `Can't be deleted while it has ${l.projectCount} project${l.projectCount === 1 ? '' : 's'}.`));
+  } else {
+    delLicense.addEventListener('click', async () => {
+      if (!(await confirmTyped('Delete this license?', `"${l.name}" and its memberships are removed for good. The people keep their accounts. This can't be undone.`, l.name))) return;
+      run(() => api(`/api/operator/licenses/${l.id}`, { method: 'DELETE', body: JSON.stringify({ confirmName: l.name }) }), `Deleted the license "${l.name}".`);
+    });
+    actions.append(delLicense);
+  }
   box.append(actions);
 
   // License admins (the buyer first) + invite.
   box.append(el('h4', null, 'License admins'));
   if (!l.admins.length) box.append(el('p', 'hint', 'None yet — invite the buyer below.'));
   for (const a of l.admins) {
-    const owner = a.email === company.accountOwnerEmail ? ' — account owner' : '';
-    box.append(el('div', 'hint', `${a.email}${owner}${a.verified ? '' : ' (pending Revizto check)'}`));
+    const row = el('div', 'op-admin-row');
+    row.append(el('span', 'op-admin-email', a.email));
+    if (a.isOwner) row.append(el('span', 'badge badge-neutral', 'Account owner'));
+    if (!a.verified) {
+      const pending = el('span', 'badge badge-warning', 'Pending Revizto check');
+      pending.title = 'They have not yet connected Revizto, or it has not confirmed them as a License administrator.';
+      row.append(pending);
+    }
+    const resend = el('button', 'btn secondary op-small', 'Resend invite');
+    resend.type = 'button';
+    if (!emailConfigured) {
+      resend.disabled = true;
+      resend.title = "Email isn't set up on the server (SMTP). They can still sign in with their email address.";
+    }
+    resend.addEventListener('click', () => run(() => api(`/api/operator/licenses/${l.id}/admins/${a.userId}/resend`, { method: 'POST' }), `Invitation re-sent to ${a.email}.`));
+    const remove = el('button', 'btn secondary op-small', 'Remove admin');
+    remove.type = 'button';
+    if (a.isOwner) {
+      remove.disabled = true;
+      remove.title = "The account owner can't be removed. Change the account owner first (Edit company).";
+    }
+    remove.addEventListener('click', async () => {
+      if (!(await showConfirmDialog('Remove license admin?', `${a.email} will no longer be a license admin of "${l.name}". They stay on it as a plain member, and keep their account.`, { confirmLabel: 'Remove', danger: true }))) return;
+      run(() => api(`/api/operator/licenses/${l.id}/admins/${a.userId}`, { method: 'DELETE' }), `${a.email} is no longer a license admin of "${l.name}".`);
+    });
+    row.append(resend, remove);
+    box.append(row);
   }
   const inv = el('form', 'field-row');
   inv.noValidate = true;
@@ -157,15 +245,69 @@ function newLicenseForm(company) {
   return form;
 }
 
+/**
+ * Rename, timezone, account owner (chosen from the company's own license admins), and delete (only
+ * with no licenses left). Hidden until "Edit company" is clicked.
+ */
+function editCompanyForm(c) {
+  const full = allCompanies.find((x) => x.id === c.id) || c; // every license, not just the ones the filters show
+  const form = el('form', 'operator-terms hidden');
+  form.noValidate = true;
+  const name = field('Company name', input('text', c.name, { maxLength: 120 }));
+  const tz = field('Timezone (polling hours and each license\'s days follow it)', input('text', c.timezone));
+  const admins = [...new Set(full.licenses.flatMap((l) => l.admins.map((a) => a.email)))].sort();
+  const owner = document.createElement('select');
+  owner.setAttribute('aria-label', 'Account owner');
+  if (!admins.length) owner.add(new Option('No license admins yet', ''));
+  for (const email of admins) owner.add(new Option(email, email));
+  owner.value = c.accountOwnerEmail && admins.includes(c.accountOwnerEmail) ? c.accountOwnerEmail : admins[0] || '';
+  owner.disabled = !admins.length;
+  const ownerField = field('Account owner (must be a license admin of one of its licenses)', owner);
+  const save = el('button', 'btn', 'Save company');
+  save.type = 'submit';
+  form.append(name.wrap, tz.wrap, ownerField.wrap, save);
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const body = { name: name.input.value, timezone: tz.input.value };
+    if (owner.value && owner.value !== c.accountOwnerEmail) body.accountOwnerEmail = owner.value;
+    run(() => api(`/api/operator/companies/${c.id}`, { method: 'PATCH', body: JSON.stringify(body) }), `Saved "${name.input.value}".`);
+  });
+  // Delete: only once it has no licenses.
+  const del = el('button', 'btn btn-danger', 'Delete company');
+  del.type = 'button';
+  const count = c.licenseCount ?? full.licenses.length;
+  if (count > 0) {
+    del.disabled = true;
+    del.title = `It still has ${count} license${count === 1 ? '' : 's'} — delete them first.`;
+  } else {
+    del.addEventListener('click', async () => {
+      if (!(await confirmTyped('Delete this company?', `"${c.name}" is removed for good. This can't be undone.`, c.name))) return;
+      run(() => api(`/api/operator/companies/${c.id}`, { method: 'DELETE', body: JSON.stringify({ confirmName: c.name }) }), `Deleted the company "${c.name}".`);
+    });
+  }
+  const dangerRow = el('div', 'field-row');
+  dangerRow.append(del);
+  if (count > 0) dangerRow.append(el('span', 'hint', `Can't be deleted while it has ${count} license${count === 1 ? '' : 's'}.`));
+  form.append(dangerRow);
+  return form;
+}
+
 function companyCard(c) {
   const card = el('section', 'card');
   const head = el('div', 'card-header-row');
   head.append(el('h2', null, c.name));
   const add = el('button', 'btn secondary', '+ Add license');
   add.type = 'button';
-  head.append(add);
+  const edit = el('button', 'btn secondary', 'Edit company');
+  edit.type = 'button';
+  const headButtons = el('div', 'field-row');
+  headButtons.append(edit, add);
+  head.append(headButtons);
   card.append(head);
   card.append(el('p', 'hint', `Timezone ${c.timezone} · account owner: ${c.accountOwnerEmail || 'not set yet'}`));
+  const editForm = editCompanyForm(c);
+  edit.addEventListener('click', () => editForm.classList.toggle('hidden'));
+  card.append(editForm);
   const form = newLicenseForm(c);
   add.addEventListener('click', () => form.classList.toggle('hidden'));
   card.append(form);
@@ -186,14 +328,14 @@ const STATUS_CHIPS = [
   ['not_started', 'Not started'],
 ];
 let allCompanies = [];
-let filters = { query: '', status: 'all', dateField: 'expires', from: '', to: '' };
+let filters = { companies: [], query: '', status: 'all', dateField: 'expires', from: '', to: '' };
 try {
   Object.assign(filters, JSON.parse(sessionStorage.getItem(FILTER_KEY) || '{}')); // kept across reloads of this tab
 } catch {
   // storage blocked or corrupt — start with no filters
 }
 
-const filtersActive = () => !!(filters.query || filters.status !== 'all' || filters.from || filters.to);
+const filtersActive = () => !!(filters.companies.length || filters.query || filters.status !== 'all' || filters.from || filters.to);
 
 function renderCompanies() {
   const result = window.operatorFilter.filterCompanies(allCompanies, filters);
@@ -220,6 +362,22 @@ function renderCompanies() {
   document.getElementById('op-summary').textContent = filtersActive()
     ? `Showing ${result.shown} of ${result.total} license${result.total === 1 ? '' : 's'} in ${companyCount} compan${companyCount === 1 ? 'y' : 'ies'}.`
     : `${result.total} license${result.total === 1 ? '' : 's'} in ${allCompanies.length} compan${allCompanies.length === 1 ? 'y' : 'ies'}.`;
+}
+
+/** The company drop-down (multi-select). Drawn once per load; it keeps its own open/closed state while ticking. */
+function renderCompanyPicker() {
+  const names = allCompanies.map((c) => c.name).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  // A company that no longer exists can't stay selected.
+  filters.companies = (Array.isArray(filters.companies) ? filters.companies : []).filter((n) => names.includes(n));
+  const container = document.getElementById('op-company');
+  renderMultiSelect(container, names, filters.companies, (picked) => {
+    filters.companies = picked;
+    saveFilters();
+    renderCompanies();
+  });
+  const toggle = container.querySelector('.ms-toggle');
+  toggle.id = 'op-company-toggle';
+  toggle.setAttribute('aria-label', 'Company');
 }
 
 function saveFilters() {
@@ -249,7 +407,8 @@ function wireFilters() {
   };
   for (const input of [search, dateField, from, to]) input.addEventListener('input', apply);
   document.getElementById('op-clear').addEventListener('click', () => {
-    filters = { query: '', status: 'all', dateField: 'expires', from: '', to: '' };
+    filters = { companies: [], query: '', status: 'all', dateField: 'expires', from: '', to: '' };
+    renderCompanyPicker();
     search.value = '';
     dateField.value = 'expires';
     from.value = '';
@@ -260,7 +419,8 @@ function wireFilters() {
 }
 
 async function loadCompanies() {
-  ({ companies: allCompanies } = await api('/api/operator/companies'));
+  ({ companies: allCompanies, emailConfigured } = await api('/api/operator/companies'));
+  renderCompanyPicker();
   renderCompanies();
 }
 

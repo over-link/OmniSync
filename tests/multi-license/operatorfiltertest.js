@@ -76,6 +76,24 @@ ok('starts range (dateField = starts)', names(f.filterCompanies(companies, { dat
 ok('the date range combines with the status and the search', names(f.filterCompanies(companies, { status: 'active', from: '2026-10-01', to: '2026-12-31', query: 'acme' }, NOW)) === 'Acme EU');
 ok('an inverted range (from after to) matches nothing, rather than everything', f.filterCompanies(companies, { from: '2027-01-01', to: '2026-01-01' }, NOW).shown === 0);
 
+// ── companies (the multi-select drop-down)
+ok('one company picked: only its licenses', names(f.filterCompanies(companies, { companies: ['Acme Construction'] }, NOW)) === 'Acme 2025 plan,Acme EU,Acme US');
+ok('several companies picked: the licenses of all of them', names(f.filterCompanies(companies, { companies: ['Acme Construction', 'Delta Edge'] }, NOW)) === 'Acme 2025 plan,Acme EU,Acme US,Delta only');
+ok('no company picked (an empty list) = every company', f.filterCompanies(companies, { companies: [] }, NOW).shown === 8 && f.filterCompanies(companies, {}, NOW).shown === 8);
+ok('company names match regardless of case', names(f.filterCompanies(companies, { companies: ['beta BUILDERS'] }, NOW)) === 'Beta main,Beta next year,Beta old,Beta trial');
+ok('picking a company with no licenses shows it (so its first license can be added)', f.filterCompanies(companies, { companies: ['Gamma Group'] }, NOW).companies.map((c) => c.name).join() === 'Gamma Group');
+ok('...unless a status or date filter is also set', f.filterCompanies(companies, { companies: ['Gamma Group'], status: 'active' }, NOW).companies.length === 0);
+ok('an unknown company name shows nothing', f.filterCompanies(companies, { companies: ['Nobody Inc'] }, NOW).companies.length === 0);
+r = f.filterCompanies(companies, { companies: ['Acme Construction'], status: 'expiring' }, NOW);
+ok('company + status: Acme\'s expiring licenses only', names(r) === 'Acme EU', names(r));
+r = f.filterCompanies(companies, { companies: ['Beta Builders'], from: '2026-12-01', to: '2026-12-31' }, NOW);
+ok('company + date range', names(r) === 'Beta trial', names(r));
+r = f.filterCompanies(companies, { companies: ['Acme Construction'], query: 'eu' }, NOW);
+ok('company + search', names(r) === 'Acme EU', names(r));
+r = f.filterCompanies(companies, { companies: ['Acme Construction', 'Beta Builders'] }, NOW);
+ok('the status chip counts follow the picked companies', JSON.stringify(r.counts) === JSON.stringify({ all: 7, active: 3, expiring: 2, suspended: 1, expired: 2, not_started: 1 }), JSON.stringify(r.counts));
+ok('"of N" still counts every license, so the summary reads "Showing 3 of 8"', f.filterCompanies(companies, { companies: ['Acme Construction'] }, NOW).total === 8 && f.filterCompanies(companies, { companies: ['Acme Construction'] }, NOW).shown === 3);
+
 // ── dates are the company's own
 // 2026-10-08 12:00 UTC is already 21:00 on the 8th in Tokyo; "Delta only" ends 2026-10-09 = tomorrow there.
 ok('daysLeft uses the company\'s timezone (Tokyo: tomorrow = 1 day)', f.daysLeft(companies[3].licenses[0], companies[3], NOW) === 1);

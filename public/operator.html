@@ -41,7 +41,14 @@
 
       <!-- Finding things: search, status and a date range — all applied in the browser to what is already loaded (js/operatorFilter.js). -->
       <section class="card operator-filters" id="operator-filters" aria-label="Find companies and licenses">
-        <input id="op-search" type="search" placeholder="Search companies, licenses, people, notes…" aria-label="Search companies, licenses, people and notes" autocomplete="off" />
+        <div class="op-top-row">
+          <input id="op-search" type="search" placeholder="Search companies, licenses, people, notes…" aria-label="Search companies, licenses, people and notes" autocomplete="off" />
+          <!-- Pick one or more companies (the app's shared checkbox multi-select, js/multiselect.js). -->
+          <div class="filter-group op-company">
+            <label for="op-company-toggle">Company</label>
+            <div id="op-company" class="ms"></div>
+          </div>
+        </div>
         <div id="op-status" class="op-chips" role="group" aria-label="Status"></div>
         <div class="op-date-row">
           <label for="op-date-field" class="op-inline-label">Date</label>
@@ -63,6 +70,7 @@
     </div>
   </div>
   <script src="/js/nav.js"></script>
+  <script src="/js/multiselect.js"></script>
   <script src="/js/operatorFilter.js"></script>
   <script src="/js/operator.js"></script>
 </body>

@@ -4,9 +4,10 @@
  * the console already loaded (GET /api/operator/companies) — no DOM, so the
  * same file runs in the browser (window.operatorFilter) and in Node tests.
  *
- *   filterCompanies(companies, { query, status, dateField, from, to }, now)
+ *   filterCompanies(companies, { companies, query, status, dateField, from, to }, now)
  *     -> { companies: [{ ...company, licenses: [matching ones] }], shown, total, counts }
  *
+ * companies  company names to show (any of them); empty = every company.
  * query      words, ALL must appear (case-insensitive) in the license's text: company name,
  *            timezone, account owner, license name, note, status label, its admins' emails.
  * status     'all' | 'active' | 'expiring' | 'suspended' | 'expired' | 'not_started'
@@ -16,7 +17,7 @@
  *            YYYY-MM-DD, inclusive, either may be empty.
  * counts     licenses per status over the whole list (ignoring status), for the chips.
  *
- * A company with no licenses is shown only when it matches the search on its own
+ * Picking companies narrows everything (the chip counts too). A company with no licenses is shown only when it matches the search on its own
  * text and no status / date filter is set (so a new company can be found to add its
  * first license). "Today" is the company's own timezone date, as the server judges it.
  */
@@ -91,14 +92,16 @@
     const status = filters.status || 'all';
     const dateField = filters.dateField === 'starts' ? 'starts' : 'expires';
     const range = { dateField, from: filters.from || '', to: filters.to || '' };
+    const picked = new Set((filters.companies || []).map((n) => String(n).toLowerCase()));
     const counts = { all: 0, active: 0, expiring: 0, suspended: 0, expired: 0, not_started: 0 };
     let shown = 0;
     let total = 0;
     const out = [];
     for (const company of companies) {
+      total += company.licenses.length; // "of N" counts every license, whatever is picked
+      if (picked.size && !picked.has(company.name.toLowerCase())) continue;
       const matching = [];
       for (const license of company.licenses) {
-        total++;
         const statuses = statusesOf(license, company, now);
         // Counts follow the search and the date range, but not the status choice itself.
         if (hasAll(licenseText(license, company, now), terms) && inRange(license, range)) {
@@ -110,7 +113,7 @@
       const emptyCompanyShown = !company.licenses.length && status === 'all' && !range.from && !range.to && hasAll(companyText(company), terms);
       if (matching.length || emptyCompanyShown) {
         shown += matching.length;
-        out.push({ ...company, licenses: matching });
+        out.push({ ...company, licenses: matching, licenseCount: company.licenses.length }); // licenseCount: ALL its licenses, not just the shown ones
       }
     }
     return { companies: out, shown, total, counts };
