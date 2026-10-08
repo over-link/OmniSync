@@ -102,7 +102,9 @@ administrator on it).
    expiry clock starts here, not when the buyer first signs in. *(Today: capacity
    5 and the expiry are placeholders in `services/licenseTerms.js`.)*
 5. **Invite the buyer** by email → they become the company's **account owner** and
-   the license's **first license admin** (an explicit step, still verified against
+   the license's **first license admin** (the operator sets up only this one; further
+   admins are added by the customer's own license admins, and an operator account can
+   never be invited as a license admin from the console) (an explicit step, still verified against
    Revizto when they connect).
 6. **Hand over and check**: the buyer follows 3b; the operator confirms the
    license shows **active** and **0 of 5 slots used**.

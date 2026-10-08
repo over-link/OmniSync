@@ -845,3 +845,27 @@ CREATE POLICY rls_project_insert ON audit_log FOR INSERT TO app_rls
 -- Invitations: write-only (nothing reads them back).
 DROP POLICY IF EXISTS rls_invites_insert ON invites;
 CREATE POLICY rls_invites_insert ON invites FOR INSERT TO app_rls WITH CHECK (true);
+
+-- ═══ Primary operator and the operator audit trail (chunk 7) ═══════
+-- Additive. users.is_primary_operator marks the operator(s) set in the DATABASE only: they alone
+-- can add and remove other operators in the app (routes/operator.js), and the app never creates,
+-- removes or demotes one. When the column is first added, the lowest-id existing operator becomes
+-- the primary (so today's single operator keeps control). operator_audit records every operator
+-- action (who, what, when); the restricted RLS role has no access to it.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'users' AND column_name = 'is_primary_operator') THEN
+    ALTER TABLE users ADD COLUMN is_primary_operator BOOLEAN NOT NULL DEFAULT false;
+    UPDATE users SET is_primary_operator = true WHERE id = (SELECT id FROM users WHERE is_operator ORDER BY id LIMIT 1);
+  END IF;
+END $$;
+CREATE TABLE IF NOT EXISTS operator_audit (
+  id             BIGSERIAL PRIMARY KEY,
+  at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+  actor_user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  actor_email    TEXT NOT NULL,
+  action         TEXT NOT NULL,
+  detail         TEXT
+);
+CREATE INDEX IF NOT EXISTS operator_audit_at_idx ON operator_audit (at DESC);
+ALTER TABLE operator_audit ENABLE ROW LEVEL SECURITY;

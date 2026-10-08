@@ -15,17 +15,32 @@ const path = require('path');
 const router = express.Router();
 // Unrestricted on purpose: db/pool.js (row-level security) — this module looks across licenses / holds per-user secrets.
 const pool = require('../db/pool').admin;
-const { requireOperator } = require('./auth');
+const { requireOperator, requireOperatorPage, requirePrimaryOperator } = require('./auth');
 const emailService = require('../services/emailService');
 const licenseState = require('../services/licenseState');
 const tenancy = require('../services/tenancy');
 const pairingGuard = require('../services/pairingGuard');
 
-router.get('/operator', (req, res) => {
-  res.sendFile(path.join(__dirname, '../../public/operator.html'));
+// The page itself is only served to a signed-in operator (anyone else gets the same 404 as a page that does not exist).
+// Its HTML lives in src/views, not in public/, so it can't be fetched directly as /operator.html either.
+router.get('/operator', requireOperatorPage, (req, res) => {
+  res.sendFile(path.join(__dirname, '../views/operator.html'));
 });
 
 class BadInput extends Error {}
+
+/**
+ * Logs an operator action — to the server log and to operator_audit (who, what, when), shown in the
+ * console's "Operator activity". A failure to write the trail never blocks the action itself.
+ */
+async function logAction(req, action, message) {
+  console.log(`[operator] ${req.session.userEmail} ${message}`);
+  try {
+    await pool.query('INSERT INTO operator_audit (actor_user_id, actor_email, action, detail) VALUES ($1, $2, $3, $4)', [req.session.userId, req.session.userEmail, action, message]);
+  } catch (err) {
+    console.warn('[operator] Could not record the audit trail entry:', err.message);
+  }
+}
 
 const cleanName = (v, what) => {
   const name = String(v || '').replace(/\s+/g, ' ').trim().slice(0, 120);
@@ -129,7 +144,7 @@ router.post('/api/operator/companies', requireOperator, guarded(async (req, res)
   const { rows: dupe } = await pool.query('SELECT 1 FROM tenants WHERE lower(name) = lower($1)', [name]);
   if (dupe.length) return res.status(409).json({ error: 'A company with that name already exists — add the license to it instead.' });
   const { rows } = await pool.query('INSERT INTO tenants (name, timezone) VALUES ($1, $2) RETURNING id, name, timezone', [name, timezone]);
-  console.log(`[operator] ${req.session.userEmail} created company "${name}".`);
+  await logAction(req, 'company_created', `created company "${name}".`);
   res.json({ company: rows[0] });
 }));
 
@@ -148,7 +163,7 @@ router.post('/api/operator/companies/:id/licenses', requireOperator, guarded(asy
      VALUES ($1, $2, $3, $4, $5, $6, now()) RETURNING id`,
     [company[0].id, name, slotCapacity, startsOn, expiresOn, note]
   );
-  console.log(`[operator] ${req.session.userEmail} created license "${name}" (#${rows[0].id}): ${slotCapacity} slots, ${startsOn} to ${expiresOn}.`);
+  await logAction(req, 'license_created', `created license "${name}" (#${rows[0].id}): ${slotCapacity} slots, ${startsOn} to ${expiresOn}.`);
   res.json({ id: rows[0].id });
 }));
 
@@ -175,7 +190,7 @@ router.patch('/api/operator/licenses/:id', requireOperator, guarded(async (req, 
     [req.params.id, next.name, next.slot_capacity, next.starts_on, next.expires_on, next.note]
   );
   await pairingGuard.refresh(); // a renewal / lower slot limit changes which pairings are active
-  console.log(`[operator] ${req.session.userEmail} changed license #${req.params.id}: ${JSON.stringify(next)}.`);
+  await logAction(req, 'license_changed', `changed license #${req.params.id}: ${JSON.stringify(next)}.`);
   res.json({ ok: true });
 }));
 
@@ -186,21 +201,33 @@ const setSuspended = (suspended) => async (req, res) => {
   );
   if (!rowCount) return res.status(404).json({ error: 'License not found.' });
   await pairingGuard.refresh();
-  console.log(`[operator] ${req.session.userEmail} ${suspended ? 'suspended' : 'reactivated'} license #${req.params.id}.`);
+  await logAction(req, suspended ? 'license_suspended' : 'license_reactivated', `${suspended ? 'suspended' : 'reactivated'} license #${req.params.id}.`);
   res.json({ ok: true });
 };
 router.post('/api/operator/licenses/:id/suspend', requireOperator, setSuspended(true));
 router.post('/api/operator/licenses/:id/unsuspend', requireOperator, setSuspended(false));
 
-// Invites someone as a license admin of this license — the buyer, as the first
-// one. If the company has no account owner yet they become it. They stay
-// "pending" until their own Revizto connection proves License administrator
-// (routes/auth.js _verifyLicenseRole).
+// Invites someone as a license admin of this license — the buyer, as the FIRST one. If the company has
+// no account owner yet they become it. They stay "pending" until their own Revizto connection proves
+// License administrator (routes/auth.js _verifyLicenseRole).
+//
+// Operators set up ONLY that first license admin. Once a license has one, further admins are added by the
+// customer's own license admins (License Administration), and an operator account can never be invited as a
+// license admin from here — so an operator can't give themselves (or a colleague) access to a customer's
+// projects. (A license left with no admin, e.g. after the first was removed, can be given a new first one.)
 router.post('/api/operator/licenses/:id/admins', requireOperator, guarded(async (req, res) => {
   const email = String(req.body.email || '').toLowerCase().trim();
   if (!email || !email.includes('@')) throw new BadInput('Enter a valid email.');
   const { rows: lic } = await pool.query('SELECT l.id, l.name, l.tenant_id, t.account_owner_user_id FROM tenant_licenses l JOIN tenants t ON t.id = l.tenant_id WHERE l.id = $1', [Number(req.params.id) || 0]);
   if (!lic[0]) return res.status(404).json({ error: 'License not found.' });
+  const { rows: haveAdmin } = await pool.query("SELECT 1 FROM license_members WHERE tenant_license_id = $1 AND role = 'license_admin' LIMIT 1", [lic[0].id]);
+  if (haveAdmin.length) {
+    return res.status(409).json({ error: "This license already has a license admin. Further license admins are added by the customer's own license admins on License Administration." });
+  }
+  const { rows: isOperator } = await pool.query('SELECT 1 FROM users WHERE email = $1 AND is_operator', [email]);
+  if (isOperator.length) {
+    throw new BadInput("Operators can't be made license admins from the console. The license's first admin should be the customer's own contact.");
+  }
   const { rows } = await pool.query(
     `INSERT INTO users (email, role) VALUES ($1, 'license_admin')
      ON CONFLICT (email) DO UPDATE SET role = CASE WHEN users.role = 'member' THEN 'license_admin' ELSE users.role END,
@@ -228,7 +255,7 @@ router.post('/api/operator/licenses/:id/admins', requireOperator, guarded(async 
     }
   }
   await pool.query('INSERT INTO invites (email, role, invited_by, email_sent, email_error) VALUES ($1, $2, $3, $4, $5)', [email, 'license_admin', req.session.userId, emailSent, emailError]);
-  console.log(`[operator] ${req.session.userEmail} made ${email} a license admin of license #${lic[0].id}${accountOwner ? ' (account owner)' : ''}.`);
+  await logAction(req, 'license_admin_added', `made ${email} a license admin of license #${lic[0].id}${accountOwner ? ' (account owner)' : ''}.`);
   res.json({ ok: true, accountOwner, emailSent, emailError });
 }));
 
@@ -264,7 +291,7 @@ router.patch('/api/operator/companies/:id', requireOperator, guarded(async (req,
   }
   await pool.query('UPDATE tenants SET name = $2, timezone = $3, account_owner_user_id = $4 WHERE id = $1', [cur[0].id, name, timezone, ownerId]);
   if (timezone !== cur[0].timezone) await pairingGuard.refresh(); // a license's day (start / expiry) is judged in the company's timezone
-  console.log(`[operator] ${req.session.userEmail} changed company #${cur[0].id}: name "${name}", timezone ${timezone}, owner #${ownerId}.`);
+  await logAction(req, 'company_changed', `changed company #${cur[0].id}: name "${name}", timezone ${timezone}, owner #${ownerId}.`);
   res.json({ ok: true });
 }));
 
@@ -281,7 +308,7 @@ router.delete('/api/operator/companies/:id', requireOperator, guarded(async (req
   const { rows: lic } = await pool.query('SELECT count(*)::int AS n FROM tenant_licenses WHERE tenant_id = $1', [rows[0].id]);
   if (lic[0].n) return res.status(409).json({ error: `This company still has ${lic[0].n} license${lic[0].n === 1 ? '' : 's'} — delete them first.` });
   await pool.query('DELETE FROM tenants WHERE id = $1', [rows[0].id]);
-  console.log(`[operator] ${req.session.userEmail} deleted company "${rows[0].name}" (#${rows[0].id}).`);
+  await logAction(req, 'company_deleted', `deleted company "${rows[0].name}" (#${rows[0].id}).`);
   res.json({ ok: true });
 }));
 
@@ -300,7 +327,7 @@ router.delete('/api/operator/licenses/:id', requireOperator, guarded(async (req,
   }
   await pool.query('DELETE FROM tenant_licenses WHERE id = $1', [rows[0].id]);
   await pairingGuard.refresh();
-  console.log(`[operator] ${req.session.userEmail} deleted license "${rows[0].name}" (#${rows[0].id}).`);
+  await logAction(req, 'license_deleted', `deleted license "${rows[0].name}" (#${rows[0].id}).`);
   res.json({ ok: true });
 }));
 
@@ -326,7 +353,7 @@ router.delete('/api/operator/licenses/:id/admins/:userId', requireOperator, guar
        AND NOT EXISTS (SELECT 1 FROM license_members WHERE user_id = $1 AND role = 'license_admin')`,
     [userId]
   );
-  console.log(`[operator] ${req.session.userEmail} removed ${rows[0].email} as a license admin of license #${licenseId}.`);
+  await logAction(req, 'license_admin_removed', `removed ${rows[0].email} as a license admin of license #${licenseId}.`);
   res.json({ ok: true });
 }));
 
@@ -352,8 +379,73 @@ router.post('/api/operator/licenses/:id/admins/:userId/resend', requireOperator,
   }
   await pool.query('INSERT INTO invites (email, role, invited_by, email_sent, email_error) VALUES ($1, $2, $3, $4, $5)', [rows[0].email, 'license_admin', req.session.userId, !emailError, emailError]);
   if (emailError) return res.status(502).json({ error: `The email couldn't be sent: ${emailError}` });
-  console.log(`[operator] ${req.session.userEmail} resent the invitation to ${rows[0].email}.`);
+  await logAction(req, 'invitation_resent', `resent the invitation to ${rows[0].email}.`);
   res.json({ ok: true });
 }));
+
+// ─── Operators: who they are, add, remove ────────────────────────────
+
+// Any operator can see who the operators are; only a PRIMARY operator (set in the database) can change it.
+router.get('/api/operator/operators', requireOperator, async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT id, email, name, is_primary_operator, last_login_at FROM users WHERE is_operator
+     ORDER BY is_primary_operator DESC, lower(email)`
+  );
+  res.json({
+    canManage: !!req.primaryOperator,
+    emailConfigured: emailService.isConfigured(),
+    operators: rows.map((u) => ({ id: u.id, email: u.email, name: u.name, isPrimary: !!u.is_primary_operator, lastLoginAt: u.last_login_at })),
+  });
+});
+
+// Makes an account an operator, creating the account if the email is new (they then sign in the usual way:
+// leave the password blank and use the emailed code). A primary operator is never created here.
+router.post('/api/operator/operators', requirePrimaryOperator, guarded(async (req, res) => {
+  const email = String(req.body.email || '').toLowerCase().trim();
+  if (!email || !email.includes('@')) throw new BadInput('Enter a valid email.');
+  const { rows: existing } = await pool.query('SELECT id, is_operator FROM users WHERE email = $1', [email]);
+  if (existing[0]?.is_operator) return res.json({ ok: true, alreadyOperator: true });
+  let userId = existing[0]?.id;
+  const created = !userId;
+  if (created) {
+    ({ rows: [{ id: userId }] } = await pool.query("INSERT INTO users (email, role) VALUES ($1, 'member') RETURNING id", [email]));
+  }
+  await pool.query('UPDATE users SET is_operator = true WHERE id = $1', [userId]);
+  let emailSent = false;
+  let emailError = null;
+  if (req.body.sendEmail) {
+    if (!emailService.isConfigured()) {
+      emailError = "Email isn't set up on the server (SMTP), so nothing was sent.";
+    } else {
+      try {
+        const appUrl = process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
+        await emailService.sendInviteEmail({ toEmail: email, invitedByEmail: req.session.userEmail, appUrl, role: 'platform operator' });
+        emailSent = true;
+      } catch (err) {
+        emailError = err.message;
+      }
+    }
+  }
+  await logAction(req, 'operator_added', `made ${email} an operator${created ? ' (new account)' : ''}.`);
+  res.json({ ok: true, created, emailSent, emailError });
+}));
+
+// Takes operator access away. A primary operator can't be removed here (that is done in the database), which
+// also means nobody can lock everyone out; the caller is always a primary, so they can't remove themselves.
+router.delete('/api/operator/operators/:userId', requirePrimaryOperator, guarded(async (req, res) => {
+  const { rows } = await pool.query('SELECT id, email, is_primary_operator FROM users WHERE id = $1 AND is_operator', [Number(req.params.userId) || 0]);
+  if (!rows[0]) return res.status(404).json({ error: "That person isn't an operator." });
+  if (rows[0].is_primary_operator) throw new BadInput('A primary operator can only be changed in the database, not in the app.');
+  await pool.query('UPDATE users SET is_operator = false WHERE id = $1', [rows[0].id]);
+  await logAction(req, 'operator_removed', `removed ${rows[0].email} as an operator.`);
+  res.json({ ok: true });
+}));
+
+// The audit trail, newest first.
+router.get('/api/operator/activity', requireOperator, async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+  const { rows } = await pool.query('SELECT id, at, actor_email, action, detail FROM operator_audit ORDER BY at DESC, id DESC LIMIT $1', [limit]);
+  res.json({ activity: rows.map((r) => ({ id: Number(r.id), at: r.at, actor: r.actor_email, action: r.action, detail: r.detail })) });
+});
 
 module.exports = router;

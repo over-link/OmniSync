@@ -122,7 +122,7 @@ const throws = async (f) => { try { await f(); return null; } catch (e) { return
     ok('4. ...and add to its own project', r.rowCount === 1);
 
     // ── 5. tables the restricted role may not touch at all
-    for (const t of ['acc_tokens', 'revizto_tokens', 'session', 'password_codes', 'app_settings', 'revizto_licenses']) {
+    for (const t of ['acc_tokens', 'revizto_tokens', 'session', 'password_codes', 'app_settings', 'revizto_licenses', 'operator_audit']) {
       const err = await throws(() => asA(() => pool.query(`SELECT * FROM ${t}`)));
       ok(`5. ${t} is closed to the restricted role (permission denied)`, err && /permission denied/.test(err.message), err?.message);
     }

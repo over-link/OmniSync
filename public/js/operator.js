@@ -27,6 +27,7 @@ async function run(action, doneMessage) {
     await action();
     if (doneMessage) say(doneMessage);
     await loadCompanies();
+    if (document.getElementById('activity-card').open) loadActivity().catch(() => {});
   } catch (err) {
     say(err.message, true);
   }
@@ -179,9 +180,9 @@ function licenseCard(company, l) {
   }
   box.append(actions);
 
-  // License admins (the buyer first) + invite.
+  // License admins: the operator sets up only the FIRST one (the buyer); after that the customer's own admins add more.
   box.append(el('h4', null, 'License admins'));
-  if (!l.admins.length) box.append(el('p', 'hint', 'None yet — invite the buyer below.'));
+  if (!l.admins.length) box.append(el('p', 'hint', 'None yet — invite the buyer (the license\'s first admin) below.'));
   for (const a of l.admins) {
     const row = el('div', 'op-admin-row');
     row.append(el('span', 'op-admin-email', a.email));
@@ -218,7 +219,7 @@ function licenseCard(company, l) {
   send.checked = true;
   const sendLabel = el('label', 'hint');
   sendLabel.append(send, ' email the invitation');
-  const invBtn = el('button', 'btn', 'Invite as license admin');
+  const invBtn = el('button', 'btn', 'Invite as first license admin');
   invBtn.type = 'submit';
   inv.append(email, sendLabel, invBtn);
   inv.addEventListener('submit', (e) => {
@@ -228,7 +229,12 @@ function licenseCard(company, l) {
       say(`${email.value} is now a license admin${r.accountOwner ? ' and the account owner' : ''}.${r.emailError ? ` The email failed: ${r.emailError}` : ''}`);
     });
   });
-  box.append(inv);
+  if (l.admins.length) {
+    // Further admins are the customer's to add (License Administration); an operator can't add themselves.
+    box.append(el('p', 'hint', "Further license admins are added by this license's own admins on License Administration."));
+  } else {
+    box.append(inv);
+  }
   return box;
 }
 
@@ -428,6 +434,82 @@ function wireFilters() {
   });
 }
 
+// ─── Operators (who can use this console) and the activity trail ─────
+
+async function loadOperators() {
+  const data = await api('/api/operator/operators');
+  const list = document.getElementById('operators-list');
+  document.getElementById('operators-title').textContent = `Operators (${data.operators.length})`;
+  document.getElementById('operators-note').textContent = data.canManage
+    ? 'You are a primary operator: you can add and remove operators. A primary operator is set in the database and can\'t be removed here.'
+    : 'Only a primary operator can add or remove operators.';
+  list.replaceChildren(
+    ...data.operators.map((o) => {
+      const row = el('div', 'op-admin-row');
+      row.append(el('span', 'op-admin-email', o.name ? `${o.name} · ${o.email}` : o.email));
+      if (o.isPrimary) row.append(el('span', 'badge badge-warning', 'Primary operator'));
+      row.append(el('span', 'hint', o.lastLoginAt ? `last sign-in ${new Date(o.lastLoginAt).toLocaleString()}` : 'has not signed in yet'));
+      if (data.canManage && !o.isPrimary) {
+        const remove = el('button', 'btn secondary op-small', 'Remove');
+        remove.type = 'button';
+        remove.addEventListener('click', async () => {
+          if (!(await showConfirmDialog('Remove operator?', `${o.email} will no longer be able to use the operator console. Their account and any license access they have stay as they are.`, { confirmLabel: 'Remove', danger: true }))) return;
+          runOperators(() => api(`/api/operator/operators/${o.id}`, { method: 'DELETE' }), `${o.email} is no longer an operator.`);
+        });
+        row.append(remove);
+      } else if (o.isPrimary) {
+        row.title = 'Set in the database; the app never removes a primary operator.';
+      }
+      return row;
+    })
+  );
+  document.getElementById('add-operator-form').classList.toggle('hidden', !data.canManage);
+}
+
+async function loadActivity() {
+  const { activity } = await api('/api/operator/activity?limit=100');
+  const list = document.getElementById('activity-list');
+  if (!activity.length) {
+    list.replaceChildren(el('p', 'hint', 'Nothing yet.'));
+    return;
+  }
+  list.replaceChildren(
+    ...activity.map((a) => {
+      const row = el('div', 'op-activity-row');
+      row.append(el('span', 'op-activity-when', new Date(a.at).toLocaleString()), el('span', 'op-activity-who', a.actor), el('span', null, a.detail || a.action));
+      return row;
+    })
+  );
+}
+
+/** Like run(), for the Operators card: shows the server's message if refused, then refreshes the list (and the trail if it's open). */
+async function runOperators(action, doneMessage) {
+  try {
+    await action();
+    if (doneMessage) say(doneMessage);
+    await loadOperators();
+    if (document.getElementById('activity-card').open) await loadActivity();
+  } catch (err) {
+    say(err.message, true);
+  }
+}
+
+function wireOperators() {
+  document.getElementById('add-operator-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const email = document.getElementById('add-operator-email');
+    runOperators(async () => {
+      const r = await api('/api/operator/operators', { method: 'POST', body: JSON.stringify({ email: email.value, sendEmail: document.getElementById('add-operator-send').checked }) });
+      email.value = '';
+      say(r.alreadyOperator ? 'They are already an operator.' : `Added as an operator${r.created ? ' (a new account was created: they sign in with their email and the emailed code)' : ''}.${r.emailError ? ` The email was not sent: ${r.emailError}` : ''}`);
+    });
+  });
+  // The trail is read when the section is opened (and kept fresh after each change made here).
+  document.getElementById('activity-card').addEventListener('toggle', (e) => {
+    if (e.target.open) loadActivity().catch((err) => say(err.message, true));
+  });
+}
+
 async function loadCompanies() {
   ({ companies: allCompanies, emailConfigured } = await api('/api/operator/companies'));
   renderCompanyPicker();
@@ -451,5 +533,7 @@ window.addEventListener('app:ready', async (e) => {
     });
   });
   wireFilters();
+  wireOperators();
+  loadOperators().catch((err) => say(err.message, true));
   await loadCompanies().catch((err) => say(err.message, true));
 });

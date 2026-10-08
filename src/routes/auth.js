@@ -46,7 +46,7 @@ const SESSION_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 async function _sessionUser(req) {
   if (!req.session.userId) return null;
   const signedInAt = req.session.signedInAt || 0;
-  const { rows } = await pool.query('SELECT id, email, name, role, password_version, is_operator FROM users WHERE id = $1', [req.session.userId]);
+  const { rows } = await pool.query('SELECT id, email, name, role, password_version, is_operator, is_primary_operator FROM users WHERE id = $1', [req.session.userId]);
   const user = rows[0];
   const expired =
     !user ||
@@ -70,6 +70,7 @@ async function _sessionUser(req) {
   // An operator with no license of their own stays signed in, for the operator
   // console only (no project data: _blockedByLimit refuses everything else).
   req.operator = !!user.is_operator;
+  req.primaryOperator = req.operator && !!user.is_primary_operator; // set in the database only; may add / remove other operators
   req.operatorOnly = !!denied && req.operator;
   if (denied && !req.operatorOnly) {
     await new Promise((resolve) => req.session.destroy(resolve));
@@ -128,6 +129,32 @@ async function requireOperator(req, res, next) {
   try {
     if (!(await _sessionUser(req))) return _sessionEnded(req, res);
     if (!req.operator) return res.status(403).json({ error: 'Operator access required.' });
+    next();
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * For the operator console's PAGE: anyone who isn't a signed-in operator (including a signed-out visitor)
+ * gets exactly the answer a page that doesn't exist gets, so the console can't even be discovered.
+ */
+async function requireOperatorPage(req, res, next) {
+  try {
+    await _sessionUser(req);
+    if (!req.operator) return res.status(404).json({ error: 'Not found' });
+    next();
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** A primary operator (users.is_primary_operator, set in the database): the only ones who can add / remove operators. */
+async function requirePrimaryOperator(req, res, next) {
+  try {
+    if (!(await _sessionUser(req))) return _sessionEnded(req, res);
+    if (!req.operator) return res.status(403).json({ error: 'Operator access required.' });
+    if (!req.primaryOperator) return res.status(403).json({ error: 'Only a primary operator can add or remove operators.' });
     next();
   } catch (err) {
     next(err);
@@ -492,6 +519,7 @@ router.get('/auth/me', async (req, res) => {
   const permissions = {
     roleLabel: req.operatorOnly ? 'Operator' : access.displayRole(userAccess),
     isOperator: !!req.operator,
+    isPrimaryOperator: !!req.primaryOperator,
     isLicenseAdmin: userAccess.isLicenseAdmin,
     isPrimary: userAccess.isPrimary,
     isAnyProjectAdmin: access.isAnyProjectAdmin(userAccess),
@@ -653,4 +681,4 @@ router.post('/auth/revizto/exchange', requireLogin, async (req, res) => {
   }
 });
 
-module.exports = { router, requireLogin, requireOperator, requireLicenseAdmin, requireAnyProjectAdmin, requireProjectRole };
+module.exports = { router, requireLogin, requireOperator, requireOperatorPage, requirePrimaryOperator, requireLicenseAdmin, requireAnyProjectAdmin, requireProjectRole };

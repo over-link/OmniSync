@@ -152,7 +152,16 @@ const EMAILS = ['op@x.com', 'oponly@x.com', 'ownera@x.com', 'dual@x.com', 'solo@
     r = await call(opC, '/api/operator/companies');
     ok('4. the operator lists companies with licenses (all phases, expired and gone included)', r.status === 200 && r.body.companies.length === 2 && r.body.companies.find((x) => x.name === 'Company A').licenses.length === 3, JSON.stringify(r.body).slice(0, 300));
     ok('4. the listing carries no project or issue data', !/"PA"|"PB"|rv-PA/.test(JSON.stringify(r.body)));
-    ok('4. the operator page itself is served', (await fetch(`http://localhost:${PORT}/operator`)).status === 200);
+    {
+      const page = (p, cookie) => fetch(`http://localhost:${PORT}${p}`, { headers: cookie ? { cookie } : {} });
+      const bodyOf = async (res) => (await res.text()).slice(0, 80);
+      const missing = await page('/definitely-not-a-page');
+      ok('4. the operator page is served to a signed-in operator', (await page('/operator', opC)).status === 200 && /Operator console/.test(await (await page('/operator', opC)).text()));
+      ok('4. ...a signed-out visitor gets the same 404 as a page that does not exist', (await page('/operator')).status === 404 && (await bodyOf(await page('/operator'))) === (await bodyOf(missing)));
+      ok("4. ...a customer's license admin and a plain member get that 404 too", (await page('/operator', await as('ownera'))).status === 404 && (await page('/operator', await as('solo'))).status === 404);
+      ok('4. ...also with a trailing slash', (await page('/operator/')).status === 404 && (await page('/operator/', opC)).status === 200);
+      ok('4. the HTML is not reachable as a plain file either (/operator.html: 404 for everyone, even an operator)', (await page('/operator.html')).status === 404 && (await page('/operator.html', opC)).status === 404);
+    }
 
     // ── 5. create company + license + invite the buyer
     r = await call(opC, '/api/operator/companies', { method: 'POST', body: { name: 'New Co', timezone: 'America/New_York' } });
@@ -192,7 +201,7 @@ const EMAILS = ['op@x.com', 'oponly@x.com', 'ownera@x.com', 'dual@x.com', 'solo@
     ok('5. the invitation is recorded', (await q("SELECT 1 FROM invites WHERE email = 'buyer@new.com' AND role = 'license_admin'")).length === 1);
     r = await call(opC, `/api/operator/licenses/${nl}/admins`, { method: 'POST', body: { email: 'second@new.com' } });
     const owner2 = (await q('SELECT account_owner_user_id FROM tenants WHERE id = $1', [newId]))[0].account_owner_user_id;
-    ok('5. a second admin does not replace the account owner', r.status === 200 && r.body.accountOwner === false && owner2 === buyer.id);
+    ok('5. a SECOND license admin cannot be added from the console (409: the customer\'s own admins do that), and the account owner is unchanged', r.status === 409 && /already has a license admin/.test(r.body.error) && owner2 === buyer.id && (await q("SELECT 1 FROM users WHERE email = 'second@new.com'")).length === 0, JSON.stringify(r));
     r = await call(opC, `/api/operator/licenses/${nl}/admins`, { method: 'POST', body: { email: 'nope' } });
     ok('5. a bad email is refused (400)', r.status === 400);
     r = await call(opC, '/api/operator/licenses/99999/admins', { method: 'POST', body: { email: 'a@b.com' } });
@@ -231,7 +240,7 @@ const EMAILS = ['op@x.com', 'oponly@x.com', 'ownera@x.com', 'dual@x.com', 'solo@
     ok('6. suspending an unknown license is a 404', r.status === 404);
     const list = (await call(opC, '/api/operator/companies')).body.companies;
     const newCo = list.find((x) => x.name === 'New Co');
-    ok('6. the console listing shows the new company, owner, slots, admins', newCo.accountOwnerEmail === 'buyer@new.com' && newCo.licenses[0].slotCapacity === 9 && newCo.licenses[0].admins.length === 2, JSON.stringify(newCo));
+    ok('6. the console listing shows the new company, owner, slots, admins', newCo.accountOwnerEmail === 'buyer@new.com' && newCo.licenses[0].slotCapacity === 9 && newCo.licenses[0].admins.length === 1, JSON.stringify(newCo));
 
     // ── 7. an operator with no license of their own
     const ooC = await as('oponly');

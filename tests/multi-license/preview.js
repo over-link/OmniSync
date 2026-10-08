@@ -47,7 +47,9 @@ const EMAILS = ['operator@demo.test', 'amy@demo.test', 'dan@demo.test', 'bob@dem
     amy: await mkUser('amy@demo.test', 'Amy Admin', 'primary_license_admin'),
     dan: await mkUser('dan@demo.test', 'Dan Dual', 'member'),
     bob: await mkUser('bob@demo.test', 'Bob Builder', 'primary_license_admin'),
+    sam: await mkUser('sam@demo.test', 'Sam Support', 'member', true), // a regular operator (not primary)
   };
+  await q('UPDATE users SET is_primary_operator = true WHERE id = $1', [U.operator]); // the primary operator, as set in the database
   const tA = (await q("INSERT INTO tenants(name, account_owner_user_id) VALUES ('Acme Construction', $1) RETURNING id", [U.amy]))[0].id;
   const tB = (await q("INSERT INTO tenants(name, account_owner_user_id) VALUES ('Beta Builders', $1) RETURNING id", [U.bob]))[0].id;
   const day = async (n) => (await q("SELECT to_char((now() AT TIME ZONE 'America/Los_Angeles')::date + $1::int, 'YYYY-MM-DD') AS d", [n]))[0].d;

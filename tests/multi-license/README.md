@@ -16,6 +16,7 @@ Run from the repo root (each takes about 1-3 minutes — most of it database rou
     node tests/multi-license/c5test.js     # one ACC project, one active Revizto project: the guard, migration backfill, expiry/archive release (34)
     node tests/multi-license/c6test.js     # row-level security: the real restricted role, policies, leaks, self-test (50; in-process)
     node tests/multi-license/c7test.js     # operator console actions: rename / timezone / owner, remove admin, resend invite, delete license / company (58; email faked)
+    node tests/multi-license/c8test.js     # primary operator, adding / removing operators, the operator audit trail (39; email faked)
     node tests/multi-license/operatorfiltertest.js  # operator console search / company / status / date-range filters (49; pure logic, no database)
     node tests/multi-license/perftest.js   # Issues-page speed-up: parallel page reads, the 30 s shared read cache, batched clean-up (25; in-process, no network)
 
