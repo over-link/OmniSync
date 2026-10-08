@@ -28,7 +28,7 @@
           <label for="new-company-name">Company name</label>
           <input id="new-company-name" type="text" maxlength="120" required />
           <label for="new-company-tz">Timezone (polling hours and the daily full check follow it)</label>
-          <input id="new-company-tz" type="text" value="America/Los_Angeles" />
+          <select id="new-company-tz"></select>
           <div class="field-row">
             <button type="submit" class="btn">Create company</button>
             <button type="button" id="new-company-cancel" class="btn secondary">Cancel</button>
@@ -71,6 +71,7 @@
   </div>
   <script src="/js/nav.js"></script>
   <script src="/js/multiselect.js"></script>
+  <script src="/js/timezones.js"></script>
   <script src="/js/operatorFilter.js"></script>
   <script src="/js/operator.js"></script>
 </body>

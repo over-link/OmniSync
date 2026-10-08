@@ -107,6 +107,18 @@ ok('a license with no note / admins does not break search', f.filterCompanies([{
 ok('the original data is not changed by filtering', companies[0].licenses.length === 3 && companies[1].licenses.length === 4);
 ok('an empty list is fine', f.filterCompanies([], { query: 'x', status: 'active' }, NOW).total === 0);
 
+// ── the timezone drop-down (public/js/timezones.js)
+const tzs = require(path.resolve(__dirname, '../../public/js/timezones.js'));
+const valid = (z) => { try { new Intl.DateTimeFormat('en-US', { timeZone: z }); return true; } catch { return false; } };
+ok('every offered timezone is a real IANA timezone the server will accept', tzs.NORTH_AMERICA.every((z) => valid(z.value)), tzs.NORTH_AMERICA.filter((z) => !valid(z.value)).map((z) => z.value).join());
+ok('no timezone is listed twice, and every one has a label', new Set(tzs.NORTH_AMERICA.map((z) => z.value)).size === tzs.NORTH_AMERICA.length && tzs.NORTH_AMERICA.every((z) => z.label.length > 3));
+ok('the default (Pacific, as before) is on the list', tzs.NORTH_AMERICA.some((z) => z.value === tzs.DEFAULT_TIMEZONE) && tzs.DEFAULT_TIMEZONE === 'America/Los_Angeles');
+ok('all the mainland US zones, Alaska, Hawaii, Canada and Mexico are covered', ['America/Los_Angeles', 'America/Denver', 'America/Chicago', 'America/New_York', 'America/Phoenix', 'America/Anchorage', 'Pacific/Honolulu', 'America/Halifax', 'America/St_Johns', 'America/Regina', 'America/Mexico_City'].every((v) => tzs.NORTH_AMERICA.some((z) => z.value === v)));
+ok('only North America is offered (no Europe / Asia entries)', tzs.NORTH_AMERICA.every((z) => /^(America|Pacific\/Honolulu)/.test(z.value)));
+ok('options(): each choice shows its IANA name too, so the exact value is visible', tzs.options().every((o) => o.label.endsWith(o.value)));
+ok('options(current): a company already on another timezone keeps it as an extra choice, so editing never changes it silently', tzs.options('Europe/Berlin').some((o) => o.value === 'Europe/Berlin' && /current/.test(o.label)) && tzs.options('Europe/Berlin').length === tzs.NORTH_AMERICA.length + 1);
+ok('options(current): a zone already on the list is not duplicated', tzs.options('America/Denver').length === tzs.NORTH_AMERICA.length);
+
 const failed = results.filter(([, p]) => !p);
 console.log(`\n${results.length - failed.length}/${results.length} passed`);
 process.exitCode = failed.length ? 1 : 0;

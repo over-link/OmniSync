@@ -103,6 +103,16 @@ function confirmTyped(titleText, message, expected, confirmLabel = 'Delete') {
   });
 }
 
+/** A timezone drop-down (North America — js/timezones.js). `current` is kept as a choice even if it isn't in the list. */
+function timezoneSelect(current, id) {
+  const select = document.createElement('select');
+  if (id) select.id = id;
+  select.setAttribute('aria-label', 'Timezone');
+  for (const z of window.operatorTimezones.options(current)) select.add(new Option(z.label, z.value));
+  select.value = current || window.operatorTimezones.DEFAULT_TIMEZONE;
+  return select;
+}
+
 const PHASE_BADGES = { active: 'success', not_started: 'neutral', suspended: 'warning', expired: 'danger', gone: 'danger' };
 const PHASE_LABELS = { active: 'Active', not_started: 'Not started', suspended: 'Suspended', expired: 'Expired (greyed)', gone: 'Expired (hidden)' };
 
@@ -254,7 +264,7 @@ function editCompanyForm(c) {
   const form = el('form', 'operator-terms hidden');
   form.noValidate = true;
   const name = field('Company name', input('text', c.name, { maxLength: 120 }));
-  const tz = field('Timezone (polling hours and each license\'s days follow it)', input('text', c.timezone));
+  const tz = field('Timezone (polling hours and each license\'s days follow it)', timezoneSelect(c.timezone));
   const admins = [...new Set(full.licenses.flatMap((l) => l.admins.map((a) => a.email)))].sort();
   const owner = document.createElement('select');
   owner.setAttribute('aria-label', 'Account owner');
@@ -427,6 +437,7 @@ async function loadCompanies() {
 window.addEventListener('app:ready', async (e) => {
   if (!e.detail.user?.isOperator) return;
   document.getElementById('operator-app').classList.remove('hidden');
+  document.getElementById('new-company-tz').replaceWith(timezoneSelect(window.operatorTimezones.DEFAULT_TIMEZONE, 'new-company-tz'));
   const form = document.getElementById('new-company-form');
   document.getElementById('new-company-btn').addEventListener('click', () => form.classList.toggle('hidden'));
   document.getElementById('new-company-cancel').addEventListener('click', () => form.classList.add('hidden'));
