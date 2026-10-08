@@ -27,7 +27,7 @@ async function run(action, doneMessage) {
     await action();
     if (doneMessage) say(doneMessage);
     await loadCompanies();
-    if (document.getElementById('activity-card').open) loadActivity().catch(() => {});
+    if (document.getElementById('activity-dialog').open) loadActivity().catch(() => {});
   } catch (err) {
     say(err.message, true);
   }
@@ -439,7 +439,7 @@ function wireFilters() {
 async function loadOperators() {
   const data = await api('/api/operator/operators');
   const list = document.getElementById('operators-list');
-  document.getElementById('operators-title').textContent = `Operators (${data.operators.length})`;
+  document.getElementById('op-menu-operators').textContent = `Operators (${data.operators.length})`;
   document.getElementById('operators-note').textContent = data.canManage
     ? 'You are a primary operator: you can add and remove operators. A primary operator is set in the database and can\'t be removed here.'
     : 'Only a primary operator can add or remove operators.';
@@ -453,7 +453,13 @@ async function loadOperators() {
         const remove = el('button', 'btn secondary op-small', 'Remove');
         remove.type = 'button';
         remove.addEventListener('click', async () => {
-          if (!(await showConfirmDialog('Remove operator?', `${o.email} will no longer be able to use the operator console. Their account and any license access they have stay as they are.`, { confirmLabel: 'Remove', danger: true }))) return;
+          // A native <dialog> sits above everything else, so the confirmation would be hidden behind it:
+          // close this panel while the confirmation shows, then bring it back.
+          const panel = document.getElementById('operators-dialog');
+          panel.close();
+          const confirmed = await showConfirmDialog('Remove operator?', `${o.email} will no longer be able to use the operator console. Their account and any license access they have stay as they are.`, { confirmLabel: 'Remove', danger: true });
+          panel.showModal();
+          if (!confirmed) return;
           runOperators(() => api(`/api/operator/operators/${o.id}`, { method: 'DELETE' }), `${o.email} is no longer an operator.`);
         });
         row.append(remove);
@@ -486,12 +492,93 @@ async function loadActivity() {
 async function runOperators(action, doneMessage) {
   try {
     await action();
-    if (doneMessage) say(doneMessage);
+    if (doneMessage) sayInOperators(doneMessage);
     await loadOperators();
-    if (document.getElementById('activity-card').open) await loadActivity();
+    if (document.getElementById('activity-dialog').open) await loadActivity();
   } catch (err) {
-    say(err.message, true);
+    sayInOperators(err.message, true);
   }
+}
+
+/** A message inside the Operators panel (it covers the page's own message line while it is open). */
+function sayInOperators(message, isError = false) {
+  const el2 = document.getElementById('operators-result');
+  el2.textContent = message;
+  el2.className = `result-text${isError ? ' error' : ''}`;
+}
+
+const GEAR_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
+
+/**
+ * The gear at the top right (just left of the light / medium / dark icons) with a small menu: Operators and
+ * Operator activity, each opening in its own pop-up panel — so the page itself shows only the companies.
+ */
+function mountGear() {
+  const gear = document.createElement('button');
+  gear.type = 'button';
+  gear.className = 'op-gear';
+  gear.id = 'op-gear';
+  gear.setAttribute('aria-label', 'Operator settings: operators and activity');
+  gear.setAttribute('aria-haspopup', 'menu');
+  gear.setAttribute('aria-expanded', 'false');
+  gear.innerHTML = GEAR_ICON;
+  const menu = document.createElement('div');
+  menu.className = 'op-menu hidden';
+  menu.setAttribute('role', 'menu');
+  const operatorsItem = el('button', null, 'Operators');
+  operatorsItem.id = 'op-menu-operators';
+  const activityItem = el('button', null, 'Operator activity');
+  for (const item of [operatorsItem, activityItem]) {
+    item.type = 'button';
+    item.setAttribute('role', 'menuitem');
+    menu.append(item);
+  }
+  document.body.append(gear, menu);
+
+  // Sit beside the theme icons (js/theme.js puts them top right), whatever their width.
+  const place = () => {
+    const sw = document.querySelector('.theme-switch');
+    const top = sw ? sw.offsetTop : 10;
+    const right = sw ? parseFloat(getComputedStyle(sw).right) + sw.offsetWidth + 8 : 16;
+    gear.style.top = `${top}px`;
+    gear.style.right = `${right}px`;
+    if (sw) gear.style.height = `${sw.offsetHeight}px`;
+    menu.style.top = `${top + (sw ? sw.offsetHeight : 32) + 6}px`;
+    menu.style.right = `${right}px`;
+  };
+  place();
+  window.addEventListener('resize', place);
+
+  const closeMenu = ({ refocus = false } = {}) => {
+    menu.classList.add('hidden');
+    gear.setAttribute('aria-expanded', 'false');
+    if (refocus) gear.focus();
+  };
+  gear.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const opening = menu.classList.contains('hidden');
+    menu.classList.toggle('hidden', !opening);
+    gear.setAttribute('aria-expanded', String(opening));
+    if (opening) operatorsItem.focus();
+  });
+  document.addEventListener('click', (e) => {
+    if (!menu.contains(e.target) && e.target !== gear) closeMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !menu.classList.contains('hidden')) closeMenu({ refocus: true });
+  });
+
+  const open = (dialogId, load) => {
+    closeMenu();
+    const dialog = document.getElementById(dialogId);
+    if (!dialog.open) dialog.showModal();
+    load().catch((err) => say(err.message, true));
+  };
+  operatorsItem.addEventListener('click', () => {
+    sayInOperators('');
+    open('operators-dialog', loadOperators);
+  });
+  activityItem.addEventListener('click', () => open('activity-dialog', loadActivity));
 }
 
 function wireOperators() {
@@ -501,13 +588,17 @@ function wireOperators() {
     runOperators(async () => {
       const r = await api('/api/operator/operators', { method: 'POST', body: JSON.stringify({ email: email.value, sendEmail: document.getElementById('add-operator-send').checked }) });
       email.value = '';
-      say(r.alreadyOperator ? 'They are already an operator.' : `Added as an operator${r.created ? ' (a new account was created: they sign in with their email and the emailed code)' : ''}.${r.emailError ? ` The email was not sent: ${r.emailError}` : ''}`);
+      sayInOperators(r.alreadyOperator ? 'They are already an operator.' : `Added as an operator${r.created ? ' (a new account was created: they sign in with their email and the emailed code)' : ''}.${r.emailError ? ` The email was not sent: ${r.emailError}` : ''}`);
     });
   });
-  // The trail is read when the section is opened (and kept fresh after each change made here).
-  document.getElementById('activity-card').addEventListener('toggle', (e) => {
-    if (e.target.open) loadActivity().catch((err) => say(err.message, true));
-  });
+  // Both panels close with their ✕ button, with Escape (built into <dialog>), or by clicking outside them.
+  for (const dialog of document.querySelectorAll('dialog.op-dialog')) {
+    dialog.querySelector('[data-close]').addEventListener('click', () => dialog.close());
+    dialog.addEventListener('click', (e) => {
+      if (e.target === dialog) dialog.close();
+    });
+  }
+  mountGear();
 }
 
 async function loadCompanies() {

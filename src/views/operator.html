@@ -19,23 +19,6 @@
     </header>
 
     <div id="operator-app" class="hidden">
-      <!-- Who can use this console, and what operators have done. -->
-      <details class="card op-details" id="operators-card">
-        <summary><h2 id="operators-title">Operators</h2></summary>
-        <p class="hint" id="operators-note"></p>
-        <div id="operators-list"></div>
-        <form id="add-operator-form" class="field-row hidden" novalidate>
-          <input id="add-operator-email" type="email" placeholder="colleague@yourcompany.com" aria-label="Email of the new operator" />
-          <label class="hint"><input id="add-operator-send" type="checkbox" checked /> email them</label>
-          <button type="submit" class="btn">Add operator</button>
-        </form>
-      </details>
-      <details class="card op-details" id="activity-card">
-        <summary><h2>Operator activity</h2></summary>
-        <p class="hint">What operators have done in this console, newest first (last 100).</p>
-        <div id="activity-list"></div>
-      </details>
-
       <section class="card">
         <div class="card-header-row">
           <h2>Companies</h2>
@@ -86,6 +69,29 @@
       <div id="companies"></div>
     </div>
   </div>
+  <!-- Opened from the gear menu at the top right (js/operator.js): who the operators are, and what they have done. -->
+  <dialog id="operators-dialog" class="op-dialog" aria-labelledby="operators-title">
+    <div class="op-dialog-head">
+      <h2 id="operators-title">Operators</h2>
+      <button type="button" class="op-dialog-close" data-close aria-label="Close">✕</button>
+    </div>
+    <p class="hint" id="operators-note"></p>
+    <div id="operators-list"></div>
+    <form id="add-operator-form" class="field-row hidden" novalidate>
+      <input id="add-operator-email" type="email" placeholder="colleague@yourcompany.com" aria-label="Email of the new operator" />
+      <label class="hint"><input id="add-operator-send" type="checkbox" checked /> email them</label>
+      <button type="submit" class="btn">Add operator</button>
+    </form>
+    <p id="operators-result" class="result-text" role="status"></p>
+  </dialog>
+  <dialog id="activity-dialog" class="op-dialog" aria-labelledby="activity-title">
+    <div class="op-dialog-head">
+      <h2 id="activity-title">Operator activity</h2>
+      <button type="button" class="op-dialog-close" data-close aria-label="Close">✕</button>
+    </div>
+    <p class="hint">What operators have done in this console, newest first (last 100).</p>
+    <div id="activity-list"></div>
+  </dialog>
   <script src="/js/nav.js"></script>
   <script src="/js/multiselect.js"></script>
   <script src="/js/timezones.js"></script>
