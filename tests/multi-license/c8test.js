@@ -91,6 +91,11 @@ const EMAILS = ['prime@x.com', 'second@x.com', 'third@x.com', 'cust@a.com', 'pla
     r = await call(prime, '/auth/me'); const r2 = await call(second, '/auth/me');
     ok('1. /auth/me tells the page who is primary (for the UI)', r.body.user.isOperator === true && r.body.user.isPrimaryOperator === true && r2.body.user.isOperator === true && r2.body.user.isPrimaryOperator === false, JSON.stringify([r.body.user, r2.body.user]));
 
+    // ── 1b. the sync-timing numbers (services/syncTiming.js) are for operators only
+    r = await call(prime, '/api/operator/sync-timing');
+    ok('1b. an operator can read the sync timing (thresholds, last cycles, skipped ticks)', r.status === 200 && r.body.limits.tickSeconds === 120 && r.body.limits.cycleWarnSeconds === 90 && r.body.ticksSkipped === 0 && Array.isArray(r.body.recent), JSON.stringify(r.body).slice(0, 200));
+    ok("1b. ...a regular operator too; a customer's license admin gets 403, a signed-out request 401", (await call(second, '/api/operator/sync-timing')).status === 200 && (await call(cust, '/api/operator/sync-timing')).status === 403 && (await call(null, '/api/operator/sync-timing')).status === 401);
+
     // ── 2. adding operators
     for (const [label, cookie] of [['a regular operator', second], ["a customer's license admin", cust]]) {
       r = await call(cookie, '/api/operator/operators', { method: 'POST', body: { email: 'plain@x.com' } });

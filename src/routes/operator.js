@@ -20,6 +20,7 @@ const emailService = require('../services/emailService');
 const licenseState = require('../services/licenseState');
 const tenancy = require('../services/tenancy');
 const pairingGuard = require('../services/pairingGuard');
+const syncTiming = require('../services/syncTiming');
 
 // The page itself is only served to a signed-in operator (anyone else gets the same 404 as a page that does not exist).
 // Its HTML lives in src/views, not in public/, so it can't be fetched directly as /operator.html either.
@@ -440,6 +441,12 @@ router.delete('/api/operator/operators/:userId', requirePrimaryOperator, guarded
   await logAction(req, 'operator_removed', `removed ${rows[0].email} as an operator.`);
   res.json({ ok: true });
 }));
+
+// How long the background sync is taking (see services/syncTiming.js): the thresholds, the last cycles, skipped ticks.
+// Kept in memory, so it starts empty after each restart / deploy. The same numbers are logged as [poll-timing].
+router.get('/api/operator/sync-timing', requireOperator, (req, res) => {
+  res.json(syncTiming.getStats());
+});
 
 // The audit trail, newest first.
 router.get('/api/operator/activity', requireOperator, async (req, res) => {

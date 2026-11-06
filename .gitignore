@@ -2,3 +2,6 @@ node_modules/
 .env
 *.log
 .DS_Store
+
+# PRIVATE security reviews - this repository is PUBLIC, never commit these
+docs/security-private/

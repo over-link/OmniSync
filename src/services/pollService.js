@@ -16,6 +16,17 @@ const appSettings = require('./appSettings');
 const webhookHealth = require('./webhookHealth');
 const licenseState = require('./licenseState');
 const pairingGuard = require('./pairingGuard');
+const syncTiming = require('./syncTiming');
+
+/** Timing must never break a sync: any problem in it is logged and ignored. */
+const timed = (fn) => {
+  try {
+    return fn();
+  } catch (err) {
+    console.warn('[poll-timing] Could not record timing (ignored):', err.message);
+    return undefined;
+  }
+};
 const syncPolicy = require('./syncPolicy');
 const { ReconnectRequiredError, getValidAccToken, getValidReviztoToken } = require('./authManager');
 
@@ -61,6 +72,10 @@ const _ids = (licenses) => licenses.map((l) => l.id);
 async function pollTick() {
   if (cycleRunning) {
     console.log('[poll] Previous cycle still running — skipping this tick.');
+    timed(() => {
+      const n = syncTiming.recordSkippedTick();
+      console.warn(`[poll-timing] WARNING: a tick was skipped because the previous cycle was still running (${n} skipped since the service started): syncing is falling behind.`);
+    });
     return;
   }
   cycleRunning = true;
@@ -149,12 +164,22 @@ async function pollAllProjects({ full = false, licenseIds = null, includeLegacy 
   const projects = allProjects.filter((p) =>
     p.tenant_license_id ? syncing.has(p.tenant_license_id) && (!wanted || wanted.has(p.tenant_license_id)) : includeLegacy
   );
+  const cycleWatch = timed(() => syncTiming.stopwatch());
+  const timings = []; // one entry per project, for the cycle summary
   for (const project of projects) {
+    const watch = timed(() => syncTiming.stopwatch());
+    let linked = 0;
+    let changed = 0;
+    let failed = false;
     try {
       // One bulk look at both sides for every linked issue, shared by the
       // push and both ACC polls below, which each skip issues that
       // haven't changed since their last check (unless full).
       const snapshot = await syncService.prefetchLinkedIssues(project.owner_user_id, project);
+      timed(() => {
+        watch.stage('read');
+        linked = snapshot.links?.length || 0;
+      });
       // The license was paused until just now: bring across what was changed in ACC
       // meanwhile (the newer side wins) BEFORE the normal push, so an older Revizto
       // state can't overwrite it.
@@ -166,8 +191,13 @@ async function pollAllProjects({ full = false, licenseIds = null, includeLegacy 
           `[poll] "${project.name}": catch-up after the pause — ${caught.pulled} change(s) brought across from ACC, ${caught.reviztoWins} kept from Revizto, ${caught.errors} error(s).`
         );
         if (caught.incomplete) incompleteLicenseIds.add(project.tenant_license_id);
+        timed(() => watch.stage('catch-up'));
       }
       const results = await syncService.pushLinkedIssues(project.owner_user_id, project, { snapshot, full });
+      timed(() => {
+        watch.stage('push');
+        changed = results.filter((r) => r.action !== 'skipped').length;
+      });
       if (results.length) {
         const errors = results.filter((r) => r.action === 'error');
         const skipped = results.filter((r) => r.action === 'skipped');
@@ -179,6 +209,7 @@ async function pollAllProjects({ full = false, licenseIds = null, includeLegacy 
       // Opt-in: only does anything if the admin turned on auto-sync-by-
       // filter for this project (see fieldMapping.getAutoSyncFilters).
       const autoLinkResults = await syncService.autoLinkMatchingIssues(project.owner_user_id, project);
+      timed(() => watch.stage('auto-link'));
       if (autoLinkResults.length) {
         const errors = autoLinkResults.filter((r) => r.action === 'error');
         console.log(`[poll] "${project.name}": ${autoLinkResults.length} issue(s) auto-linked by filter, ${errors.length} errors`);
@@ -189,9 +220,13 @@ async function pollAllProjects({ full = false, licenseIds = null, includeLegacy 
       // same cycle as the push above.
       const { rows: ownerRows } = await pool.query('SELECT email FROM users WHERE id = $1', [project.owner_user_id]);
       const reporterEmail = ownerRows[0]?.email;
+      timed(() => watch.stage('other'));
       await syncService.pollAccCommentsForProject(project.owner_user_id, project, reporterEmail, { snapshot, full });
+      timed(() => watch.stage('comments'));
       await syncService.pollAccAttachmentsForProject(project.owner_user_id, project, reporterEmail, { snapshot, full });
+      timed(() => watch.stage('attachments'));
     } catch (err) {
+      failed = true;
       if (err instanceof ReconnectRequiredError) {
         console.warn(`[poll] Project "${project.name}" owner needs to reconnect ${err.provider}: ${err.reason}`);
       } else {
@@ -199,8 +234,27 @@ async function pollAllProjects({ full = false, licenseIds = null, includeLegacy 
       }
       // A project that couldn't be read at all hasn't been caught up either.
       if (catchUpSince?.has(project.tenant_license_id)) incompleteLicenseIds.add(project.tenant_license_id);
+    } finally {
+      // How long this project took, and where the time went.
+      timed(() => {
+        const t = { name: project.name, totalMs: watch.total(), stages: watch.stages(), linked, changed, failed, full };
+        timings.push(t);
+        const { line, slow } = syncTiming.projectLine(project.name, t);
+        if (slow) console.warn(line);
+        else console.log(line);
+      });
     }
   }
+  // How long the whole cycle took, and how close that is to the tick.
+  timed(() => {
+    const totalMs = cycleWatch.total();
+    const { line, warnings } = syncTiming.cycleSummary({ full, totalMs, projects: timings });
+    if (timings.length) {
+      console.log(line);
+      for (const w of warnings) console.warn(w);
+      syncTiming.recordCycle({ full, totalMs, projects: timings });
+    }
+  });
   return { incompleteLicenseIds };
 }
 
